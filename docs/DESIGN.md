@@ -277,22 +277,29 @@ switching-group and learning-unit memberships pruned.
   memberships (though not its hard switches) by coincidence.
 - `snapshot_changes` follows bulbs by id, so a rename reads as `bulb entity_id changed`, and
   the keys a sync records for the first time are counted in one line.
-- **The key is opaque.** It is a match key for the reconcile only. Nothing addresses a bulb by
-  it, validates it against HA, or writes it into generated artefacts: everything that
-  addresses a bulb uses its `entity_id`, so "entity IDs only, never device IDs" holds. The
-  worst a stale key can do is make the reconcile treat a light as new, which
-  `snapshot_changes` reports before anything is saved; it can never misdirect a command.
+- **The key is opaque.** It is a match key only. The reconcile matches on it, and (since P3)
+  an Area write compares it with the registry entry now at the bulb's `entity_id` before
+  moving that light: a snapshot not synced since the bulb's light was renamed in HA, and
+  another light took its old entity_id, would otherwise move that other light and record
+  the bulb as moved. Nothing addresses a bulb by it, requires it to exist in HA, or writes
+  it into generated artefacts: everything that addresses a bulb uses its `entity_id`, so
+  "entity IDs only, never device IDs" holds. The worst a stale key can do is make the
+  reconcile treat a light as new, which `snapshot_changes` reports before anything is
+  saved, or refuse an Area write until a sync; it can never misdirect a command.
 - No schema-version bump: the key is optional, so a P1 snapshot still loads, and its first
   sync records keys by matching on entity_id. Rename entities in HA only after that first
   sync; until a bulb has its key, a rename still reads as remove + add.
 
-The writes from the Map change HA first; a sync then brings the snapshot up to date:
+The writes from the Map change HA first, and then exactly that change is committed to the
+snapshot (settled in P3; see "The Map and its API"): never a full sync, which would also
+commit, unreviewed, whatever else HA has changed meanwhile.
 
 - **Move a bulb** sets the entity's own Area. It is refused, before writing, for a light with
   no registry entry (a YAML light without a `unique_id`, which HA can't give an Area), for an
-  Area that doesn't exist, and for unassigning a bulb whose device has an Area — clearing the
-  entity's Area would leave it in the device's, and unassigning the device would move its other
-  entities too, which is the user's call in HA. After writing it re-reads the registry and
+  Area that doesn't exist, for a light whose registry entry isn't the bulb's (its
+  `ha_match_key`; the snapshot is stale: sync first), and for unassigning a bulb whose device
+  has an Area — clearing the entity's Area would leave it in the device's, and unassigning
+  the device would move its other entities too, which is the user's call in HA. After writing it re-reads the registry and
   fails loudly if the bulb isn't where it was asked to go.
 - **Create / rename a room** creates / renames the HA Area (its id, and so the room's, never
   changes). A name HA would reject as a duplicate is refused up front; the result is re-read
@@ -390,7 +397,10 @@ No step calls a light service. Before writing, a switching-plane deploy validate
 and checks that every bulb and hard-switch source exists in HA (a missing bulb means the
 snapshot is stale: sync first); a device source's device must still be in the device
 registry. An automation id already defined in HA's YAML outside `automations.yaml` (which
-the config API can't edit) is refused rather than duplicated.
+the config API can't edit) is refused rather than duplicated, and so (since P3) is a soft
+switch whose entity id HA already has as a helper the plane can't manage (a YAML
+`input_boolean`): created anyway, it would land under `<id>_2`, and the post-create check
+would stop the deploy only after leaving that stray behind.
 
 `verify` checks the whole lane, not just the steps: every helper and automation holds what
 was generated, each helper's entity has the id the automations address (one renamed in HA
@@ -412,14 +422,108 @@ belongs to the plane, and one the config doesn't call for is removed (the doctor
 lists every removal). An `lm_` automation that HA's YAML defines outside `automations.yaml`
 can't be managed: deploy refuses to write over one, and warns about the others.
 
+**The crossover report** (`deploy.crossover`, P3) is read-only and shown beside every
+deploy preview: the automations, scripts and scenes outside the `lm_` lane that name a
+mapped bulb (found through HA's `search/related`, by entity id, so one that targets a whole
+Area or device isn't found; the live ha-adaptive-light's `al_` automations are flagged),
+the HA groups with mapped bulbs among their members (from HA's states), and the names the
+plane would generate that something else holds (a YAML helper, an automation entity id
+taken by another automation, so ours would load as `..._2`). What couldn't be checked is
+listed too, so an empty report is never mistaken for a clean one.
+
 **Area writes** (`deploy_areas`) make HA's Areas match the committed room snapshot, through
 the inventory's own verified `move_bulb`. Every move is checked first (`inventory.check_move`
 answers what `move_bulb` would refuse) and if any would be refused — or the snapshot is too
 stale to write: a room whose Area HA no longer has, a bulb whose light it no longer has —
-nothing is written. It never creates, renames, or deletes an Area. It is a separate call
+nothing is written; given the moves its preview showed (`expected`), it also writes nothing
+if HA has moved on since. A failure once writing has begun says which moves landed (the
+error's `written`), so a half-done write is never reported as a refusal; the next preview
+plans from whatever HA then holds. It never creates, renames, or deletes an Area. It is a separate call
 from the switching deploy (which needs no Areas), and `plan_areas` previews it: because
 edits made from the Map reach HA first, a difference usually means HA moved on, and writing
 the snapshot back reverts that, so it should be reviewed before it is applied.
+
+---
+
+## The Map and its API (settled in P3)
+
+The Map tab is the first thing a person uses, and the first that deploys to a real HA, so
+its shape follows from two rules: nothing reaches HA, or the committed config, that the
+user wasn't shown first, and nothing makes a bulb live beside the old system silently.
+
+**Layout.** Rooms (HA Areas, by name) down the page, then Unassigned. Per room: the name
+(click to rename the Area) and the ADAPTIVE checkbox; its bulbs, each by name and
+entity_id with its generated soft switch, which opens the hard-switch popup; a groups
+column (each group opens its popup; ADD makes one: name, members from the room's bulbs,
+hard switches); and the Adaptive Config button, enabled only while the room is adaptive,
+which opens a placeholder until the adaptive editor arrives (P5). Ticking ADAPTIVE writes a
+minimal `adaptive_config` (`{}`, filled by the defaults on save); unticking drops it (the
+schema forbids it on a room that isn't adaptive), so when it holds anything a user set the
+API refuses until the request confirms the loss (409 `confirm_required`, listing it).
+
+**Live.** A bulb is live when a hard switch drives it, bound to it or to a group it is in:
+once deployed, pressing that switch drives the bulb through its bridge. During the
+parallel build that is the coexistence boundary, so the Map marks every live bulb and
+group, and the hard-switch and group popups warn before saving any edit that makes a hard
+switch drive something new (a new binding, a changed source, mode or turn, or a member
+added to a bound group: `inventory.going_live`). The warning needs its box ticked; the API
+enforces the same rule (409 `coexistence` unless `acknowledge_live`), so the UI can't be
+the only guard. Renaming or removing a binding makes nothing newly live and doesn't ask.
+
+**The hard-switch popup** edits one soft switch's (or one group's) bindings as a staged
+list, saved together. A binding's source is chosen as an entity (`state`, picked from HA's
+switches, binary sensors, lights, input booleans and event entities, or typed) or an HA
+event (`event`: an event type, with optional event data to match) as the primary paths;
+the `device` source sits under "Advanced" as manual entry (a device id and the trigger's
+fields, copied from an HA automation), so the device registry is never listed to the UI
+and device ids stay confined to the trigger that reads a press. The modes are explained
+in one line each. The form refuses what the cross-check would (a toggle on a mapped bulb,
+an `lm_` source, follow without a state source), for the user's sake; the server checks
+again on save.
+
+**Previews and fingerprints.** Every action that writes HA, or commits HA's state to the
+config, is a preview followed by an apply: sync from HA (`snapshot_changes`), a bulb move
+(the snapshot changes, including the memberships it drops, and whether HA would refuse it),
+the switching deploy (the plan, the hard switches it puts live, the crossover report, the
+coexistence note), and the Area writes (the moves, and why any would be refused). A preview
+writes nothing and returns a `fingerprint`, a digest of what it showed; the apply carries
+it, recomputes from fresh state, and is refused if the digest differs. Generation is
+deterministic, so an unchanged plan always digests the same, and a deploy previewed before
+someone changed the config, or before HA moved on, can't be applied. The switching deploy
+and the Area writes stay separate: the former never writes an Area, the latter never a
+helper or automation.
+
+**Area edits commit only themselves.** Moving a bulb, or creating or renaming a room, writes
+HA first (verified, through `core.inventory`), then commits that one change to the
+snapshot. The commit reuses the reconcile itself: `config.snapshot_as_ha` gives the Areas
+and lights that reproduce the committed snapshot exactly (reconciling against them changes
+nothing), the edit changes one of them (a light's Area, a new or renamed Area), and the
+reconcile records it as a sync would, pruning a moved bulb's memberships in the room it
+leaves and deriving a new room's id, without picking up anything else HA has changed. A
+later sync then shows only what really differs. The edit's config is validated before the
+HA write; if saving fails after it, the error says the HA change stands and a sync will
+pick it up.
+
+**Edits carry the version they were made against.** The Map shows a `version` for each
+bulb's hard switches, each switching group, and each room's adaptive flag and config, and
+an edit sends it back as `base`; one made against an older version is refused (409
+`edit_stale`) and the popup closes onto the Map as it now is. Edits replace whole lists (a
+bulb's bindings, a group's members), so without this a popup left open in a second tab
+would silently undo the first tab's edit when saved, and an acknowledgement (going live)
+or confirmation (dropping an adaptive config) given for the view on screen would cover
+bindings or settings the user never saw.
+
+**The committed config** lives at `LM_CONFIG_PATH` and is read fresh for every request (it
+is small, and a hand edit is picked up at once), written only through `config.save`, one
+edit at a time under a lock held across the HA writes. Before the first save there is no
+file: the Map starts blank and the first sync, reviewed, creates it; creating a room
+before then is refused (409 `sync_first`), since it would save a config holding only that
+room. A config on disk that doesn't load is never overwritten from the Map; every write is
+refused until it is fixed by hand.
+
+**A dialog stays open while its request runs.** Dismissed mid-save, it would drop the
+save's answer, and the Map would go on showing what was there before a write that did
+land; so Esc, × and Cancel wait for the request to settle.
 
 ---
 

@@ -39,9 +39,9 @@ Hard rules:
   a proposal, `snapshot_changes` lists what it would change, and nothing is written until
   the result is saved.
 - Entity IDs only, never device IDs. A bulb's `ha_match_key` (its entity-registry entry
-  id) is the opaque HA id the config holds for matching, and it is a match key for the
-  reconcile only: never addressed, validated against HA, or written into generated
-  artefacts. The one carved-out exception is a hard switch's `device` source, which names
+  id) is the opaque HA id the config holds for matching: the reconcile matches on it, and
+  an Area write compares it with HA's registry entry before moving a light. It is never
+  addressed, required to exist in HA, or written into generated artefacts. The one carved-out exception is a hard switch's `device` source, which names
   a device id only to read a button press from a device exposing nothing else.
 - A hard switch can't be wired into a feedback loop: its source may not be one of Light
   Map's own entities, a `toggle` may not take a bulb Light Map drives as its source, and
@@ -460,20 +460,28 @@ def _dangling(
 
 
 def save(path: Path, config: Mapping[str, Any]) -> None:
-    """Validate-then-write: strip the token, validate fully, then atomically replace the
-    file at `path`.
+    """Validate-then-write: strip the token, validate fully (`checked`), then atomically
+    replace the file at `path`. What lands on disk is the normalised (migrated, defaulted)
+    document.
+    """
+    _atomic_write(Path(path), _dumps(checked(config)))
+
+
+def checked(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Run `save`'s validation without writing: return exactly what `save` would write, or
+    raise ConfigError.
 
     "Fully" means the whole load pipeline, run on exactly what JSON will carry to disk: a
     document that passes the schema but that `load` would still refuse (say, a version
-    from a newer Light Map) must not be able to replace one that loads. What lands on disk
-    is the normalised (migrated, defaulted) document.
+    from a newer Light Map) must not be able to replace one that loads. An edit that also
+    writes to HA (moving a bulb, say) checks its config here first, so the config write
+    that follows the HA write can't be the step that fails.
     """
-    path = Path(path)
     try:
         carried = json.loads(_dumps(redact(config)))
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"the config is not representable as JSON: {exc}") from exc
-    _atomic_write(path, _dumps(loads(carried)))
+    return loads(carried)
 
 
 def redact(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -572,7 +580,11 @@ def reconcile_area_snapshot(
     rooms = []
     for room in old_rooms:
         if room.get("ha_area_id") in area_names:
-            room["name"] = area_names[room["ha_area_id"]]
+            # Compared stripped, as the Area's name was: a snapshot name with stray spaces
+            # (a hand edit) would otherwise be "renamed" by every reconcile, including the
+            # one that commits a Map edit (`snapshot_as_ha`), unpreviewed.
+            if str(room.get("name", "")).strip() != area_names[room["ha_area_id"]]:
+                room["name"] = area_names[room["ha_area_id"]]
             rooms.append(room)
     linked = {room["ha_area_id"] for room in rooms}
     room_ids = {room.get("id") for room in rooms}
@@ -670,6 +682,48 @@ def reconcile_area_snapshot(
     return doc
 
 
+def snapshot_as_ha(
+    config: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The Areas and lights that reproduce the committed snapshot as it stands: one Area
+    per room (its `ha_area_id` and name) and one light per bulb, in its room's Area or in
+    none.
+
+    Reconciling a config against its own `snapshot_as_ha` changes nothing. Changing one
+    input first (a light's Area, a new or renamed Area) commits exactly that change, the
+    way a sync would (a moved bulb's memberships pruned, a new Area's room id derived),
+    without picking up anything else HA has changed meanwhile. That is how an edit made
+    from the Map lands in the snapshot after its HA write: a full sync there would also
+    commit every unrelated change in HA, unreviewed.
+    """
+    areas: list[dict[str, Any]] = []
+    lights: list[dict[str, Any]] = []
+
+    def add(bulbs: Any, area_id: str | None) -> None:
+        for bulb in _dicts(bulbs):
+            lights.append(
+                {
+                    "entity_id": bulb.get("entity_id"),
+                    "ha_match_key": bulb.get("ha_match_key"),
+                    "name": bulb.get("name"),
+                    "area_id": area_id,
+                    "is_group": False,
+                }
+            )
+
+    for room in _dicts(config.get("rooms", [])):
+        areas.append({"area_id": room.get("ha_area_id"), "name": room.get("name")})
+        add(room.get("bulbs", []), room.get("ha_area_id"))
+    add(config.get("unassigned", []), None)
+    return areas, lights
+
+
+def new_id(text: str, taken: Iterable[Any], fallback: str) -> str:
+    """A schema slug made from `text` (or `fallback`), suffixed `_2`, `_3`, ... until it is
+    not in `taken`: how the Map names a new switching group or hard switch."""
+    return _unique(_slugify(text, fallback), set(taken))
+
+
 def _prune_members(room: dict[str, Any]) -> None:
     bulb_ids = {bulb["id"] for bulb in room["bulbs"]}
 
@@ -741,7 +795,10 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
         changes.append(f"bulb added: {bulb.get('entity_id')} -> {where}")
     for bulb_id in sorted(bulbs_before.keys() - bulbs_after.keys(), key=by_entity(bulbs_before)):
         where, bulb = bulbs_before[bulb_id]
-        changes.append(f"bulb removed: {bulb.get('entity_id')} (was in {where})")
+        changes.append(
+            f"bulb removed: {bulb.get('entity_id')} (was in {where})"
+            + _drops_hard_switches(bulb)
+        )
     keys_recorded = 0
     for bulb_id in sorted(bulbs_before.keys() & bulbs_after.keys(), key=by_entity(bulbs_after)):
         (old_where, old), (new_where, new) = bulbs_before[bulb_id], bulbs_after[bulb_id]
@@ -768,7 +825,10 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
         ):
             for set_id in sorted(old_sets, key=str):
                 if set_id not in new_sets:
-                    changes.append(f"{label} removed: '{room_id}/{set_id}'")
+                    changes.append(
+                        f"{label} removed: '{room_id}/{set_id}'"
+                        + _drops_hard_switches(old_sets[set_id])
+                    )
                     continue
                 kept = set(new_sets[set_id].get("members", []))
                 gone = [str(m) for m in old_sets[set_id].get("members", []) if m not in kept]
@@ -777,6 +837,13 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
                         f"{label} '{room_id}/{set_id}': members dropped: {', '.join(gone)}"
                     )
     return changes
+
+
+def _drops_hard_switches(holder: Mapping[str, Any]) -> str:
+    """The hard switches a removed bulb or switching group takes with it, named: they go
+    from the config, and the next deploy removes their automations."""
+    ids = [str(h.get("id")) for h in _dicts(holder.get("hard_switches", []))]
+    return f"; drops hard switch(es): {', '.join(ids)}" if ids else ""
 
 
 # -- Helpers ---------------------------------------------------------------------------

@@ -1,24 +1,28 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Light Map</title>
-  <link rel="stylesheet" href="app.css">
-  <script src="app.js" defer></script>
-</head>
-<body>
-  <header class="app-header">
-    <h1 class="app-title">Light Map</h1>
-    <nav class="tabs" aria-label="Views">
-      <a class="tab" href="#map">Map</a>
-      <a class="tab" href="#now">Now</a>
-      <a class="tab" href="#analysis">Analysis</a>
-      <a class="tab" href="#almanac">Almanac</a>
-      <a class="tab" href="#config">Config</a>
-      <a class="tab" href="#log">Log</a>
-    </nav>
-  </header>
-  <main id="view"></main>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Light Map</title>
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="map.css" />
+    <script src="app.js" defer></script>
+    <script src="map.js" defer></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <h1 class="app-title">Light Map</h1>
+      <nav class="tabs" aria-label="Views">
+        <a class="tab" href="#map">Map</a>
+        <a class="tab" href="#now">Now</a>
+        <a class="tab" href="#analysis">Analysis</a>
+        <a class="tab" href="#almanac">Almanac</a>
+        <a class="tab" href="#config">Config</a>
+        <a class="tab" href="#log">Log</a>
+      </nav>
+      <span id="ha-status" class="pill" role="status">Home Assistant…</span>
+    </header>
+    <div id="notices" aria-live="polite"></div>
+    <main id="view"></main>
+  </body>
 </html>

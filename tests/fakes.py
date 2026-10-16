@@ -20,6 +20,7 @@ deploy would have driven a bulb.
 """
 
 import copy
+import json
 import re
 from typing import Any
 
@@ -313,6 +314,8 @@ class FakeHA:
         rejected: tuple[str, ...] = (),
         disabled: tuple[str, ...] = (),
         lag: int = 0,
+        related: dict[str, dict[str, list[str]]] | None = None,
+        search_fails: bool = False,
     ) -> None:
         """`helpers` and `automations` pre-populate the UI-managed helpers and
         automations.yaml. `yaml_helpers` are helper ids taken by YAML helpers (unlisted,
@@ -321,7 +324,9 @@ class FakeHA:
         `rejected` automations load as `unavailable`; `disabled` ones have a config but no
         entity (disabled in HA's entity registry). `lag` is how many state reads a
         written or deleted automation's entity takes to catch up, as HA reloads it in the
-        background."""
+        background. `related` adds to what `search_related` finds for an entity (beyond
+        the automations.yaml entries that name it); `search_fails` makes it fail, as on an
+        HA without the command."""
         self.areas = copy.deepcopy(AREAS if areas is None else areas)
         self.entities = copy.deepcopy(ENTITIES if entities is None else entities)
         self.devices = copy.deepcopy(DEVICES if devices is None else devices)
@@ -344,6 +349,8 @@ class FakeHA:
             a["id"]: copy.deepcopy(a) for a in automations or []
         }
         self.yaml_helpers = set(yaml_helpers)
+        self.related = copy.deepcopy(related or {})
+        self.search_fails = search_fails
         self.yaml_automations = list(yaml_automations)
         self.rejected = set(rejected)
         self.disabled = set(disabled)
@@ -368,6 +375,9 @@ class FakeHA:
         states = copy.deepcopy(self.states)
         for entity_id, state in sorted(self.helper_states.items()):
             states.append(_state(entity_id, entity_id.partition(".")[2], state))
+        for item_id in sorted(self.yaml_helpers):
+            # A YAML helper is an entity like any other, just not in the storage collection.
+            states.append(_state(f"input_boolean.{item_id}", item_id))
         hidden = {*self.appearing, *self.disabled}
         visible = [i for i in self.automations if i not in hidden]
         visible += [*self.lingering, *self.yaml_automations]
@@ -403,6 +413,23 @@ class FakeHA:
     async def list_helpers(self, domain: str) -> list[dict[str, Any]]:
         self._log("list_helpers", domain)
         return copy.deepcopy(list(self.helpers.get(domain, {}).values()))
+
+    async def search_related(self, item_type: str, item_id: str) -> dict[str, list[str]]:
+        """Like HA's search: the loaded automations whose config names the entity, plus
+        whatever `related` adds for it."""
+        self._log("search_related", item_type, item_id)
+        if self.search_fails:
+            from app.core.ha import HACommandError
+
+            raise HACommandError("unknown_command", "Unknown command.")
+        found: dict[str, list[str]] = {}
+        hidden = {*self.appearing, *self.disabled}
+        for automation_id, automation in sorted(self.automations.items()):
+            if automation_id not in hidden and f'"{item_id}"' in json.dumps(automation):
+                found.setdefault("automation", []).append(f"automation.{automation_id}")
+        for kind, items in self.related.get(item_id, {}).items():
+            found.setdefault(kind, []).extend(items)
+        return found
 
     async def get_automation_config(self, automation_id: str) -> dict[str, Any] | None:
         self._log("get_automation_config", automation_id)

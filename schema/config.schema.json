@@ -158,7 +158,7 @@
           "pattern": "^light\\.[a-z0-9_]+$"
         },
         "ha_match_key": {
-          "description": "The HA entity-registry entry id of this bulb's light, recorded by the inventory. An OPAQUE match key only: the reconcile uses it to recognise the bulb when its entity_id is renamed in HA. Never addressed, validated against HA, or written into generated artefacts; entity_id is what everything addresses. Absent for a light outside the entity registry, and until the first sync records it.",
+          "description": "The HA entity-registry entry id of this bulb's light, recorded by the inventory. An OPAQUE match key only: the reconcile uses it to recognise the bulb when its entity_id is renamed in HA, and an Area write compares it with the registry entry at the bulb's entity_id so it never moves a different light. Never addressed, required to exist in HA, or written into generated artefacts; entity_id is what everything addresses. Absent for a light outside the entity registry, and until the first sync records it.",
           "type": "string",
           "minLength": 1
         },

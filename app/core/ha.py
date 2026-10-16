@@ -10,8 +10,8 @@ Two transports, used for different things:
   reading and writing automation configs (HA's config API for automations.yaml).
 - WebSocket for the registries (HA exposes Area and entity-registry reads and writes only
   there), the UI-managed helpers (`input_boolean/list`, `.../create`, ...: the frontend's
-  own commands, the only network API that creates a helper), and, from P4, the live event
-  stream.
+  own commands, the only network API that creates a helper), HA's search (what references
+  a bulb, for deploy's crossover report), and, from P4, the live event stream.
 
 Hard rules:
 
@@ -451,6 +451,17 @@ class HAClient:
         if isinstance(result, dict) and isinstance(result.get("entity_entry"), dict):
             return result["entity_entry"]
         return result
+
+    async def search_related(self, item_type: str, item_id: str) -> dict[str, list[str]]:
+        """Ask HA's search what references an item: for an entity, the automations,
+        scripts, scenes and groups that name it (by entity_id; one that targets its whole
+        Area or device isn't listed), plus its device, Area and config entry. Returns item
+        type -> ids, with empty types left out. Read only; used for deploy's crossover
+        report."""
+        result = await self.command(
+            {"type": "search/related", "item_type": item_type, "item_id": item_id}
+        )
+        return result if isinstance(result, dict) else {}
 
     async def list_device_registry(self) -> list[dict[str, Any]]:
         """Return the device registry. Read only to resolve the Area an entity inherits

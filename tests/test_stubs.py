@@ -1,4 +1,4 @@
-"""The P0 boundary: importing does no work, /healthz serves, and every module P2 leaves for
+"""The P0 boundary: importing does no work, /healthz serves, and every module P3 leaves for
 a later phase still raises NotImplementedError rather than passing silently."""
 
 import asyncio

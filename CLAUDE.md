@@ -24,9 +24,11 @@ hard-won, so preserve them.
   Avoid dict/set ordering, timestamps, or other nondeterminism leaking into output.
 - **Entity IDs only, never device IDs.** Device IDs are opaque, break on re-pairing, and
   can't be validated by an entity-existence check. A bulb's `ha_match_key` (its HA
-  entity-registry entry id) is an opaque HA id the config holds as a match key for the
-  snapshot reconcile only: never addressed, validated against HA, or written into generated
-  artefacts. Anything that addresses a bulb uses its `entity_id`. The one carved-out
+  entity-registry entry id) is an opaque HA id the config holds as a match key only: the
+  snapshot reconcile matches on it, and an Area write compares it with the registry entry at
+  the bulb's `entity_id` so it never moves a different light. It is never addressed,
+  required to exist in HA, or written into generated artefacts. Anything that addresses a
+  bulb uses its `entity_id`. The one carved-out
   exception: a hard switch's `device` source names a `device_id`, only to read a button
   press from a device that exposes nothing else; it appears only in that `lm_hard_`
   trigger and never addresses a light.
@@ -84,7 +86,11 @@ Presence Rules can be added without touching the trunk:
   entity), `lm_bridge_<bulb_id>`, `lm_hard_<hard_switch_id>` for the switching plane; the
   adaptive module keeps `al_scene_`, `al_maint_`, `al_active_`, `al_hold_`,
   `sensor.al_almanac_`, `al_watchdog_`.
-- Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`.
+- Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`, and `LM_CONFIG_PATH`
+  (where the committed config lives; default `/data/config.json`).
+- HTTP: everything under `/api/` in `app/main.py` (see "HTTP surface" in
+  `docs/ARCHITECTURE.md`). An action that writes HA, or commits HA's state to the config,
+  is a preview that returns a `fingerprint` and an apply that must carry it; keep it so.
 
 ## Stubs
 
@@ -102,6 +108,8 @@ Presence Rules can be added without touching the trunk:
 ```sh
 pip install -r requirements.txt
 python -m unittest                 # tests against fakes and fixtures; never a real HA
+                                   # (tests/test_ui.py drives the Map in headless Chromium
+                                   # when Node's Playwright is installed, else skips)
 python -c "import app.main"
 python -c "import json, jsonschema; jsonschema.Draft202012Validator.check_schema(json.load(open('schema/config.schema.json')))"
 python -c "import sqlite3; sqlite3.connect(':memory:').executescript(open('schema/storage.schema.sql').read())"
