@@ -13,7 +13,7 @@ import httpx
 from websockets.asyncio.server import serve
 
 from app.core import ha as ha_mod
-from app.core.ha import HAAuthError, HAClient, HACommandError, HAError
+from app.core.ha import HAAuthError, HAClient, HACommandError, HAError, HANotFoundError
 
 TOKEN = "good-token"
 
@@ -129,6 +129,50 @@ class RestTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HAError):
             await self.client(refuse).get_states()
 
+    async def test_automation_configs(self):
+        stored = {"id": "lm_bridge_a", "alias": "lm_bridge_a", "triggers": []}
+
+        def respond(request):
+            if request.url.path.endswith("/lm_missing"):
+                status = 404 if request.method == "GET" else 400
+                return httpx.Response(status, json={"message": "Resource not found"})
+            if request.method == "GET":
+                return httpx.Response(200, json=stored)
+            return httpx.Response(200, json={"result": "ok"})
+
+        client = self.client(respond)
+        self.assertEqual(await client.get_automation_config("lm_bridge_a"), stored)
+        self.assertIsNone(await client.get_automation_config("lm_missing"))
+        await client.save_automation_config("lm_bridge_a", stored)
+        self.assertTrue(await client.delete_automation_config("lm_bridge_a"))
+        self.assertFalse(await client.delete_automation_config("lm_missing"))
+        # A delete looks first: HA answers a DELETE of a missing id with a bare 400.
+        self.assertEqual(
+            [(r.method, r.url.path) for r in self.requests],
+            [
+                ("GET", "/api/config/automation/config/lm_bridge_a"),
+                ("GET", "/api/config/automation/config/lm_missing"),
+                ("POST", "/api/config/automation/config/lm_bridge_a"),
+                ("GET", "/api/config/automation/config/lm_bridge_a"),
+                ("DELETE", "/api/config/automation/config/lm_bridge_a"),
+                ("GET", "/api/config/automation/config/lm_missing"),
+            ],
+        )
+        self.assertEqual(json.loads(self.requests[2].content), stored)
+        with self.assertRaises(ValueError):
+            await client.save_automation_config("../../config", {})
+
+    async def test_a_refusal_carries_has_reason(self):
+        client = self.client(
+            lambda r: httpx.Response(400, json={"message": "Message malformed: extra keys"})
+        )
+        with self.assertRaises(HAError) as caught:
+            await client.save_automation_config("lm_bridge_a", {})
+        self.assertIn("HTTP 400: Message malformed: extra keys", str(caught.exception))
+        self.assertNotIsInstance(caught.exception, HANotFoundError)
+        with self.assertRaises(HANotFoundError):
+            await self.client(lambda r: httpx.Response(404, text="404: Not Found")).get_states()
+
     async def test_empty_and_text_bodies(self):
         self.assertIsNone(await self.client(lambda r: httpx.Response(200)).request("GET", "/api/x"))
         text = await self.client(lambda r: httpx.Response(200, text="hi")).request("GET", "/api/x")
@@ -171,6 +215,12 @@ class FakeHAServer:
                 "entity_entry": {**ENTRY, "area_id": message.get("area_id")}
             },
             "config/device_registry/list": [{"id": "dev1", "area_id": None}],
+            "input_boolean/list": [{"id": "lm_soft_a", "name": "LM Soft a"}],
+            "input_boolean/create": {"id": "lm_soft_a", "name": message.get("name")},
+            "input_boolean/update": {
+                "id": message.get("input_boolean_id"),
+                "name": message.get("name"),
+            },
         }
         return {"success": True, "result": results.get(kind)}
 
@@ -248,6 +298,42 @@ class WebSocketTest(unittest.IsolatedAsyncioTestCase):
         )
         ids = [m["id"] for m in self.fake.received]
         self.assertEqual(ids, sorted(set(ids)))
+
+    async def test_helper_commands(self):
+        client = self.client()
+        self.assertEqual(
+            await client.list_helpers("input_boolean"), [{"id": "lm_soft_a", "name": "LM Soft a"}]
+        )
+        created = await client.create_helper(
+            "input_boolean", {"name": "LM Soft a", "icon": "mdi:x"}
+        )
+        self.assertEqual(created["id"], "lm_soft_a")
+        await client.update_helper("input_boolean", "lm_soft_a", {"name": "LM Soft a"})
+        self.assertIsNone(await client.delete_helper("input_boolean", "lm_soft_a"))
+        self.assertEqual(
+            [{k: v for k, v in m.items() if k != "id"} for m in self.fake.received],
+            [
+                {"type": "input_boolean/list"},
+                {"type": "input_boolean/create", "name": "LM Soft a", "icon": "mdi:x"},
+                {
+                    "type": "input_boolean/update",
+                    "input_boolean_id": "lm_soft_a",
+                    "name": "LM Soft a",
+                },
+                {"type": "input_boolean/delete", "input_boolean_id": "lm_soft_a"},
+            ],
+        )
+
+    async def test_helper_commands_keep_their_own_keys(self):
+        client = self.client()
+        for call in (
+            client.create_helper("input_boolean", {"name": "x", "type": "input_boolean/delete"}),
+            client.update_helper("input_boolean", "a", {"input_boolean_id": "b"}),
+            client.list_helpers("input_boolean/../x"),
+        ):
+            with self.assertRaises(ValueError):
+                await call
+        self.assertEqual(self.fake.received, [])
 
     async def test_connects_on_demand_and_only_once(self):
         client = self.client()

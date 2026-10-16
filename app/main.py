@@ -4,11 +4,14 @@ The entry point (`uvicorn app.main:app`). `python -c "import app.main"` must suc
 nothing here may contact Home Assistant or do work at import time.
 
 Core never imports a module: modules are attached here, through the four seams described
-in `app.modules`, so a module can be replaced or added without touching the trunk.
+in `app.modules`, so a module can be replaced or added without touching the trunk. Two of
+those seams are registries filled here: a module's namespace
+(`core.generate.register_namespace`) and its bridge brightness
+(`core.switching.register_bridge_brightness`). The core's own `lm` lane registers itself.
 
 Nothing is wired yet. The app serves GET /healthz and the static UI shell; the inventory
-(P1) gets its HTTP surface with the Map UI (P3), and the other core services and the
-Adaptive Light module are attached in later phases.
+(P1) and the switching deploy (P2) get their HTTP surface with the Map UI (P3), and the
+other core services and the Adaptive Light module are attached in later phases.
 """
 
 from pathlib import Path

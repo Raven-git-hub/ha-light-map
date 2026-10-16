@@ -14,8 +14,11 @@ finds at once, so a user fixing a config sees them together rather than one per 
 Id scopes, which follow the HA names the ids end up in:
 
 - Room ids are global (`sensor.al_almanac_<room>`), and no two rooms share an HA Area.
-- Bulb ids and switching-group ids share one global namespace, because both name a soft
-  switch (`input_boolean.lm_soft_<id>`). That includes the bulbs in `unassigned`.
+- Bulb ids are global, because each names a soft switch (`input_boolean.lm_soft_<id>`) and
+  a bridge (`lm_bridge_<id>`). That includes the bulbs in `unassigned`. Switching-group ids
+  share that one namespace: a group mints no entity of its own (since P2), but a hard
+  switch binds to a bulb or a group, and keeping the two apart lets either be named by
+  id alone.
 - Hard-switch ids are global (`lm_hard_<id>`).
 - Learning-unit ids are unique within their room (the almanac is per room).
 - Schedule-profile ids are global.
@@ -36,8 +39,13 @@ Hard rules:
   a proposal, `snapshot_changes` lists what it would change, and nothing is written until
   the result is saved.
 - Entity IDs only, never device IDs. A bulb's `ha_match_key` (its entity-registry entry
-  id) is the one opaque HA id the config holds, and it is a match key for the reconcile
-  only: never addressed, validated against HA, or written into generated artefacts.
+  id) is the opaque HA id the config holds for matching, and it is a match key for the
+  reconcile only: never addressed, validated against HA, or written into generated
+  artefacts. The one carved-out exception is a hard switch's `device` source, which names
+  a device id only to read a button press from a device exposing nothing else.
+- A hard switch can't be wired into a feedback loop: its source may not be one of Light
+  Map's own entities, a `toggle` may not take a bulb Light Map drives as its source, and
+  an event source may not listen to the HA core events the plane's own changes fire.
 """
 
 import copy
@@ -59,13 +67,62 @@ log = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "config.schema.json"
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 DEFAULT_PROFILE = "default"
 
-# Each entry upgrades a document from version N to N + 1. Version 1 is the first Light Map
-# schema, so there are none yet. The predecessor's config is re-expressed by hand against
-# this shape, not migrated (docs/DESIGN.md, "Data model").
-_MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {}
+# HA core events, which fire for the switching plane's own work rather than for a button:
+# every soft switch change is a state_changed (and state_reported) that starts with a
+# call_service, every automation run fires automation_triggered, a deploy fires
+# automation_reloaded and registry updates, and a restart fires the start/stop events. A
+# hard switch listening to one would be set off by Light Map itself, on every change, deploy,
+# or restart.
+CORE_EVENTS = (
+    "area_registry_updated",
+    "automation_reloaded",
+    "automation_triggered",
+    "call_service",
+    "component_loaded",
+    "core_config_updated",
+    "device_registry_updated",
+    "entity_registry_updated",
+    "homeassistant_close",
+    "homeassistant_final_write",
+    "homeassistant_start",
+    "homeassistant_started",
+    "homeassistant_stop",
+    "script_started",
+    "service_registered",
+    "service_removed",
+    "state_changed",
+    "state_reported",
+)
+
+
+def _v1_to_v2(doc: dict[str, Any]) -> dict[str, Any]:
+    """P2 fixed `hard_switch.source` as a tagged union (version 1 took a string or an
+    object of no fixed shape) and gave a press its direction, `turn`.
+
+    A version-1 string source was an entity_id, so it becomes a `state` source. A
+    version-1 press had no direction; the only press version 1 described was the one-way
+    "all off", so it becomes `turn: off`. Anything else is left for validation to report.
+    """
+    holders = [bulb for room in _dicts(doc.get("rooms")) for bulb in _dicts(room.get("bulbs"))]
+    holders += [
+        g for room in _dicts(doc.get("rooms")) for g in _dicts(room.get("switching_groups"))
+    ]
+    holders += list(_dicts(doc.get("unassigned")))
+    for holder in holders:
+        for binding in _dicts(holder.get("hard_switches")):
+            if isinstance(binding.get("source"), str):
+                binding["source"] = {"type": "state", "entity_id": binding["source"]}
+            if binding.get("mode") == "press" and "turn" not in binding:
+                binding["turn"] = "off"
+    return doc
+
+
+# Each entry upgrades a document from version N to N + 1. The predecessor's config is
+# re-expressed by hand against this shape, not migrated (docs/DESIGN.md, "Data model").
+_MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {1: _v1_to_v2}
 
 
 class ConfigError(Exception):
@@ -219,11 +276,18 @@ def _validator() -> jsonschema.Draft202012Validator:
 def _describe(error: jsonschema.ValidationError) -> str:
     where = "/".join(str(part) for part in error.absolute_path) or "(root)"
     message = error.message
-    # The two schema rules whose stock messages restate the schema instead of the problem.
+    # The schema rules whose stock messages restate the schema instead of the problem.
     if error.validator == "not" and error.validator_value == {"required": ["adaptive_config"]}:
         message = "adaptive_config is only allowed when adaptive is true"
     elif error.validator == "contains" and list(error.absolute_path) == ["schedule_profiles"]:
         message = f"a schedule profile with id '{DEFAULT_PROFILE}' is required"
+    elif error.validator == "not" and error.validator_value == {"required": ["turn"]}:
+        message = "turn is only allowed when mode is press"
+    elif error.validator == "const" and list(error.absolute_path)[-2:] == ["source", "type"]:
+        message = (
+            "follow needs a state source: it tracks an entity's on/off, which an event or "
+            "device trigger doesn't have"
+        )
     return f"{where}: {message}"
 
 
@@ -281,11 +345,13 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
                 for h in _dicts(group.get("hard_switches", []))
             ]
     problems += _clashes(
-        "soft-switch id", soft_ids, "bulb and switching-group ids share one namespace"
+        "bulb or switching-group id", soft_ids, "bulb and switching-group ids share one namespace"
     )
     problems += _clashes("entity_id", entity_ids, "a bulb can be in only one place")
     problems += _clashes("ha_match_key", match_keys, "one HA registry entry is one bulb")
     problems += _clashes("hard-switch id", hard_ids, None)
+
+    problems += _hard_switch_loops(rooms, unassigned)
 
     for room in rooms:
         where = f"room '{room.get('id')}'"
@@ -318,6 +384,40 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
                         f"and '{unit.get('id')}'; a bulb belongs to at most one"
                     )
                 unit_of.setdefault(member, unit.get("id"))
+    return problems
+
+
+def _hard_switch_loops(rooms: list[dict[str, Any]], unassigned: list[dict[str, Any]]) -> list[str]:
+    """Hard switches whose own action would trigger them again."""
+    bulbs = [b for room in rooms for b in _dicts(room.get("bulbs", []))] + unassigned
+    driven = {b.get("entity_id") for b in bulbs}
+    bindings = [h for b in bulbs for h in _dicts(b.get("hard_switches", []))]
+    for room in rooms:
+        for group in _dicts(room.get("switching_groups", [])):
+            bindings += _dicts(group.get("hard_switches", []))
+    problems = []
+    for binding in bindings:
+        source = binding.get("source")
+        if not isinstance(source, dict):
+            continue
+        where = f"hard switch '{binding.get('id')}'"
+        entity_id = source.get("entity_id") if source.get("type") == "state" else None
+        if isinstance(entity_id, str) and entity_id.partition(".")[2].startswith("lm_"):
+            problems.append(
+                f"{where}: its source {entity_id} is one of Light Map's own entities; bind the "
+                "physical switch, or put the bulbs in a switching group"
+            )
+        elif isinstance(entity_id, str) and entity_id in driven and binding.get("mode") == "toggle":
+            # Its targets' bridges change the bulb, which toggles them again, and again.
+            problems.append(
+                f"{where}: a toggle can't take {entity_id}, a bulb Light Map drives, as its "
+                "source: each change would set off the next"
+            )
+        if source.get("type") == "event" and source.get("event_type") in CORE_EVENTS:
+            problems.append(
+                f"{where}: event {source['event_type']} is an HA core event that fires for "
+                "Light Map's own work; bind the button's own event, or use a state source"
+            )
     return problems
 
 

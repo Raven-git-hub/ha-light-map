@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Light Map config",
   "description": "The committed config document. Everything downstream is a pure function of it; learned data (almanacs) is not stored here. See docs/ARCHITECTURE.md (Top-level config shape) and docs/DESIGN.md (Data model).",
-  "$comment": "Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1; system, learning, schedule_profiles and adaptive_config fill in with the observer (P4) and the adaptive module (P5). Cross-references (ids unique within their scope; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
+  "$comment": "Version 2 (P2) fixed hard_switch.source as a tagged union and added turn for presses; app/core/config.py migrates version 1 forward. Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1; system, learning, schedule_profiles and adaptive_config fill in with the observer (P4) and the adaptive module (P5). Cross-references (ids unique within their scope; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
   "type": "object",
   "required": ["version", "rooms", "schedule_profiles"],
   "additionalProperties": false,
@@ -141,7 +141,7 @@
       }
     },
     "bulb": {
-      "description": "One light.* entity, the actuation atom. Its soft-switch helper is implicit (generated). Matched to HA by ha_match_key, or by entity_id when it has none; its id, hard switches, and memberships travel with it when it moves or its entity_id is renamed.",
+      "description": "One light.* entity, the actuation atom. Its soft-switch helper (input_boolean.lm_soft_<id>) and soft->bulb bridge are implicit (generated). Matched to HA by ha_match_key, or by entity_id when it has none; its id, hard switches, and memberships travel with it when it moves or its entity_id is renamed.",
       "type": "object",
       "required": ["id", "name", "entity_id"],
       "additionalProperties": false,
@@ -171,7 +171,7 @@
       }
     },
     "switching_group": {
-      "description": "A power fan-out: bulbs toggled together. Its soft switch is implicit (generated), modelled as an HA group of its members' soft switches.",
+      "description": "A power fan-out: bulbs switched together. A named set of member bulbs plus its hard-switch bindings; it has no soft-switch entity of its own. A hard switch bound to a group acts on every member's per-bulb soft switch.",
       "type": "object",
       "required": ["id", "name", "members"],
       "additionalProperties": false,
@@ -201,7 +201,7 @@
       }
     },
     "hard_switch": {
-      "description": "A hard-switch binding, used inside bulbs[] and switching_groups[] (not on the room).",
+      "description": "A hard-switch binding, used inside bulbs[] and switching_groups[] (not on the room). On a bulb it acts on that bulb's soft switch; on a switching group, on every member's. Generated as automation lm_hard_<id>.",
       "type": "object",
       "required": ["id", "name", "source", "mode"],
       "additionalProperties": false,
@@ -214,11 +214,173 @@
           "minLength": 1
         },
         "source": {
-          "description": "An entity_id, or an event/device reference. Shape is fixed in P2.",
-          "type": ["string", "object"]
+          "$ref": "#/$defs/hard_switch_source"
         },
         "mode": {
+          "description": "toggle: each activation turns the targets all off if any is on, else all on. press: each activation sets the targets to `turn`. follow: the targets track the source's on/off (state source only).",
           "enum": ["toggle", "follow", "press"]
+        },
+        "turn": {
+          "description": "press only: what each press sets the targets to. A one-way 'all off' button is a press with turn off.",
+          "enum": ["on", "off"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "press"
+              }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "required": ["turn"]
+          },
+          "else": {
+            "not": {
+              "required": ["turn"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "follow"
+              }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "type": {
+                    "const": "state"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "hard_switch_source": {
+      "description": "What drives a hard switch, tagged by type: state (a stateful entity whose changes drive it), event (a stateless button firing an HA event), or device (a device automation trigger, only for a button that exposes nothing else).",
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["state", "event", "device"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "state"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "$ref": "#/$defs/state_source"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "event"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "$ref": "#/$defs/event_source"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "device"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "$ref": "#/$defs/device_source"
+          }
+        }
+      ]
+    },
+    "state_source": {
+      "description": "A stateful switch, binary_sensor, light, or event.* entity. follow acts on its off->on and on->off changes; toggle and press on every real change of its state (never to or from unavailable/unknown).",
+      "type": "object",
+      "required": ["type", "entity_id"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "state"
+        },
+        "entity_id": {
+          "$ref": "#/$defs/entity_id"
+        }
+      }
+    },
+    "event_source": {
+      "description": "A stateless button that fires an HA event. event_data, when given, must match a subset of the event's data, as in an HA event trigger.",
+      "type": "object",
+      "required": ["type", "event_type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "event"
+        },
+        "event_type": {
+          "type": "string",
+          "pattern": "^\\S+$"
+        },
+        "event_data": {
+          "type": "object"
+        }
+      }
+    },
+    "device_source": {
+      "description": "A device automation trigger, for a button that exposes no entity or event to bind instead. The one place the config holds a device id, confined to reading a button press: it appears only in the generated trigger and never addresses a light. trigger holds the device trigger's own fields (domain, type, subtype, ...), as HA's automation editor writes them.",
+      "type": "object",
+      "required": ["type", "device_id", "trigger"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "device"
+        },
+        "device_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "trigger": {
+          "type": "object",
+          "required": ["domain", "type"],
+          "properties": {
+            "domain": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "propertyNames": {
+            "not": {
+              "enum": ["trigger", "platform", "device_id", "id"]
+            }
+          }
         }
       }
     },

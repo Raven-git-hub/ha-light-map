@@ -24,9 +24,12 @@ hard-won, so preserve them.
   Avoid dict/set ordering, timestamps, or other nondeterminism leaking into output.
 - **Entity IDs only, never device IDs.** Device IDs are opaque, break on re-pairing, and
   can't be validated by an entity-existence check. A bulb's `ha_match_key` (its HA
-  entity-registry entry id) is the one opaque HA id the config holds, and it is a match key
-  for the snapshot reconcile only: never addressed, validated against HA, or written into
-  generated artefacts. Anything that addresses a bulb uses its `entity_id`.
+  entity-registry entry id) is an opaque HA id the config holds as a match key for the
+  snapshot reconcile only: never addressed, validated against HA, or written into generated
+  artefacts. Anything that addresses a bulb uses its `entity_id`. The one carved-out
+  exception: a hard switch's `device` source names a `device_id`, only to read a button
+  press from a device that exposes nothing else; it appears only in that `lm_hard_`
+  trigger and never addresses a light.
 - **The soft switch owns power.** The soft→bulb bridge is the only thing that powers a bulb
   on or off. Modules act only by commanding soft switches and setting brightness, and every
   brightness command is guarded on "soft is on" so it can never power a bulb on.
@@ -65,7 +68,10 @@ Presence Rules can be added without touching the trunk:
 3. **Observation subscription.** The module reads the platform's per-bulb heartbeats and
    reactive events; it never scrapes HA itself.
 4. **Actuation vocabulary.** A module acts only by commanding soft switches (power) and
-   setting bulb brightness guarded on soft-on, never by powering bulbs directly.
+   setting bulb brightness guarded on soft-on, never by powering bulbs directly. That
+   includes the bridge brightness: a module may supply the `light.turn_on` data the core
+   bridge applies on soft-on for its bulbs (`core.switching.register_bridge_brightness`);
+   core embeds it in the soft-on branch and owns the target and the power.
 
 `app/core` never imports from `app/modules`. Modules are wired in by the composition root,
 `app/main.py`.
@@ -74,8 +80,9 @@ Presence Rules can be added without touching the trunk:
 
 - Module names and paths follow "Repository layout" in `docs/ARCHITECTURE.md` exactly.
   Later phases fill stubs in place; don't rename or move them.
-- HA names: `input_boolean.lm_soft_<id>`, `lm_bridge_<id>`, `lm_hard_<id>` for the switching
-  plane; the adaptive module keeps `al_scene_`, `al_maint_`, `al_active_`, `al_hold_`,
+- HA names: `input_boolean.lm_soft_<bulb_id>` (per bulb only; a switching group has no HA
+  entity), `lm_bridge_<bulb_id>`, `lm_hard_<hard_switch_id>` for the switching plane; the
+  adaptive module keeps `al_scene_`, `al_maint_`, `al_active_`, `al_hold_`,
   `sensor.al_almanac_`, `al_watchdog_`.
 - Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`.
 
@@ -105,4 +112,6 @@ uvicorn app.main:app --port 8099   # then GET /healthz -> {"status":"ok"}
 
 Until cutover (P6) Light Map is built beside the live `ha-adaptive-light`. P0–P4 touch only
 new HA artefacts, and the new bridges stay unbound (no hard switches; bridge not yet
-authoritative). Don't cross that boundary early.
+authoritative). Don't cross that boundary early. Deploying must never drive a bulb: a soft
+switch is set to its bulb's state before its bridge goes live, and nothing in a deploy
+calls a light service.
