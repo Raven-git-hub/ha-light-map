@@ -27,6 +27,11 @@ Area writes (`deploy_areas`) are separate: they make HA's Areas match the commit
 snapshot, through `core.inventory`'s own verified moves, and are refused before anything
 is written when the snapshot is too stale to apply.
 
+`crossover` is the read-only report a deploy preview shows beside the plan: what else in
+HA already drives the bulbs Light Map is about to bridge (foreign automations, scripts,
+scenes, and groups, the live ha-adaptive-light's `al_` automations among them), and the
+names Light Map would generate that something else in HA already holds.
+
 Hard rules:
 
 - Separate lanes: the switching deployer reconciles `lm_*` / `lm_soft_*` and never touches
@@ -55,7 +60,7 @@ from app.core import config as config_mod
 from app.core import generate as generate_mod
 from app.core import inventory, switching
 from app.core.generate import AUTOMATION, in_lane
-from app.core.ha import HAClient
+from app.core.ha import HAClient, HAError
 from app.core.inventory import InventoryError
 
 log = logging.getLogger(__name__)
@@ -93,7 +98,8 @@ async def fetch_live(ha: HAClient, prefix: str, *, expected: Iterable[str] = ())
     is stored but which HA hasn't loaded (no entity, or an `unavailable` one); `unmanaged`
     lists the lane's automations that HA's config API can't see (defined in YAML outside
     automations.yaml, or under an id the API can't address), which a deploy can neither
-    update nor remove.
+    update nor remove; `held` lists the lane's helper entity ids that HA has as entities
+    but not as UI-managed helpers (YAML ones), which a deploy can't create.
 
     HA lists automations only as entities, so one with no entity is found only if its id
     is in `expected`: pass the ids the deploy wants, so that an automation whose entity is
@@ -117,7 +123,21 @@ async def fetch_live(ha: HAClient, prefix: str, *, expected: Iterable[str] = ())
     live[AUTOMATION] = automations
     live["unloaded"] = [i for i in automations if entities.get(i, "unavailable") == "unavailable"]
     live["unmanaged"] = unmanaged
+    live["held"] = _held(states, live, prefix)
     return live
+
+
+def _held(states: Sequence[Mapping[str, Any]], live: Mapping[str, Any], prefix: str) -> list[str]:
+    """The lane's helper entity ids that HA has as entities but not as UI-managed helpers
+    (a YAML input_boolean, say). Creating a helper under one of those ids would land it
+    under `<id>_2` instead, with every generated reference pointing at the other one."""
+    held = []
+    for state in states:
+        domain, _, object_id = str(state.get("entity_id", "")).partition(".")
+        known = live.get(domain, {})
+        if domain in HELPER_DOMAINS and in_lane(object_id, prefix) and object_id not in known:
+            held.append(f"{domain}.{object_id}")
+    return sorted(held)
 
 
 async def _helpers(ha: HAClient, domain: str, prefix: str) -> dict[str, dict[str, Any]]:
@@ -182,6 +202,7 @@ def plan(
     problems: list[str] = []
     helper_writes: list[dict[str, Any]] = []
     helper_removes: list[dict[str, Any]] = []
+    held = set(live.get("held", []))
     for domain in HELPER_DOMAINS:
         want: Mapping[str, Any] = desired.get(domain, {})
         have = {k: v for k, v in live.get(domain, {}).items() if in_lane(k, prefix)}
@@ -196,6 +217,14 @@ def plan(
                     f"{domain}.{slug}"
                 )
             if item_id not in have:
+                if f"{domain}.{item_id}" in held:
+                    # Caught here, before anything is written: found only after the create
+                    # (see `apply`), it would leave a stray `<id>_2` helper behind.
+                    problems.append(
+                        f"{domain}.{item_id} already exists in HA but is not a UI-managed "
+                        f"helper (defined in YAML?), so HA would create {domain}.{item_id}_2: "
+                        "remove it there"
+                    )
                 helper_writes.append(_step("create", domain, item_id, fields))
             elif dict(have[item_id]) != dict(fields):
                 helper_writes.append(_step("update", domain, item_id, fields))
@@ -520,6 +549,119 @@ def summarise(
     }
 
 
+# -- The crossover report --------------------------------------------------------------
+
+# The kinds of HA item `search/related` lists that can drive a light.
+_DRIVERS = ("automation", "script", "scene")
+
+
+async def crossover(ha: HAClient, config: Mapping[str, Any]) -> dict[str, Any]:
+    """What else in HA touches the switching plane: read-only, for a deploy preview.
+
+    - `drivers`: automations, scripts, and scenes outside the `lm_` lane that name a
+      mapped bulb (`{entity_id, kind, name, id, adaptive_light, bulbs}`), found through
+      HA's search. `adaptive_light` marks the live ha-adaptive-light's own (`al_`)
+      automations. Until cutover these keep driving the bulbs beside Light Map. One that
+      targets a whole Area or device, rather than the bulb's entity_id, isn't found.
+    - `groups`: HA groups (light groups, old-style groups) with mapped bulbs among their
+      members (`{entity_id, name, bulbs}`). Commanding a group drives its members too.
+    - `collisions`: names Light Map would generate that something else in HA holds: a
+      soft switch's entity id taken by a helper it can't manage (the deploy refuses), or
+      an automation entity id taken by another automation (ours would load as `..._2`).
+    - `errors`: what couldn't be checked (an HA without `search/related`, say), so an
+      empty report is never mistaken for a clean one.
+    """
+    bulbs = switching.references(config)["bulbs"]
+    states = await ha.get_states()
+    by_entity = {s.get("entity_id"): s for s in states}
+    ours = {
+        str(s.get("entity_id"))
+        for s in states
+        if str(s.get("entity_id", "")).startswith("automation.")
+        and in_lane(str((s.get("attributes") or {}).get("id", "")), switching.PREFIX)
+    }
+
+    def name(entity_id: str) -> str:
+        attributes = (by_entity.get(entity_id) or {}).get("attributes") or {}
+        return str(attributes.get("friendly_name") or entity_id)
+
+    drivers: dict[str, dict[str, Any]] = {}
+    group_bulbs: dict[str, set[str]] = {}
+    errors: list[str] = []
+    for bulb in bulbs:
+        try:
+            related = await ha.search_related("entity", bulb)
+        except HAError as exc:
+            # Every search would fail the same way; say so once.
+            errors.append(
+                f"could not ask HA which automations, scripts and scenes use the bulbs: {exc}"
+            )
+            break
+        for kind in _DRIVERS:
+            for entity_id in related.get(kind, []):
+                if entity_id in ours:
+                    continue
+                attributes = (by_entity.get(entity_id) or {}).get("attributes") or {}
+                driver = drivers.setdefault(
+                    entity_id,
+                    {
+                        "entity_id": entity_id,
+                        "kind": kind,
+                        "name": name(entity_id),
+                        "id": attributes.get("id"),
+                        "adaptive_light": _is_adaptive_light(entity_id, attributes.get("id")),
+                        "bulbs": [],
+                    },
+                )
+                driver["bulbs"].append(bulb)
+        for entity_id in related.get("group", []):
+            group_bulbs.setdefault(entity_id, set()).add(bulb)
+    for state in states:
+        members = (state.get("attributes") or {}).get("entity_id")
+        if isinstance(members, list) and state.get("entity_id") not in bulbs:
+            for bulb in set(members) & set(bulbs):
+                group_bulbs.setdefault(str(state.get("entity_id")), set()).add(bulb)
+
+    desired = generate_mod.generate(config, switching.PREFIX)
+    helpers = {
+        domain: {i.get("id") for i in await ha.list_helpers(domain)} for domain in HELPER_DOMAINS
+    }
+    collisions = []
+    for domain in HELPER_DOMAINS:
+        for item_id in desired.get(domain, {}):
+            if f"{domain}.{item_id}" in by_entity and item_id not in helpers[domain]:
+                collisions.append(
+                    f"{domain}.{item_id} is already in HA but isn't a UI-managed helper "
+                    "(defined in YAML?): the deploy is refused until it is removed"
+                )
+    for automation in desired.get(AUTOMATION, []):
+        entity_id = f"automation.{automation['id']}"
+        held_by = ((by_entity.get(entity_id) or {}).get("attributes") or {}).get("id")
+        if entity_id in by_entity and held_by != automation["id"]:
+            other = f"automation id {held_by}" if held_by else "an automation with no id"
+            collisions.append(
+                f"{entity_id} is already taken by {other} ({name(entity_id)}): Light Map's "
+                f"{automation['id']} would load as {entity_id}_2"
+            )
+    return {
+        "drivers": sorted(
+            drivers.values(), key=lambda d: (not d["adaptive_light"], d["entity_id"])
+        ),
+        "groups": [
+            {"entity_id": entity_id, "name": name(entity_id), "bulbs": sorted(found)}
+            for entity_id, found in sorted(group_bulbs.items())
+        ],
+        "collisions": collisions,
+        "errors": errors,
+    }
+
+
+def _is_adaptive_light(entity_id: str, automation_id: Any) -> bool:
+    """The live ha-adaptive-light names its artefacts `al_...` (scene, maintenance,
+    watchdog automations)."""
+    return entity_id.startswith("automation.al_") or str(automation_id or "").startswith("al_")
+
+
 # -- Area writes -----------------------------------------------------------------------
 
 
@@ -570,7 +712,12 @@ def plan_areas(
     return {"moves": moves, "problems": problems}
 
 
-async def deploy_areas(ha: HAClient, config: Mapping[str, Any]) -> dict[str, Any]:
+async def deploy_areas(
+    ha: HAClient,
+    config: Mapping[str, Any],
+    *,
+    expected: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Write the committed room snapshot to HA's Area/entity registry and verify it.
 
     Moves each bulb whose light HA has in another Area (or none) into the Area its room
@@ -578,9 +725,14 @@ async def deploy_areas(ha: HAClient, config: Mapping[str, Any]) -> dict[str, Any
     creates, renames, or deletes an Area, and touches no entity but the bulbs' own.
     Every move is checked first (`plan_areas`, then `inventory.check_move` for each): if
     any would be refused, nothing is written. Returns `{moves}`. To preview, call
-    `plan_areas` with HA's Areas and lights.
+    `plan_areas` with HA's Areas and lights, and pass the previewed moves as `expected`:
+    if HA has changed since, so the moves differ, nothing is written.
     """
     deploy_plan = plan_areas(config, await ha.list_areas(), await inventory.discover_lights(ha))
+    if expected is not None and deploy_plan["moves"] != list(expected):
+        raise DeployError(
+            "HA's Areas have changed since the preview: preview the Area writes again"
+        )
     problems = list(deploy_plan["problems"])
     for move in deploy_plan["moves"]:
         reason = await inventory.check_move(ha, move["entity_id"], move["to"])

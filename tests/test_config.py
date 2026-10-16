@@ -543,6 +543,31 @@ class LoadSaveTest(unittest.TestCase):
         self.assertEqual([p.name for p in self.dir.iterdir()], ["config.json"])
 
 
+class CheckedTest(unittest.TestCase):
+    def test_returns_what_save_would_write_without_writing(self):
+        doc = committed_config()
+        doc["homeassistant"]["access_token"] = "secret"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            result = config.checked(doc)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            config.save(path, doc)
+            self.assertEqual(json.loads(path.read_text()), result)
+        self.assertNotIn("access_token", result["homeassistant"])
+
+    def test_refuses_what_load_would(self):
+        doc = committed_config()
+        doc["version"] = 99
+        with self.assertRaises(ConfigError):
+            config.checked(doc)
+        with self.assertRaises(ConfigError):
+            config.checked({**committed_config(), "system": {"x": math.nan}})
+
+    def test_new_id(self):
+        self.assertEqual(config.new_id("Living Room!", {"living_room"}, "x"), "living_room_2")
+        self.assertEqual(config.new_id("", (), "group"), "group")
+
+
 class ConnectionTest(unittest.TestCase):
     def env(self, **values):
         return mock.patch.dict(os.environ, values, clear=True)

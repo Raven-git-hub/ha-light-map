@@ -128,10 +128,11 @@ app/
                      scene automations.
       runtime.py     The adaptive loop: subscribe to core observation, run the scheduler,
                      fire crossovers, push the almanac.
-static/
+static/              Vanilla JS and CSS, no build step; desktop-oriented, dark.
   index.html         Tab shell: Map, Now, Analysis, Almanac, Config, Log.
-  app.css
-  app.js             (per-view JS/CSS split arrives in later phases)
+  app.css            The theme and the components every view shares.
+  app.js             The shell: tab router, API helper, DOM/notice/dialog helpers.
+  map.css, map.js    The Map tab (P3). Each later view adds its own pair.
 schema/
   config.schema.json The config contract (see "Top-level config shape").
   storage.schema.sql SQLite DDL (see "Storage model").
@@ -141,7 +142,9 @@ tools/
   sweep.py           A year of section-boundary computations, checking for unexpected
                      collapses.
 tests/               Unit tests (stdlib unittest, `python -m unittest`) against fakes and
-                     fixtures; never a real HA.
+                     fixtures; never a real HA. `test_ui.py` also drives the Map in headless
+                     Chromium (`tests/ui/map_ui.cjs`, Node's Playwright) where that is
+                     installed, and is skipped where it isn't.
 Dockerfile
 docker-compose.yml
 .env.example
@@ -216,7 +219,10 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
   At runtime the connection is read from the environment / secrets: `LM_HA_BASE_URL`,
   `LM_HA_TOKEN` (or `LM_HA_TOKEN_FILE`). `LM_HA_BASE_URL`, when set, overrides `base_url`
   (settled in P1): the environment belongs to the deployment, the config to the house. The
-  token comes only from the environment; one found in the config file is ignored.
+  token comes only from the environment; one found in the config file is ignored. The
+  config file itself lives at `LM_CONFIG_PATH` (default `/data/config.json`, on the
+  container's volume); before its first save there is none, and the app starts from a blank
+  config.
 - `system` — observation cadence, reactive window/min-delta, data dir, CSV toggle, event-log
   retention.
 - `rooms[]` — from HA Areas (every Area is a room, with or without lights), each:
@@ -321,6 +327,38 @@ Tables (skeleton):
 
 ---
 
+## HTTP surface (P3)
+
+`app/main.py` serves the Map tab's API under `/api/` (JSON; an error is `{error, detail}`,
+with `problems` when there are several) beside `/healthz` and the static UI. The HA client
+is made in the app's lifespan from the environment, opening no connection until a request
+needs one; without a token the Map still serves the committed config and every HA action
+says why it can't run.
+
+| | |
+| --- | --- |
+| Reads | `GET /api/status`, `/api/map`, `/api/config` (export, token-free), `/api/entities` (hard-switch source picker) |
+| Config edits | `PUT /api/rooms/{room}/adaptive`, `PUT /api/bulbs/{bulb}/hard_switches`, `POST /api/rooms/{room}/groups`, `PUT`/`DELETE /api/rooms/{room}/groups/{group}` |
+| Area edits (HA first) | `POST /api/rooms`, `PUT /api/rooms/{room}/name`, `POST /api/bulbs/{bulb}/move/preview` then `/move` |
+| Previewed actions | `GET /api/sync/preview` then `POST /api/sync`; `GET /api/deploy/preview` then `POST /api/deploy`; `GET /api/areas/preview` then `POST /api/areas/deploy` |
+
+- **Preview, then apply what was shown.** A preview writes nothing and returns a
+  `fingerprint` of what it showed; the apply must carry it, recomputes from fresh state, and
+  is refused (409 `preview_stale`) if the result digests differently. So a deploy, a sync,
+  an Area write or a move is never applied unless it was previewed as it now stands.
+- **Validate-then-write**, every edit; one that also writes HA checks its config first. A
+  config on disk that doesn't load is never overwritten from the Map.
+- **A Map edit commits only its own change** to the snapshot; whatever else HA changed waits
+  for a reviewed sync.
+- **Coexistence.** An edit that makes a hard switch drive something new is refused (409
+  `coexistence`) until the request acknowledges it; the Map warns before saving one and
+  marks every live bulb and group.
+- The switching deploy and the Area writes are separate actions, each previewed.
+
+The details are in `docs/DESIGN.md`, "The Map and its API".
+
+---
+
 ## What ports, what's new, what's reworked
 
 The rebuild is clean structure, not re-derived internals. The hard-won algorithms port
@@ -368,7 +406,10 @@ thing to get right during the parallel build. Deploying the plane never drives a
 soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge
 fires only on its soft switch changing between `off` and `on`. Binding a hard switch in
 the config is the step that makes a bridge authoritative, so leave `hard_switches` empty
-(or bind only switches the live system doesn't use) until cutover.
+(or bind only switches the live system doesn't use) until cutover. The Map warns before
+saving one (the API refuses it unacknowledged), marks every live bulb and group, and the
+deploy preview lists the hard switches it puts live and the automations (the live
+system's `al_` ones among them) that already drive the same bulbs.
 
 ---
 
@@ -385,6 +426,11 @@ the config is the step that makes a bridge authoritative, so leave `hard_switche
   internal boundary with adaptive as the only module until Presence Rules lands. So far two
   seams are code-level registries the composition root fills: `register_namespace`
   (artefacts) and `register_bridge_brightness` (P2).
+- **Hard-switch source picker** (P3) — the Map offers `state` (an entity picker) and `event`
+  (an event-type field) as the primary paths and keeps `device` as an advanced, manual
+  entry (device id and trigger copied from an HA automation), so device ids never travel to
+  the UI from the device registry. Revisit if buttons that expose only device triggers
+  turn out to be common: a picker would need a device-trigger listing from HA.
 - **Out-of-band power changes** — a bulb switched outside the plane (HA's UI, a vendor app,
   voice, or the live `ha-adaptive-light` during the parallel build) leaves its soft switch
   stale, so the next toggle may first "turn off" a bulb that is already off. Whether the

@@ -5,8 +5,9 @@ truth; update both together.
 
 Parallel build in this repo: the live `ha-adaptive-light` keeps running untouched until P6.
 
-**Current phase: P2** (P0 and P1 done; P1.1 added stable bulb identity across HA entity
-renames; P2 builds the switching plane and its deploy).
+**Current phase: P3** (P0–P2 done: the scaffold, the inventory with stable bulb identity
+across HA entity renames, and the switching plane with its deploy; P3 builds the Map tab,
+its HTTP API, and the deploy-with-preview flow).
 
 ## Phases
 
@@ -34,4 +35,5 @@ can coexist with the live adaptive system, as long as the new bridges stay unbou
 switches; bridge not yet authoritative) until cutover. That coexistence boundary is the main
 thing to get right during the parallel build. Deploying the plane never drives a bulb (each
 soft switch starts at its bulb's state before its bridge goes live); binding a hard switch
-in the config is the step that makes a bridge authoritative.
+in the config is the step that makes a bridge authoritative. The Map warns before saving
+one and marks every live bulb and group.

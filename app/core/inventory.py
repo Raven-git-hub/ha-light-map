@@ -22,8 +22,16 @@ are discovered and flagged but are not bulbs: driving a group as well as its mem
 would command the same lights twice. Use the member lights and a switching group.
 
 The edits that write to HA (`move_bulb`, `create_room`, `rename_room`) change only HA's
-registries. Follow them with `sync_snapshot`, then save the config, to commit the change to
-the snapshot.
+registries. To commit one to the snapshot, apply the same change to the config with
+`snapshot_with_move` / `snapshot_with_area` and save it: they record exactly that change,
+the way a sync would, without also committing whatever else HA has changed meanwhile
+(which `sync_snapshot` would, and which must be reviewed through `snapshot_changes` first).
+
+The rest of the Map's edits are pure config edits (`set_adaptive`, `set_hard_switches`,
+the switching-group edits): HA is not touched, and the result is checked when it is saved
+(validate-then-write). `live_bulbs` and `going_live` say which bulbs a hard switch makes
+live: during the parallel build (P0-P4) binding one is the step that makes a bridge
+authoritative beside the live ha-adaptive-light, so the Map warns before saving one.
 
 Hard rules:
 
@@ -53,6 +61,10 @@ UNASSIGNED = "Unassigned"
 
 class InventoryError(Exception):
     """A registry edit was refused before writing, or did not land as asked."""
+
+
+class NotFound(ConfigError):
+    """An edit named a room, bulb, or switching group the config doesn't have."""
 
 
 # -- Reading ---------------------------------------------------------------------------
@@ -295,7 +307,140 @@ async def _verify_area(ha: HAClient, area_id: Any, name: str, what: str) -> dict
     return dict(landed)
 
 
-# -- Switching groups (config edits only) ----------------------------------------------
+# -- Committing an HA edit to the snapshot ---------------------------------------------
+
+
+def snapshot_with_move(
+    config: Mapping[str, Any], bulb_id: str, room_id: str | None
+) -> dict[str, Any]:
+    """Return the config with one bulb moved to a room (None: Unassigned) in the snapshot,
+    exactly as a sync would record it once `move_bulb` has written it to HA.
+
+    The bulb keeps its id and hard switches; it is dropped from the switching groups and
+    learning units of the room it leaves (a group or unit left empty goes with it), which
+    `config.snapshot_changes` reports. Nothing else in the snapshot changes. Pure.
+    """
+    _, bulb = find_bulb(config, bulb_id)
+    area_id = None if room_id is None else _room(config, room_id)["ha_area_id"]
+    areas, lights = config_mod.snapshot_as_ha(config)
+    for light in lights:
+        if light["entity_id"] == bulb["entity_id"]:
+            light["area_id"] = area_id
+    return config_mod.reconcile_area_snapshot(config, areas, lights)
+
+
+def snapshot_with_area(config: Mapping[str, Any], area: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the config with the room for one HA Area added (a created Area) or renamed
+    (a renamed one), as a sync would record it. `area` is the verified Area entry
+    `create_room` / `rename_room` return. Nothing else in the snapshot changes. Pure."""
+    areas, lights = config_mod.snapshot_as_ha(config)
+    areas = [a for a in areas if a["area_id"] != area.get("area_id")]
+    areas.append({"area_id": area.get("area_id"), "name": area.get("name")})
+    return config_mod.reconcile_area_snapshot(config, areas, lights)
+
+
+# -- Config edits (pure: HA is not touched) ----------------------------------------------
+
+
+def find_bulb(
+    config: Mapping[str, Any], bulb_id: str
+) -> tuple[Mapping[str, Any] | None, Mapping[str, Any]]:
+    """Return a bulb and its room (None for an Unassigned bulb); NotFound if no bulb has
+    that id."""
+    for room in config.get("rooms", []):
+        for bulb in room.get("bulbs", []):
+            if bulb.get("id") == bulb_id:
+                return room, bulb
+    for bulb in config.get("unassigned", []):
+        if bulb.get("id") == bulb_id:
+            return None, bulb
+    raise NotFound(f"no bulb '{bulb_id}'")
+
+
+def set_adaptive(config: Mapping[str, Any], room_id: str, adaptive: bool) -> dict[str, Any]:
+    """Return the config with a room flagged adaptive, or not.
+
+    Flagging it gives the room a minimal adaptive_config (`{}`, which the defaults fill
+    on save) unless it has one; the adaptive editor arrives with the module (P5).
+    Unflagging drops adaptive_config, which the schema forbids on a room that isn't
+    adaptive: `adaptive_config_content` says what that would lose.
+    """
+    doc = copy.deepcopy(dict(config))
+    room = _room(doc, room_id)
+    room["adaptive"] = bool(adaptive)
+    if adaptive:
+        room.setdefault("adaptive_config", {})
+    else:
+        room.pop("adaptive_config", None)
+    return doc
+
+
+def adaptive_config_content(room: Mapping[str, Any]) -> list[str]:
+    """What unflagging a room would throw away: one line per part of its adaptive_config
+    that holds more than the defaults. Empty when it holds nothing anyone set."""
+    adaptive_config = room.get("adaptive_config")
+    if not isinstance(adaptive_config, Mapping):
+        return []
+    found = []
+    for key, value in sorted(adaptive_config.items()):
+        if key == "schedule_profile":
+            if value != config_mod.DEFAULT_PROFILE:
+                found.append(f"schedule profile '{value}'")
+        elif key == "learning_units":
+            if value:
+                found.append(f"{len(value)} learning unit(s)")
+        elif isinstance(value, list):
+            if value:
+                found.append(f"{key.replace('_', ' ')}: {', '.join(map(str, value))}")
+        elif value not in (None, {}, ""):
+            found.append(key.replace("_", " "))
+    return found
+
+
+def set_hard_switches(
+    config: Mapping[str, Any], owner_id: str, bindings: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Return the config with the hard switches bound to a bulb or a switching group
+    replaced by `bindings` (bulb and group ids share one namespace, so `owner_id` names
+    either).
+
+    A binding with no `id` gets a new one, from the owner and its name, unused by any
+    other hard switch; keys whose value is None are dropped (a form's empty `turn`). A
+    pure edit: whether the bindings are well formed, and free of feedback loops, is checked
+    when the config is saved (validate-then-write).
+    """
+    doc = copy.deepcopy(dict(config))
+    owner = _owner(doc, owner_id)
+    cleaned = [
+        {key: copy.deepcopy(value) for key, value in dict(b).items() if value is not None}
+        for b in bindings
+    ]
+    taken = {
+        h.get("id")
+        for holder in _holders(doc)
+        if holder is not owner
+        for h in holder.get("hard_switches", [])
+    }
+    taken |= {b.get("id") for b in cleaned if b.get("id")}
+    for binding in cleaned:
+        if not binding.get("id"):
+            name = str(binding.get("name") or "switch")
+            slug = config_mod.new_id(name, (), "switch")
+            text = slug if slug.startswith(owner_id) else f"{owner_id} {name}"
+            binding["id"] = config_mod.new_id(text, taken, f"{owner_id}_switch")
+            taken.add(binding["id"])
+    owner["hard_switches"] = cleaned
+    return doc
+
+
+def new_group_id(config: Mapping[str, Any], name: str) -> str:
+    """An id for a new switching group, from its name: unused by any bulb or group (the
+    two share one namespace)."""
+    taken = {b.get("id") for _, b in _all_bulbs(config)}
+    taken |= {
+        g.get("id") for room in config.get("rooms", []) for g in room.get("switching_groups", [])
+    }
+    return config_mod.new_id(name, taken, "group")
 
 
 def upsert_switching_group(
@@ -333,13 +478,108 @@ def remove_switching_group(
     groups = room.get("switching_groups", [])
     remaining = [g for g in groups if g.get("id") != group_id]
     if len(remaining) == len(groups):
-        raise ConfigError(f"room '{room_id}' has no switching group '{group_id}'")
+        raise NotFound(f"room '{room_id}' has no switching group '{group_id}'")
     room["switching_groups"] = remaining
     return doc
 
 
-def _room(doc: dict[str, Any], room_id: str) -> dict[str, Any]:
+# -- Which bulbs are live --------------------------------------------------------------
+
+
+def hard_switch_targets(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Every hard-switch binding by id: `{binding, owner, bulbs}`, where `owner` is
+    `{kind: bulb | group, id, name}` and `bulbs` the sorted ids of the bulbs it switches
+    (the bulb itself, or every member of the group)."""
+    found: dict[str, dict[str, Any]] = {}
+    for _, bulb in _all_bulbs(config):
+        owner = {"kind": "bulb", "id": bulb.get("id"), "name": bulb.get("name")}
+        for binding in bulb.get("hard_switches", []):
+            found[binding.get("id")] = {
+                "binding": binding,
+                "owner": owner,
+                "bulbs": [bulb.get("id")],
+            }
+    for room in config.get("rooms", []):
+        for group in room.get("switching_groups", []):
+            owner = {"kind": "group", "id": group.get("id"), "name": group.get("name")}
+            for binding in group.get("hard_switches", []):
+                found[binding.get("id")] = {
+                    "binding": binding,
+                    "owner": owner,
+                    "bulbs": sorted(group.get("members", [])),
+                }
+    return dict(sorted(found.items(), key=lambda item: str(item[0])))
+
+
+def live_bulbs(config: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Bulb id -> the ids of the hard switches that drive it, directly or through a
+    switching group, for every bulb with at least one.
+
+    Such a bulb's bridge is authoritative once deployed: pressing the switch drives the
+    bulb through Light Map. During the parallel build that happens beside the live
+    ha-adaptive-light, which is why the Map marks these bulbs "live".
+    """
+    live: dict[str, list[str]] = {}
+    for binding_id, target in hard_switch_targets(config).items():
+        for bulb_id in target["bulbs"]:
+            live.setdefault(bulb_id, []).append(binding_id)
+    return dict(sorted(live.items()))
+
+
+def going_live(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The hard switches an edit from `before` to `after` makes drive something new: a new
+    binding, one whose source, mode or turn changed, or one that now switches bulbs it
+    didn't (a member added to its group). Each `{id, name, owner, bulbs}` (`bulbs`: every
+    bulb it switches), by id. Renaming a binding, removing one, or removing a bulb from
+    one makes nothing newly live and isn't listed."""
+
+    def acts(binding: Mapping[str, Any]) -> tuple[Any, ...]:
+        return (binding.get("source"), binding.get("mode"), binding.get("turn"))
+
+    old = hard_switch_targets(before)
+    changes = []
+    for binding_id, target in hard_switch_targets(after).items():
+        previous = old.get(binding_id)
+        if (
+            previous is None
+            or acts(previous["binding"]) != acts(target["binding"])
+            or set(target["bulbs"]) - set(previous["bulbs"])
+        ):
+            changes.append(
+                {
+                    "id": binding_id,
+                    "name": target["binding"].get("name"),
+                    "owner": target["owner"],
+                    "bulbs": target["bulbs"],
+                }
+            )
+    return changes
+
+
+def _all_bulbs(config: Mapping[str, Any]) -> list[tuple[Mapping[str, Any] | None, Any]]:
+    found: list[tuple[Mapping[str, Any] | None, Any]] = [
+        (room, bulb) for room in config.get("rooms", []) for bulb in room.get("bulbs", [])
+    ]
+    return found + [(None, bulb) for bulb in config.get("unassigned", [])]
+
+
+def _holders(doc: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Everything a hard switch can be bound to: every bulb and switching group."""
+    holders = [bulb for _, bulb in _all_bulbs(doc)]
+    for room in doc.get("rooms", []):
+        holders += room.get("switching_groups", [])
+    return holders
+
+
+def _owner(doc: dict[str, Any], owner_id: str) -> dict[str, Any]:
+    owner = next((h for h in _holders(doc) if h.get("id") == owner_id), None)
+    if owner is None:
+        raise NotFound(f"no bulb or switching group '{owner_id}'")
+    return owner
+
+
+def _room(doc: Mapping[str, Any], room_id: str) -> Any:
     room = next((r for r in doc.get("rooms", []) if r.get("id") == room_id), None)
     if room is None:
-        raise ConfigError(f"no room '{room_id}'")
+        raise NotFound(f"no room '{room_id}'")
     return room

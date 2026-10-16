@@ -460,20 +460,28 @@ def _dangling(
 
 
 def save(path: Path, config: Mapping[str, Any]) -> None:
-    """Validate-then-write: strip the token, validate fully, then atomically replace the
-    file at `path`.
+    """Validate-then-write: strip the token, validate fully (`checked`), then atomically
+    replace the file at `path`. What lands on disk is the normalised (migrated, defaulted)
+    document.
+    """
+    _atomic_write(Path(path), _dumps(checked(config)))
+
+
+def checked(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Run `save`'s validation without writing: return exactly what `save` would write, or
+    raise ConfigError.
 
     "Fully" means the whole load pipeline, run on exactly what JSON will carry to disk: a
     document that passes the schema but that `load` would still refuse (say, a version
-    from a newer Light Map) must not be able to replace one that loads. What lands on disk
-    is the normalised (migrated, defaulted) document.
+    from a newer Light Map) must not be able to replace one that loads. An edit that also
+    writes to HA (moving a bulb, say) checks its config here first, so the config write
+    that follows the HA write can't be the step that fails.
     """
-    path = Path(path)
     try:
         carried = json.loads(_dumps(redact(config)))
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"the config is not representable as JSON: {exc}") from exc
-    _atomic_write(path, _dumps(loads(carried)))
+    return loads(carried)
 
 
 def redact(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -668,6 +676,48 @@ def reconcile_area_snapshot(
     doc["rooms"] = rooms
     doc["unassigned"] = place(old_unassigned, None)
     return doc
+
+
+def snapshot_as_ha(
+    config: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The Areas and lights that reproduce the committed snapshot as it stands: one Area
+    per room (its `ha_area_id` and name) and one light per bulb, in its room's Area or in
+    none.
+
+    Reconciling a config against its own `snapshot_as_ha` changes nothing. Changing one
+    input first (a light's Area, a new or renamed Area) commits exactly that change, the
+    way a sync would (a moved bulb's memberships pruned, a new Area's room id derived),
+    without picking up anything else HA has changed meanwhile. That is how an edit made
+    from the Map lands in the snapshot after its HA write: a full sync there would also
+    commit every unrelated change in HA, unreviewed.
+    """
+    areas: list[dict[str, Any]] = []
+    lights: list[dict[str, Any]] = []
+
+    def add(bulbs: Any, area_id: str | None) -> None:
+        for bulb in _dicts(bulbs):
+            lights.append(
+                {
+                    "entity_id": bulb.get("entity_id"),
+                    "ha_match_key": bulb.get("ha_match_key"),
+                    "name": bulb.get("name"),
+                    "area_id": area_id,
+                    "is_group": False,
+                }
+            )
+
+    for room in _dicts(config.get("rooms", [])):
+        areas.append({"area_id": room.get("ha_area_id"), "name": room.get("name")})
+        add(room.get("bulbs", []), room.get("ha_area_id"))
+    add(config.get("unassigned", []), None)
+    return areas, lights
+
+
+def new_id(text: str, taken: Iterable[Any], fallback: str) -> str:
+    """A schema slug made from `text` (or `fallback`), suffixed `_2`, `_3`, ... until it is
+    not in `taken`: how the Map names a new switching group or hard switch."""
+    return _unique(_slugify(text, fallback), set(taken))
 
 
 def _prune_members(room: dict[str, Any]) -> None:

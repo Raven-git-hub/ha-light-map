@@ -5,7 +5,7 @@ import copy
 import unittest
 from unittest import mock
 
-from app.core import config, deploy, generate, switching
+from app.core import config, deploy, generate, inventory, switching
 from app.core.config import ConfigError
 from app.core.deploy import DeployError
 from tests.fakes import FakeHA, committed_config
@@ -356,7 +356,8 @@ class LaneTest(unittest.IsolatedAsyncioTestCase):
         ha = self.foreign_ha()
         live = await deploy.fetch_live(ha, "lm")
         self.assertEqual(
-            live, {"input_boolean": {}, "automation": {}, "unloaded": [], "unmanaged": []}
+            live,
+            {"input_boolean": {}, "automation": {}, "unloaded": [], "unmanaged": [], "held": []},
         )
         al = await deploy.fetch_live(ha, "al")
         self.assertEqual(sorted(al["input_boolean"]), ["al_active_lounge", "al_hold_lounge"])
@@ -535,10 +536,21 @@ class RefusalTest(unittest.IsolatedAsyncioTestCase):
             deploy.plan("lm", desired, {})
         self.assertIn("would make HA create input_boolean.porch_soft", str(caught.exception))
 
-    async def test_a_helper_id_already_taken_and_the_recovery(self):
-        ha = FakeHA(yaml_helpers=("lm_soft_porch",))
+    async def test_a_helper_id_held_by_a_yaml_helper_is_refused_before_writing(self):
+        await self.assert_refused(
+            FakeHA(yaml_helpers=("lm_soft_porch",)),
+            committed_config(),
+            "input_boolean.lm_soft_porch already exists in HA but is not a UI-managed helper",
+        )
+
+    async def test_a_helper_id_taken_after_planning_and_the_recovery(self):
+        # Taken between the plan and the create (or held where HA's states don't show it):
+        # the created id is still checked, and the stray is reconciled later.
+        ha = FakeHA()
+        deploy_plan = await deploy.prepare(ha, committed_config(), "lm")
+        ha.yaml_helpers.add("lm_soft_porch")
         with self.assertRaises(DeployError) as caught:
-            await deploy.deploy(ha, committed_config(), "lm", delay=0)
+            await deploy.apply(ha, deploy_plan)
         self.assertIn("created input_boolean.lm_soft_porch_2 instead", str(caught.exception))
         self.assertEqual(ha.automations, {})  # it stopped before any automation
         # Once the collision is resolved in HA, the next deploy reconciles, stray and all.
@@ -646,6 +658,125 @@ class DeployAreasTest(unittest.IsolatedAsyncioTestCase):
                 "problems": [],
             },
         )
+
+
+class CrossoverTest(unittest.IsolatedAsyncioTestCase):
+    """The read-only report of what else in HA touches the plane's bulbs."""
+
+    OLD_SCENE = {
+        "id": "al_scene_lounge_day",
+        "alias": "AL scene lounge day",
+        "triggers": [],
+        "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.chandelier_1"}}],
+    }
+    PORCH = {
+        "id": "1700000000000",
+        "alias": "Porch at dusk",
+        "triggers": [],
+        "actions": [{"action": "light.turn_on", "target": {"entity_id": ["light.porch"]}}],
+    }
+
+    async def test_foreign_drivers_and_groups(self):
+        ha = FakeHA(
+            automations=[self.PORCH, self.OLD_SCENE],
+            related={"light.kitchen_strip": {"script": ["script.cooking"], "area": ["kitchen"]}},
+        )
+        await deploy.deploy(ha, committed_config(), "lm", delay=0)  # our bridges name bulbs too
+        mark = len(ha.calls)
+        report = await deploy.crossover(ha, committed_config())
+        self.assertEqual(writes(ha, mark), [])
+        self.assertEqual(
+            report["drivers"],
+            [
+                {
+                    "entity_id": "automation.al_scene_lounge_day",
+                    "kind": "automation",
+                    "name": "al_scene_lounge_day",
+                    "id": "al_scene_lounge_day",
+                    "adaptive_light": True,
+                    "bulbs": ["light.chandelier_1"],
+                },
+                {
+                    "entity_id": "automation.1700000000000",
+                    "kind": "automation",
+                    "name": "1700000000000",
+                    "id": "1700000000000",
+                    "adaptive_light": False,
+                    "bulbs": ["light.porch"],
+                },
+                {
+                    "entity_id": "script.cooking",
+                    "kind": "script",
+                    "name": "script.cooking",
+                    "id": None,
+                    "adaptive_light": False,
+                    "bulbs": ["light.kitchen_strip"],
+                },
+            ],
+        )
+        self.assertEqual(
+            report["groups"],
+            [
+                {
+                    "entity_id": "light.living_room_group",
+                    "name": "Living room lights",
+                    "bulbs": ["light.chandelier_1", "light.chandelier_2", "light.chandelier_3"],
+                }
+            ],
+        )
+        self.assertEqual((report["collisions"], report["errors"]), ([], []))
+
+    async def test_name_collisions(self):
+        ha = FakeHA(
+            yaml_helpers=("lm_soft_porch",),
+            automations=[{"id": "1700000000001", "alias": "x", "triggers": [], "actions": []}],
+        )
+        # A user automation whose entity id is the one Light Map's bridge would take.
+        ha.states.append(
+            {
+                "entity_id": "automation.lm_bridge_porch",
+                "state": "on",
+                "attributes": {"friendly_name": "My porch", "id": "1700000000001"},
+            }
+        )
+        report = await deploy.crossover(ha, committed_config())
+        self.assertEqual(
+            report["collisions"],
+            [
+                "input_boolean.lm_soft_porch is already in HA but isn't a UI-managed helper "
+                "(defined in YAML?): the deploy is refused until it is removed",
+                "automation.lm_bridge_porch is already taken by automation id 1700000000001 "
+                "(My porch): Light Map's lm_bridge_porch would load as automation.lm_bridge_porch_2",
+            ],
+        )
+
+    async def test_an_ha_without_search_says_so(self):
+        report = await deploy.crossover(FakeHA(search_fails=True), committed_config())
+        self.assertEqual(report["drivers"], [])
+        self.assertEqual(len(report["errors"]), 1)
+        self.assertIn("could not ask HA", report["errors"][0])
+        # The groups come from HA's states, so they are still found.
+        self.assertEqual(len(report["groups"]), 1)
+
+
+class DeployAreasExpectedTest(unittest.IsolatedAsyncioTestCase):
+    async def test_writes_only_what_was_previewed(self):
+        ha = FakeHA()
+        entry = next(e for e in ha.entities if e["entity_id"] == "light.reading_lamp")
+        entry["area_id"] = "kitchen"
+        preview = deploy.plan_areas(
+            committed_config(), await ha.list_areas(), await inventory.discover_lights(ha)
+        )
+        # HA moves on after the preview: nothing is written.
+        next(e for e in ha.entities if e["entity_id"] == "light.porch")["area_id"] = "garage"
+        with self.assertRaises(DeployError) as caught:
+            await deploy.deploy_areas(ha, committed_config(), expected=preview["moves"])
+        self.assertIn("changed since the preview", str(caught.exception))
+        self.assertEqual(ha.writes, [])
+        entry_porch = next(e for e in ha.entities if e["entity_id"] == "light.porch")
+        entry_porch["area_id"] = None
+        result = await deploy.deploy_areas(ha, committed_config(), expected=preview["moves"])
+        self.assertEqual(result["moves"], preview["moves"])
 
 
 if __name__ == "__main__":
