@@ -1,0 +1,281 @@
+"""app.core.inventory against a fake HAClient."""
+
+import unittest
+
+from app.core import config, inventory
+from app.core.config import ConfigError
+from app.core.inventory import InventoryError
+from tests.fakes import FakeHA, committed_config
+
+
+def by_id(lights):
+    return {item["entity_id"]: item for item in lights}
+
+
+class DiscoverTest(unittest.IsolatedAsyncioTestCase):
+    async def test_every_light_joined_to_its_effective_area(self):
+        lights = await inventory.discover_lights(FakeHA())
+        self.assertEqual(
+            [(x["entity_id"], x["area_id"], x["area_inherited"]) for x in lights],
+            [
+                ("light.chandelier_1", "living_room", True),
+                ("light.chandelier_2", "living_room", True),
+                ("light.chandelier_3", "living_room", True),
+                ("light.counter_lamp", "kitchen", False),
+                ("light.kitchen_strip", "kitchen", True),
+                ("light.legacy_yaml", None, False),
+                ("light.living_room_group", "living_room", False),
+                ("light.porch", None, False),
+                ("light.reading_lamp", "living_room", False),
+            ],
+        )
+
+    async def test_light_records(self):
+        lights = by_id(await inventory.discover_lights(FakeHA()))
+        self.assertEqual(
+            lights["light.chandelier_3"],
+            {
+                "entity_id": "light.chandelier_3",
+                "name": "Chandelier 3",
+                "state": "unavailable",
+                "area_id": "living_room",
+                "area_inherited": True,
+                "in_registry": True,
+                "is_group": False,
+            },
+        )
+        self.assertFalse(lights["light.legacy_yaml"]["in_registry"])
+        self.assertTrue(lights["light.living_room_group"]["is_group"])
+
+    async def test_device_ids_never_leave_the_join(self):
+        lights = await inventory.discover_lights(FakeHA())
+        self.assertNotIn("dev_", repr(lights))
+
+    def test_hue_rooms_count_as_groups(self):
+        self.assertTrue(inventory.is_light_group({"is_hue_group": True}))
+        self.assertFalse(inventory.is_light_group({"friendly_name": "Lamp"}))
+
+
+class ReadRoomsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_rooms_from_areas_plus_unassigned(self):
+        rooms = await inventory.read_rooms(FakeHA())
+        self.assertEqual(
+            [(r["area_id"], r["name"], [b["entity_id"] for b in r["bulbs"]]) for r in rooms],
+            [
+                ("garage", "Garage", []),
+                ("kitchen", "Kitchen", ["light.counter_lamp", "light.kitchen_strip"]),
+                (
+                    "living_room",
+                    "Living Room",
+                    [
+                        "light.chandelier_1",
+                        "light.chandelier_2",
+                        "light.chandelier_3",
+                        "light.reading_lamp",
+                    ],
+                ),
+                (None, "Unassigned", ["light.legacy_yaml", "light.porch"]),
+            ],
+        )
+
+    async def test_unassigned_is_always_present(self):
+        ha = FakeHA(states=[], entities=[])
+        rooms = await inventory.read_rooms(ha)
+        self.assertEqual(rooms[-1], {"area_id": None, "name": "Unassigned", "bulbs": []})
+
+
+class SyncSnapshotTest(unittest.IsolatedAsyncioTestCase):
+    async def test_reads_ha_and_reconciles_without_writing(self):
+        ha = FakeHA()
+        result = await inventory.sync_snapshot(ha, committed_config())
+        self.assertEqual(ha.writes, [])
+        expected = config.reconcile_area_snapshot(
+            committed_config(), ha.areas, await inventory.discover_lights(FakeHA())
+        )
+        self.assertEqual(result, expected)
+        self.assertEqual(
+            config.snapshot_changes(committed_config(), result),
+            [
+                "room added: 'garage' (Garage, Area garage)",
+                "bulb added: light.counter_lamp -> room 'kitchen'",
+                "bulb added: light.legacy_yaml -> unassigned",
+            ],
+        )
+        config.cross_check(result)
+
+
+class MoveBulbTest(unittest.IsolatedAsyncioTestCase):
+    async def area_of(self, ha, entity_id):
+        return by_id(await inventory.discover_lights(ha))[entity_id]["area_id"]
+
+    async def test_moves_a_bulb_with_its_own_area(self):
+        ha = FakeHA()
+        await inventory.move_bulb(ha, "light.reading_lamp", "kitchen")
+        self.assertEqual(ha.writes, [("set_entity_area", ("light.reading_lamp", "kitchen"))])
+        self.assertEqual(await self.area_of(ha, "light.reading_lamp"), "kitchen")
+
+    async def test_moves_a_bulb_that_inherits_its_area(self):
+        ha = FakeHA()
+        await inventory.move_bulb(ha, "light.chandelier_1", "garage")
+        self.assertEqual(ha.writes, [("set_entity_area", ("light.chandelier_1", "garage"))])
+        self.assertEqual(await self.area_of(ha, "light.chandelier_1"), "garage")
+        self.assertEqual(await self.area_of(ha, "light.chandelier_2"), "living_room")
+
+    async def test_unassigns_a_bulb_whose_device_has_no_area(self):
+        ha = FakeHA()
+        await inventory.move_bulb(ha, "light.reading_lamp", None)
+        self.assertEqual(ha.writes, [("set_entity_area", ("light.reading_lamp", None))])
+        self.assertIsNone(await self.area_of(ha, "light.reading_lamp"))
+
+    async def test_a_bulb_already_there_is_not_written(self):
+        ha = FakeHA()
+        await inventory.move_bulb(ha, "light.chandelier_1", "living_room")
+        await inventory.move_bulb(ha, "light.porch", None)
+        self.assertEqual(ha.writes, [])
+
+    async def assert_refused(self, ha, entity_id, area_id, fragment):
+        with self.assertRaises(InventoryError) as caught:
+            await inventory.move_bulb(ha, entity_id, area_id)
+        self.assertIn(fragment, str(caught.exception))
+        self.assertEqual(ha.writes, [])
+
+    async def test_refuses_an_unknown_area(self):
+        await self.assert_refused(FakeHA(), "light.reading_lamp", "attic", "no HA Area 'attic'")
+
+    async def test_refuses_a_light_with_no_registry_entry(self):
+        await self.assert_refused(
+            FakeHA(), "light.legacy_yaml", "kitchen", "no entity-registry entry"
+        )
+
+    async def test_refuses_a_non_light(self):
+        await self.assert_refused(FakeHA(), "sensor.living_room_lux", "kitchen", "is not a light")
+
+    async def test_refuses_to_unassign_a_bulb_its_device_would_keep(self):
+        await self.assert_refused(
+            FakeHA(), "light.chandelier_1", None, "inherits Area 'living_room' from its device"
+        )
+        # Its own Area is an override; clearing it would drop it back into the device's.
+        await self.assert_refused(
+            FakeHA(), "light.counter_lamp", None, "inherits Area 'living_room' from its device"
+        )
+
+    async def test_a_write_that_does_not_land_is_an_error(self):
+        ha = FakeHA(drop_writes=True)
+        with self.assertRaises(InventoryError) as caught:
+            await inventory.move_bulb(ha, "light.reading_lamp", "kitchen")
+        self.assertIn("did not land", str(caught.exception))
+        self.assertEqual(ha.writes, [("set_entity_area", ("light.reading_lamp", "kitchen"))])
+
+    async def test_verifies_by_re_reading(self):
+        ha = FakeHA()
+        await inventory.move_bulb(ha, "light.reading_lamp", "kitchen")
+        write = ha.calls.index(("set_entity_area", ("light.reading_lamp", "kitchen")))
+        self.assertIn(("get_entity_registry_entry", ("light.reading_lamp",)), ha.calls[write + 1 :])
+
+
+class AreaWritesTest(unittest.IsolatedAsyncioTestCase):
+    async def test_create_room_creates_an_area(self):
+        ha = FakeHA()
+        area = await inventory.create_room(ha, "  Home Office ")
+        self.assertEqual(ha.writes, [("create_area", ("Home Office",))])
+        self.assertEqual((area["area_id"], area["name"]), ("home_office", "Home Office"))
+        rooms = await inventory.read_rooms(ha)
+        self.assertIn("home_office", [r["area_id"] for r in rooms])
+        synced = await inventory.sync_snapshot(ha, committed_config())
+        self.assertEqual(synced["rooms"][-1]["ha_area_id"], "home_office")
+
+    async def test_create_room_refuses_a_taken_or_empty_name(self):
+        for name in ("living room", "LivingRoom", "   "):
+            ha = FakeHA()
+            with self.assertRaises(InventoryError):
+                await inventory.create_room(ha, name)
+            self.assertEqual(ha.writes, [])
+
+    async def test_create_room_that_does_not_land_is_an_error(self):
+        with self.assertRaises(InventoryError):
+            await inventory.create_room(FakeHA(drop_writes=True), "Attic")
+
+    async def test_rename_room_renames_the_area(self):
+        ha = FakeHA()
+        area = await inventory.rename_room(ha, "living_room", "Lounge")
+        self.assertEqual(ha.writes, [("rename_area", ("living_room", "Lounge"))])
+        self.assertEqual(area["name"], "Lounge")
+        synced = await inventory.sync_snapshot(ha, committed_config())
+        self.assertEqual(
+            [(r["id"], r["name"]) for r in synced["rooms"][:1]], [("living_room", "Lounge")]
+        )
+
+    async def test_rename_room_refusals(self):
+        for area_id, name, fragment in (
+            ("attic", "Attic", "no HA Area 'attic'"),
+            ("living_room", "kitchen", "already has an Area named 'Kitchen'"),
+            ("living_room", "", "needs a name"),
+        ):
+            ha = FakeHA()
+            with self.assertRaises(InventoryError) as caught:
+                await inventory.rename_room(ha, area_id, name)
+            self.assertIn(fragment, str(caught.exception))
+            self.assertEqual(ha.writes, [])
+
+    async def test_rename_to_the_same_name_does_not_write(self):
+        ha = FakeHA()
+        await inventory.rename_room(ha, "kitchen", "Kitchen")
+        self.assertEqual(ha.writes, [])
+
+    async def test_rename_that_does_not_land_is_an_error(self):
+        with self.assertRaises(InventoryError):
+            await inventory.rename_room(FakeHA(drop_writes=True), "kitchen", "Galley")
+
+
+class SwitchingGroupEditTest(unittest.TestCase):
+    GROUP = {"id": "chandelier", "name": "Chandelier", "members": ["chandelier_1", "chandelier_2"]}
+
+    def test_upsert_adds_a_group_without_touching_the_input(self):
+        doc = committed_config()
+        result = inventory.upsert_switching_group(doc, "living_room", self.GROUP)
+        self.assertEqual(doc, committed_config())
+        groups = result["rooms"][0]["switching_groups"]
+        self.assertEqual([g["id"] for g in groups], ["living_all", "reading_corner", "chandelier"])
+        config.cross_check(result)
+        groups[-1]["members"].append("x")
+        self.assertEqual(self.GROUP["members"], ["chandelier_1", "chandelier_2"])
+
+    def test_upsert_replaces_by_id_in_place(self):
+        group = {"id": "living_all", "name": "Everything", "members": ["chandelier_1"]}
+        result = inventory.upsert_switching_group(committed_config(), "living_room", group)
+        groups = result["rooms"][0]["switching_groups"]
+        self.assertEqual([g["id"] for g in groups], ["living_all", "reading_corner"])
+        self.assertEqual(groups[0], group)
+
+    def test_upsert_into_a_room_with_no_groups_yet(self):
+        doc = committed_config()
+        del doc["rooms"][1]["switching_groups"]
+        group = {"id": "strip", "name": "Strip", "members": ["kitchen_strip"]}
+        result = inventory.upsert_switching_group(doc, "kitchen", group)
+        self.assertEqual(result["rooms"][1]["switching_groups"], [group])
+
+    def test_upsert_refusals(self):
+        with self.assertRaises(ConfigError):
+            inventory.upsert_switching_group(committed_config(), "attic", self.GROUP)
+        with self.assertRaises(ConfigError):
+            inventory.upsert_switching_group(committed_config(), "living_room", {"name": "No id"})
+
+    def test_a_bad_member_is_caught_when_saving(self):
+        group = {"id": "bad", "name": "Bad", "members": ["kitchen_strip"]}
+        result = inventory.upsert_switching_group(committed_config(), "living_room", group)
+        with self.assertRaises(ConfigError):
+            config.cross_check(result)
+
+    def test_remove(self):
+        doc = committed_config()
+        result = inventory.remove_switching_group(doc, "living_room", "reading_corner")
+        self.assertEqual([g["id"] for g in result["rooms"][0]["switching_groups"]], ["living_all"])
+        self.assertEqual(doc, committed_config())
+        with self.assertRaises(ConfigError):
+            inventory.remove_switching_group(doc, "living_room", "nope")
+        with self.assertRaises(ConfigError):
+            inventory.remove_switching_group(doc, "attic", "living_all")
+
+
+if __name__ == "__main__":
+    unittest.main()

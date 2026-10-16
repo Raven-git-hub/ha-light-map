@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Light Map config",
   "description": "The committed config document. Everything downstream is a pure function of it; learned data (almanacs) is not stored here. See docs/ARCHITECTURE.md (Top-level config shape) and docs/DESIGN.md (Data model).",
-  "$comment": "P0 skeleton: top-level structure and obvious field types only. Deep per-field validation arrives with the config loader (P1) and the adaptive module (P5); cross-references (unique ids; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
+  "$comment": "Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1; system, learning, schedule_profiles and adaptive_config fill in with the observer (P4) and the adaptive module (P5). Cross-references (ids unique within their scope; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
   "type": "object",
   "required": ["version", "rooms", "schedule_profiles"],
   "additionalProperties": false,
@@ -16,14 +16,21 @@
       "$ref": "#/$defs/homeassistant"
     },
     "system": {
-      "description": "Observation cadence, reactive window and min-delta, data dir, CSV toggle, event-log retention. Field names are fixed with the config loader (P1) and the observer (P4).",
+      "description": "Observation cadence, reactive window and min-delta, data dir, CSV toggle, event-log retention. Field names are fixed with the observer (P4), which is the first thing to read them.",
       "type": "object"
     },
     "rooms": {
-      "description": "Rooms, from HA Areas: the committed snapshot of the resolved bulb->room mapping.",
+      "description": "Rooms, from HA Areas: the committed snapshot of the resolved bulb->room mapping. Every HA Area is a room.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/room"
+      }
+    },
+    "unassigned": {
+      "description": "The Unassigned bucket: bulbs whose light has no HA Area. Kept in the snapshot so a bulb's id and hard switches survive while it has no room. Not a room: no switching groups, no module config.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/bulb"
       }
     },
     "schedule_profiles": {
@@ -59,12 +66,15 @@
       "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$"
     },
     "homeassistant": {
-      "description": "HA connection. At runtime the connection is read from LM_HA_BASE_URL and LM_HA_TOKEN (or LM_HA_TOKEN_FILE); whether LM_HA_BASE_URL overrides base_url is decided in P1. Reconnect backoff settings are added with the transport (P1).",
+      "description": "HA connection. LM_HA_BASE_URL, when set, overrides base_url; the token comes only from LM_HA_TOKEN (or LM_HA_TOKEN_FILE). Reconnect backoff settings arrive with the event subscription's reconnect loop (P4).",
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "base_url": {
+          "description": "Used when LM_HA_BASE_URL is not set.",
           "type": "string",
-          "format": "uri"
+          "format": "uri",
+          "pattern": "^https?://\\S+$"
         },
         "access_token": {
           "description": "Never persisted: stripped on save and export, supplied at runtime from the environment or a secrets file.",
@@ -82,9 +92,11 @@
       "additionalProperties": false,
       "properties": {
         "id": {
+          "description": "Stable for the room's life, through Area renames.",
           "$ref": "#/$defs/slug"
         },
         "name": {
+          "description": "Follows the HA Area's name.",
           "type": "string",
           "minLength": 1
         },
@@ -129,7 +141,7 @@
       }
     },
     "bulb": {
-      "description": "One light.* entity, the actuation atom. Its soft-switch helper is implicit (generated).",
+      "description": "One light.* entity, the actuation atom. Its soft-switch helper is implicit (generated). Matched to HA by entity_id; its id and hard switches travel with it when it moves.",
       "type": "object",
       "required": ["id", "name", "entity_id"],
       "additionalProperties": false,
