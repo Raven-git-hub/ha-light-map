@@ -24,9 +24,11 @@ hard-won, so preserve them.
   Avoid dict/set ordering, timestamps, or other nondeterminism leaking into output.
 - **Entity IDs only, never device IDs.** Device IDs are opaque, break on re-pairing, and
   can't be validated by an entity-existence check. A bulb's `ha_match_key` (its HA
-  entity-registry entry id) is an opaque HA id the config holds as a match key for the
-  snapshot reconcile only: never addressed, validated against HA, or written into generated
-  artefacts. Anything that addresses a bulb uses its `entity_id`. The one carved-out
+  entity-registry entry id) is an opaque HA id the config holds as a match key only: the
+  snapshot reconcile matches on it, and an Area write compares it with the registry entry at
+  the bulb's `entity_id` so it never moves a different light. It is never addressed,
+  required to exist in HA, or written into generated artefacts. Anything that addresses a
+  bulb uses its `entity_id`. The one carved-out
   exception: a hard switch's `device` source names a `device_id`, only to read a button
   press from a device that exposes nothing else; it appears only in that `lm_hard_`
   trigger and never addresses a light.

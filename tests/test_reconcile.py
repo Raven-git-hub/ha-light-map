@@ -339,7 +339,8 @@ class StableIdentityTest(unittest.TestCase):
         result = reconcile(lights=lights_with(drop={"light.reading_lamp"}))
         self.assertNotIn("reading_lamp", bulb_ids(room(result, "living_room")))
         self.assertIn(
-            "bulb removed: light.reading_lamp (was in room 'living_room')",
+            "bulb removed: light.reading_lamp (was in room 'living_room'); "
+            "drops hard switch(es): reading_switch",
             config.snapshot_changes(committed_config(), result),
         )
 
@@ -375,7 +376,11 @@ class StableIdentityTest(unittest.TestCase):
         self.assertNotIn("reading_lamp", members)
         changes = config.snapshot_changes(committed_config(), result)
         self.assertIn("bulb added: light.reading_lamp -> room 'living_room'", changes)
-        self.assertIn("bulb removed: light.reading_lamp (was in room 'living_room')", changes)
+        self.assertIn(
+            "bulb removed: light.reading_lamp (was in room 'living_room'); "
+            "drops hard switch(es): reading_switch",
+            changes,
+        )
 
     def test_a_p1_snapshot_matches_by_entity_id_and_records_the_keys(self):
         before = without_keys(committed_config())

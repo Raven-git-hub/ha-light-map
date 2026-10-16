@@ -68,6 +68,30 @@ class ApiCase(unittest.TestCase):
     def assert_unchanged(self, before):
         self.assertEqual(self.path.read_text(), before)
 
+    def version(self, item_id):
+        """The `version` the Map shows for a room, bulb, or switching group: what an edit
+        sends back as `base`."""
+        view = self.client.get("/api/map").json()
+        for room in view["rooms"]:
+            if room["id"] == item_id:
+                return room["version"]
+            for item in [*room["bulbs"], *room["groups"]]:
+                if item["id"] == item_id:
+                    return item["version"]
+        return next((b["version"] for b in view["unassigned"]["bulbs"] if b["id"] == item_id), None)
+
+    def adaptive(self, room_id, adaptive, **extra):
+        body = {"adaptive": adaptive, "base": self.version(room_id), **extra}
+        return self.client.put(f"/api/rooms/{room_id}/adaptive", json=body)
+
+    def bind(self, bulb_id, bindings, **extra):
+        body = {"hard_switches": bindings, "base": self.version(bulb_id), **extra}
+        return self.client.put(f"/api/bulbs/{bulb_id}/hard_switches", json=body)
+
+    def edit_group(self, room_id, group_id, body):
+        body = {"base": self.version(group_id), **body}
+        return self.client.put(f"/api/rooms/{room_id}/groups/{group_id}", json=body)
+
 
 class ReadTest(ApiCase):
     def test_map(self):
@@ -155,6 +179,12 @@ class NoConfigYetTest(ApiCase):
         )
         self.assertEqual(self.client.get("/api/sync/preview").json()["state"], "synced")
 
+    def test_no_room_is_created_before_the_first_sync(self):
+        # It would save a config holding only that room, skipping the reviewed first sync.
+        self.assert_error(self.client.post("/api/rooms", json={"name": "Attic"}), 409, "sync_first")
+        self.assertEqual(self.ha.writes, [])
+        self.assertFalse(self.path.exists())
+
 
 class BrokenConfigTest(ApiCase):
     def initial(self):
@@ -167,7 +197,7 @@ class BrokenConfigTest(ApiCase):
         self.assertTrue(body["problems"])
         self.assertTrue(self.client.get("/api/status").json()["config"]["problems"])
         self.assert_error(
-            self.client.put("/api/rooms/kitchen/adaptive", json={"adaptive": True}),
+            self.client.put("/api/rooms/kitchen/adaptive", json={"adaptive": True, "base": "x"}),
             503,
             "config_broken",
         )
@@ -300,7 +330,7 @@ class RoomTest(ApiCase):
         )
 
     def test_adaptive_on_writes_a_minimal_config(self):
-        response = self.client.put("/api/rooms/kitchen/adaptive", json={"adaptive": True})
+        response = self.adaptive("kitchen", True)
         self.assertEqual(response.status_code, 200, response.text)
         kitchen = self.saved()["rooms"][1]
         self.assertTrue(kitchen["adaptive"])
@@ -318,23 +348,20 @@ class RoomTest(ApiCase):
     def test_adaptive_off_confirms_what_it_drops(self):
         before = self.path.read_text()
         body = self.assert_error(
-            self.client.put("/api/rooms/living_room/adaptive", json={"adaptive": False}),
+            self.adaptive("living_room", False),
             409,
             "confirm_required",
         )
         self.assertIn("2 learning unit(s)", body["drops"])
         self.assert_unchanged(before)
-        response = self.client.put(
-            "/api/rooms/living_room/adaptive",
-            json={"adaptive": False, "discard_adaptive_config": True},
-        )
+        response = self.adaptive("living_room", False, discard_adaptive_config=True)
         self.assertEqual(response.status_code, 200, response.text)
         living = self.saved()["rooms"][0]
         self.assertEqual((living["adaptive"], "adaptive_config" in living), (False, False))
 
     def test_adaptive_off_with_nothing_to_drop_needs_no_confirmation(self):
-        self.client.put("/api/rooms/kitchen/adaptive", json={"adaptive": True})
-        response = self.client.put("/api/rooms/kitchen/adaptive", json={"adaptive": False})
+        self.adaptive("kitchen", True)
+        response = self.adaptive("kitchen", False)
         self.assertEqual(response.status_code, 200, response.text)
 
 
@@ -390,7 +417,7 @@ class MoveTest(ApiCase):
 
     def test_a_stale_preview_is_refused(self):
         preview = self.preview("porch", "kitchen").json()
-        self.client.put("/api/rooms/kitchen/adaptive", json={"adaptive": True})
+        self.adaptive("kitchen", True)
         self.assert_error(
             self.client.post(
                 "/api/bulbs/porch/move",
@@ -401,6 +428,33 @@ class MoveTest(ApiCase):
         )
         self.assertEqual(self.ha.writes, [])
 
+    def test_a_light_that_took_the_bulbs_entity_id_is_never_moved(self):
+        # In HA, the reading lamp's entity was renamed, and an unrelated light now holds its
+        # old entity_id. The snapshot (not synced since) still names light.reading_lamp.
+        self.entity("light.reading_lamp")["entity_id"] = "light.reading_lamp_old"
+        self.ha.entities.append(
+            {
+                "entity_id": "light.reading_lamp",
+                "id": "reg_other",
+                "device_id": None,
+                "area_id": "garage",
+            }
+        )
+        before = self.path.read_text()
+        preview = self.preview("reading_lamp", "kitchen").json()
+        self.assertIn("is not this bulb's light any more", preview["refused"])
+        self.assert_error(
+            self.client.post(
+                "/api/bulbs/reading_lamp/move",
+                json={"room_id": "kitchen", "fingerprint": preview["fingerprint"]},
+            ),
+            409,
+            "refused",
+        )
+        self.assertEqual(self.ha.writes, [])
+        self.assertEqual(self.entity("light.reading_lamp")["area_id"], "garage")
+        self.assert_unchanged(before)
+
     def test_nonsense_moves(self):
         self.assert_error(self.preview("porch", None), 409, "no_change")
         self.assert_error(self.preview("ghost", None), 404, "not_found")
@@ -409,9 +463,7 @@ class MoveTest(ApiCase):
 
 class HardSwitchTest(ApiCase):
     def put(self, bulb, bindings, **extra):
-        return self.client.put(
-            f"/api/bulbs/{bulb}/hard_switches", json={"hard_switches": bindings, **extra}
-        )
+        return self.bind(bulb, bindings, **extra)
 
     def test_binding_a_hard_switch_needs_the_coexistence_acknowledgement(self):
         before = self.path.read_text()
@@ -509,8 +561,18 @@ class HardSwitchTest(ApiCase):
             ["porch_remote_on", "porch_remote_off"],
         )
 
+    def test_a_binding_id_that_is_not_a_string_is_refused_not_a_crash(self):
+        bad = {**BUTTON, "id": ["a"]}
+        self.assert_error(self.put("porch", [bad], acknowledge_live=True), 422, "invalid_config")
+        group = {"name": "G", "members": ["kitchen_strip"], "hard_switches": [bad]}
+        self.assert_error(
+            self.client.post("/api/rooms/kitchen/groups", json={**group, "acknowledge_live": True}),
+            422,
+            "invalid_config",
+        )
+
     def test_unknown_bulb(self):
-        self.assert_error(self.put("ghost", []), 404, "not_found")
+        self.assert_error(self.put("ghost", [], base="x"), 404, "not_found")
         # A group's hard switches are edited with the group.
         self.assert_error(self.put("living_all", []), 404, "not_found")
 
@@ -553,11 +615,11 @@ class GroupTest(ApiCase):
         living_all = committed_config()["rooms"][0]["switching_groups"][0]
         smaller = {**living_all, "members": ["chandelier_1"]}
         self.assertEqual(
-            self.client.put("/api/rooms/living_room/groups/living_all", json=smaller).status_code,
+            self.edit_group("living_room", "living_all", smaller).status_code,
             200,
         )
         self.assert_error(
-            self.client.put("/api/rooms/living_room/groups/living_all", json=living_all),
+            self.edit_group("living_room", "living_all", living_all),
             409,
             "coexistence",
         )
@@ -565,9 +627,10 @@ class GroupTest(ApiCase):
     def test_edit_validation(self):
         before = self.path.read_text()
         body = self.assert_error(
-            self.client.put(
-                "/api/rooms/living_room/groups/reading_corner",
-                json={"name": "Reading corner", "members": ["kitchen_strip"]},
+            self.edit_group(
+                "living_room",
+                "reading_corner",
+                {"name": "Reading corner", "members": ["kitchen_strip"]},
             ),
             422,
             "invalid_config",
@@ -581,23 +644,110 @@ class GroupTest(ApiCase):
             "invalid_config",
         )
         self.assert_error(
-            self.client.put(
-                "/api/rooms/kitchen/groups/living_all", json={"name": "x", "members": []}
-            ),
+            self.edit_group("kitchen", "living_all", {"name": "x", "members": []}),
             404,
             "not_found",
         )
         self.assert_unchanged(before)
 
     def test_delete_a_group(self):
-        response = self.client.delete("/api/rooms/living_room/groups/living_all")
+        base = self.version("living_all")
+        response = self.client.delete(f"/api/rooms/living_room/groups/living_all?base={base}")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(
             [g["id"] for g in self.saved()["rooms"][0]["switching_groups"]], ["reading_corner"]
         )
         self.assert_error(
-            self.client.delete("/api/rooms/living_room/groups/living_all"), 404, "not_found"
+            self.client.delete(f"/api/rooms/living_room/groups/living_all?base={base}"),
+            404,
+            "not_found",
         )
+
+
+class StaleEditTest(ApiCase):
+    """An edit carries the version the Map showed; one made against an older version is
+    refused rather than silently reverting what changed meanwhile."""
+
+    def test_a_save_from_a_stale_view_never_reverts_another_edit(self):
+        seen = self.version("porch")
+        self.assertEqual(self.bind("porch", [BUTTON], acknowledge_live=True).status_code, 200)
+        before = self.path.read_text()
+        body = self.assert_error(
+            self.client.put(
+                "/api/bulbs/porch/hard_switches", json={"hard_switches": [], "base": seen}
+            ),
+            409,
+            "edit_stale",
+        )
+        self.assertIn("reload the Map", body["detail"])
+        self.assert_unchanged(before)
+
+    def test_an_acknowledgement_covers_only_what_was_shown(self):
+        seen = self.version("reading_lamp")
+        self.assertEqual(self.bind("reading_lamp", []).status_code, 200)  # another tab
+        stale_view = committed_config()["rooms"][0]["bulbs"][3]["hard_switches"]
+        new_one = {**BUTTON, "name": "New one"}
+        self.assert_error(
+            self.client.put(
+                "/api/bulbs/reading_lamp/hard_switches",
+                json={
+                    "hard_switches": [*stale_view, new_one],
+                    "acknowledge_live": True,
+                    "base": seen,
+                },
+            ),
+            409,
+            "edit_stale",
+        )
+        self.assertEqual(self.saved()["rooms"][0]["bulbs"][3]["hard_switches"], [])
+
+    def test_a_confirmed_discard_covers_only_what_was_listed(self):
+        seen = self.version("living_room")
+        doc = self.saved()
+        doc["rooms"][0]["adaptive_config"]["presence_sensors"] = ["binary_sensor.sofa"]
+        config.save(self.path, doc)  # changed by hand since the Map listed the drops
+        self.assert_error(
+            self.client.put(
+                "/api/rooms/living_room/adaptive",
+                json={"adaptive": False, "discard_adaptive_config": True, "base": seen},
+            ),
+            409,
+            "edit_stale",
+        )
+        self.assertIn("adaptive_config", self.saved()["rooms"][0])
+
+    def test_groups_too(self):
+        seen = self.version("reading_corner")
+        group = committed_config()["rooms"][0]["switching_groups"][1]
+        self.assertEqual(
+            self.edit_group("living_room", "reading_corner", {**group, "name": "Nook"}).status_code,
+            200,
+        )
+        self.assert_error(
+            self.client.put(
+                "/api/rooms/living_room/groups/reading_corner", json={**group, "base": seen}
+            ),
+            409,
+            "edit_stale",
+        )
+        self.assert_error(
+            self.client.delete(f"/api/rooms/living_room/groups/reading_corner?base={seen}"),
+            409,
+            "edit_stale",
+        )
+        self.assert_error(
+            self.client.put("/api/rooms/living_room/groups/reading_corner", json=group),
+            409,
+            "edit_stale",
+        )
+
+    def test_an_edit_must_say_what_it_was_made_against(self):
+        body = self.assert_error(
+            self.client.put("/api/bulbs/porch/hard_switches", json={"hard_switches": []}),
+            422,
+            "bad_request",
+        )
+        self.assertEqual(body["problems"], ["body/base: Field required"])
 
 
 class DeployTest(ApiCase):
@@ -656,10 +806,7 @@ class DeployTest(ApiCase):
     def test_apply_is_refused_without_or_with_a_stale_preview(self):
         self.assert_error(self.client.post("/api/deploy", json={}), 422, "bad_request")
         preview = self.client.get("/api/deploy/preview").json()
-        self.client.put(
-            "/api/bulbs/porch/hard_switches",
-            json={"hard_switches": [BUTTON], "acknowledge_live": True},
-        )
+        self.bind("porch", [BUTTON], acknowledge_live=True)
         self.assert_error(
             self.client.post("/api/deploy", json={"fingerprint": preview["fingerprint"]}),
             409,
@@ -732,6 +879,50 @@ class AreasTest(ApiCase):
         self.assertEqual(self.entity("light.reading_lamp")["area_id"], "living_room")
         # Area writes create no helpers or automations.
         self.assertEqual([call[0] for call in self.ha.writes], ["set_entity_area"])
+
+    def test_a_write_that_stops_partway_says_what_landed(self):
+        self.entity("light.reading_lamp")["area_id"] = "kitchen"
+        self.entity("light.porch")["area_id"] = "garage"
+        preview = self.client.get("/api/areas/preview").json()
+        self.assertEqual([m["bulb"] for m in preview["moves"]], ["porch", "reading_lamp"])
+        write = self.ha.set_entity_area
+
+        async def second_does_not_land(entity_id, area_id):
+            if entity_id == "light.reading_lamp":
+                self.ha.calls.append(("set_entity_area", (entity_id, area_id)))
+                return {}
+            return await write(entity_id, area_id)
+
+        self.ha.set_entity_area = second_does_not_land
+        body = self.assert_error(
+            self.client.post("/api/areas/deploy", json={"fingerprint": preview["fingerprint"]}),
+            502,
+            "areas_partial",
+        )
+        self.assertIn("1 of 2 moves landed", body["detail"])
+        self.assertEqual([m["bulb"] for m in body["written"]], ["porch"])
+        self.assertIn("did not land", body["problems"][0])
+        self.assertIsNone(self.entity("light.porch")["area_id"])  # that one really moved
+
+    def test_a_light_that_took_a_bulbs_entity_id_refuses_the_lot(self):
+        self.entity("light.reading_lamp")["entity_id"] = "light.reading_lamp_old"
+        self.ha.entities.append(
+            {
+                "entity_id": "light.reading_lamp",
+                "id": "reg_other",
+                "device_id": None,
+                "area_id": "garage",
+            }
+        )
+        preview = self.client.get("/api/areas/preview").json()
+        self.assertFalse(preview["ready"])
+        self.assertIn("is not this bulb's light any more", " ".join(preview["problems"]))
+        self.assert_error(
+            self.client.post("/api/areas/deploy", json={"fingerprint": preview["fingerprint"]}),
+            409,
+            "deploy_refused",
+        )
+        self.assertEqual(self.ha.writes, [])
 
     def test_a_stale_or_refused_area_write(self):
         self.entity("light.reading_lamp")["area_id"] = "kitchen"

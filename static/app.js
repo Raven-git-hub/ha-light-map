@@ -120,16 +120,32 @@ const LM = (() => {
 
   // A modal on a native <dialog>. `build(close)` returns its body; `close(value)` removes
   // it and resolves the promise with `value` (undefined when dismissed).
+  //
+  // `close.during(promise)` marks the dialog busy while a request runs: dismissing it
+  // (Esc, ×, Cancel) is ignored until the request settles. Dismissed mid-save, the dialog
+  // would resolve undefined, the save's own result would be dropped, and the Map would go
+  // on showing what was there before a write that did land.
   function dialog(title, build, { wide = false, name } = {}) {
     return new Promise((resolve) => {
       const el = h("dialog", { class: wide ? "modal wide" : "modal", dataset: { dialog: name || "" } });
       let settled = false;
+      let busy = 0;
       const close = (value) => {
-        if (settled) return;
+        if (settled || (value === undefined && busy)) return;
         settled = true;
         el.close();
         el.remove();
         resolve(value);
+      };
+      close.during = async (promise) => {
+        busy += 1;
+        el.classList.add("busy");
+        try {
+          return await promise;
+        } finally {
+          busy -= 1;
+          if (!busy) el.classList.remove("busy");
+        }
       };
       el.addEventListener("cancel", (event) => {
         event.preventDefault();

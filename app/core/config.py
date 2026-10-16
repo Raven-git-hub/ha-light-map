@@ -39,9 +39,9 @@ Hard rules:
   a proposal, `snapshot_changes` lists what it would change, and nothing is written until
   the result is saved.
 - Entity IDs only, never device IDs. A bulb's `ha_match_key` (its entity-registry entry
-  id) is the opaque HA id the config holds for matching, and it is a match key for the
-  reconcile only: never addressed, validated against HA, or written into generated
-  artefacts. The one carved-out exception is a hard switch's `device` source, which names
+  id) is the opaque HA id the config holds for matching: the reconcile matches on it, and
+  an Area write compares it with HA's registry entry before moving a light. It is never
+  addressed, required to exist in HA, or written into generated artefacts. The one carved-out exception is a hard switch's `device` source, which names
   a device id only to read a button press from a device exposing nothing else.
 - A hard switch can't be wired into a feedback loop: its source may not be one of Light
   Map's own entities, a `toggle` may not take a bulb Light Map drives as its source, and
@@ -580,7 +580,11 @@ def reconcile_area_snapshot(
     rooms = []
     for room in old_rooms:
         if room.get("ha_area_id") in area_names:
-            room["name"] = area_names[room["ha_area_id"]]
+            # Compared stripped, as the Area's name was: a snapshot name with stray spaces
+            # (a hand edit) would otherwise be "renamed" by every reconcile, including the
+            # one that commits a Map edit (`snapshot_as_ha`), unpreviewed.
+            if str(room.get("name", "")).strip() != area_names[room["ha_area_id"]]:
+                room["name"] = area_names[room["ha_area_id"]]
             rooms.append(room)
     linked = {room["ha_area_id"] for room in rooms}
     room_ids = {room.get("id") for room in rooms}
@@ -791,7 +795,10 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
         changes.append(f"bulb added: {bulb.get('entity_id')} -> {where}")
     for bulb_id in sorted(bulbs_before.keys() - bulbs_after.keys(), key=by_entity(bulbs_before)):
         where, bulb = bulbs_before[bulb_id]
-        changes.append(f"bulb removed: {bulb.get('entity_id')} (was in {where})")
+        changes.append(
+            f"bulb removed: {bulb.get('entity_id')} (was in {where})"
+            + _drops_hard_switches(bulb)
+        )
     keys_recorded = 0
     for bulb_id in sorted(bulbs_before.keys() & bulbs_after.keys(), key=by_entity(bulbs_after)):
         (old_where, old), (new_where, new) = bulbs_before[bulb_id], bulbs_after[bulb_id]
@@ -818,7 +825,10 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
         ):
             for set_id in sorted(old_sets, key=str):
                 if set_id not in new_sets:
-                    changes.append(f"{label} removed: '{room_id}/{set_id}'")
+                    changes.append(
+                        f"{label} removed: '{room_id}/{set_id}'"
+                        + _drops_hard_switches(old_sets[set_id])
+                    )
                     continue
                 kept = set(new_sets[set_id].get("members", []))
                 gone = [str(m) for m in old_sets[set_id].get("members", []) if m not in kept]
@@ -827,6 +837,13 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
                         f"{label} '{room_id}/{set_id}': members dropped: {', '.join(gone)}"
                     )
     return changes
+
+
+def _drops_hard_switches(holder: Mapping[str, Any]) -> str:
+    """The hard switches a removed bulb or switching group takes with it, named: they go
+    from the config, and the next deploy removes their automations."""
+    ids = [str(h.get("id")) for h in _dicts(holder.get("hard_switches", []))]
+    return f"; drops hard switch(es): {', '.join(ids)}" if ids else ""
 
 
 # -- Helpers ---------------------------------------------------------------------------

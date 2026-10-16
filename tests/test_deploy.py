@@ -540,7 +540,8 @@ class RefusalTest(unittest.IsolatedAsyncioTestCase):
         await self.assert_refused(
             FakeHA(yaml_helpers=("lm_soft_porch",)),
             committed_config(),
-            "input_boolean.lm_soft_porch already exists in HA but is not a UI-managed helper",
+            "input_boolean.lm_soft_porch already exists in HA but is not one of Light Map's "
+            "UI-managed helpers",
         )
 
     async def test_a_helper_id_taken_after_planning_and_the_recovery(self):
@@ -743,8 +744,9 @@ class CrossoverTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             report["collisions"],
             [
-                "input_boolean.lm_soft_porch is already in HA but isn't a UI-managed helper "
-                "(defined in YAML?): the deploy is refused until it is removed",
+                "input_boolean.lm_soft_porch is already in HA but isn't one of Light Map's "
+                "UI-managed helpers (a YAML helper, or another helper's entity renamed to it?): "
+                "the deploy is refused until the id is freed",
                 "automation.lm_bridge_porch is already taken by automation id 1700000000001 "
                 "(My porch): Light Map's lm_bridge_porch would load as automation.lm_bridge_porch_2",
             ],
@@ -769,9 +771,10 @@ class DeployAreasExpectedTest(unittest.IsolatedAsyncioTestCase):
         )
         # HA moves on after the preview: nothing is written.
         next(e for e in ha.entities if e["entity_id"] == "light.porch")["area_id"] = "garage"
-        with self.assertRaises(DeployError) as caught:
+        with self.assertRaises(deploy.StalePreview) as caught:
             await deploy.deploy_areas(ha, committed_config(), expected=preview["moves"])
         self.assertIn("changed since the preview", str(caught.exception))
+        self.assertIsNone(caught.exception.written)
         self.assertEqual(ha.writes, [])
         entry_porch = next(e for e in ha.entities if e["entity_id"] == "light.porch")
         entry_porch["area_id"] = None

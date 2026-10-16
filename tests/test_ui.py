@@ -76,7 +76,7 @@ class StaticTest(unittest.TestCase):
             calls |= set(API_CALL.findall(script.read_text(encoding="utf-8")))
         self.assertGreaterEqual(len(calls), 15)
         for method, path in sorted(calls):
-            concrete = re.sub(r"\$\{[^}]*\}", "x", path)
+            concrete = re.sub(r"\$\{[^}]*\}", "x", path).partition("?")[0]
             with self.subTest(f"{method} {path}"):
                 self.assertTrue(
                     any(method in methods and regex.match(concrete) for methods, regex in routes),
@@ -95,12 +95,16 @@ class StaticTest(unittest.TestCase):
         # Names come from Home Assistant: text goes in as text nodes, never as HTML.
         for script in STATIC.glob("*.js"):
             text = script.read_text(encoding="utf-8")
-            self.assertNotRegex(text, r"\.(innerHTML|outerHTML)\s*=|insertAdjacentHTML", script.name)
+            self.assertNotRegex(
+                text, r"\.(innerHTML|outerHTML)\s*=|insertAdjacentHTML", script.name
+            )
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_the_scripts_parse(self):
         for script in [*STATIC.glob("*.js"), SCRIPT]:
-            result = subprocess.run(["node", "--check", str(script)], capture_output=True, text=True)
+            result = subprocess.run(
+                ["node", "--check", str(script)], capture_output=True, text=True
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
 
 
@@ -136,12 +140,14 @@ class BrowserTest(unittest.TestCase):
             self.assertTrue(lines, result.stderr)
             report = json.loads(lines[-1])
             self.assertTrue(report["ok"], json.dumps(report, indent=2) + result.stderr)
-            self.assertEqual(len(report["steps"]), 12)
+            self.assertEqual(len(report["steps"]), 13)
 
             # What the clicks did, as the server and the fake HA saw it.
             saved = json.loads(path.read_text())
             kitchen = next(r for r in saved["rooms"] if r["id"] == "kitchen")
-            self.assertEqual([b["id"] for b in kitchen["bulbs"]], ["kitchen_strip", "porch", "counter_lamp"])
+            self.assertEqual(
+                [b["id"] for b in kitchen["bulbs"]], ["kitchen_strip", "porch", "counter_lamp"]
+            )
             porch = kitchen["bulbs"][1]
             self.assertEqual(
                 porch["hard_switches"],
@@ -157,12 +163,22 @@ class BrowserTest(unittest.TestCase):
             self.assertEqual(kitchen["bulbs"][0]["hard_switches"], [])  # that popup was cancelled
             self.assertEqual(
                 kitchen["switching_groups"],
-                [{"id": "kitchen_all", "name": "Kitchen all", "members": ["kitchen_strip"], "hard_switches": []}],
+                [
+                    {
+                        "id": "kitchen_all",
+                        "name": "Kitchen all",
+                        "members": ["kitchen_strip"],
+                        "hard_switches": [],
+                    }
+                ],
             )
             self.assertTrue(kitchen["adaptive"])
             self.assertIn("garage", [r["id"] for r in saved["rooms"]])
             living = next(r for r in saved["rooms"] if r["id"] == "living_room")
             self.assertIn("adaptive_config", living)  # the untick was cancelled
+            # The stale popup's empty list didn't overwrite the other tab's binding.
+            chandelier = next(b for b in living["bulbs"] if b["id"] == "chandelier_1")
+            self.assertEqual([h["name"] for h in chandelier["hard_switches"]], ["Other tab"])
             porch_entry = next(e for e in ha.entities if e["entity_id"] == "light.porch")
             self.assertEqual(porch_entry["area_id"], "kitchen")
             self.assertIn("lm_hard_porch_button", ha.automations)

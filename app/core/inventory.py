@@ -187,15 +187,18 @@ async def sync_snapshot(ha: HAClient, config: Mapping[str, Any]) -> dict[str, An
 # -- Writing back to HA ----------------------------------------------------------------
 
 
-async def move_bulb(ha: HAClient, entity_id: str, area_id: str | None) -> None:
+async def move_bulb(
+    ha: HAClient, entity_id: str, area_id: str | None, *, match_key: str | None = None
+) -> None:
     """Write a bulb's room change back to HA as an Area reassignment.
 
     `area_id` None moves the bulb to Unassigned. Refused, without writing, when the light
-    has no registry entry, the Area doesn't exist, or the bulb would stay in its device's
-    Area anyway (`check_move` says so in advance). Verified by re-reading the registry;
-    raises InventoryError if the bulb did not end up where asked.
+    has no registry entry, the Area doesn't exist, the bulb would stay in its device's
+    Area anyway, or (given the bulb's `match_key`) the light now at `entity_id` is a
+    different registry entry (`check_move` says so in advance). Verified by re-reading the
+    registry; raises InventoryError if the bulb did not end up where asked.
     """
-    if await _preflight(ha, entity_id, area_id):
+    if await _preflight(ha, entity_id, area_id, match_key):
         return
     await ha.set_entity_area(entity_id, area_id)
     # Verified by re-reading rather than trusting the write's echo.
@@ -208,18 +211,22 @@ async def move_bulb(ha: HAClient, entity_id: str, area_id: str | None) -> None:
         )
 
 
-async def check_move(ha: HAClient, entity_id: str, area_id: str | None) -> str | None:
+async def check_move(
+    ha: HAClient, entity_id: str, area_id: str | None, *, match_key: str | None = None
+) -> str | None:
     """Why `move_bulb` would refuse this move, or None if it would go ahead (or the bulb
     is already there). Reads HA, writes nothing: lets a caller moving several bulbs
     refuse the lot before writing any (see `core.deploy.deploy_areas`)."""
     try:
-        await _preflight(ha, entity_id, area_id)
+        await _preflight(ha, entity_id, area_id, match_key)
     except InventoryError as exc:
         return str(exc)
     return None
 
 
-async def _preflight(ha: HAClient, entity_id: str, area_id: str | None) -> bool:
+async def _preflight(
+    ha: HAClient, entity_id: str, area_id: str | None, match_key: str | None = None
+) -> bool:
     """Check a move before writing it: raise InventoryError if it must be refused, return
     True if the bulb is already where it was asked to go."""
     if not entity_id.startswith("light."):
@@ -228,6 +235,15 @@ async def _preflight(ha: HAClient, entity_id: str, area_id: str | None) -> bool:
     if entry is None:
         raise InventoryError(
             f"{entity_id} has no entity-registry entry (no unique_id), so HA can't give it an Area"
+        )
+    if match_key is not None and entry.get("id") != match_key:
+        # The snapshot addresses the bulb by entity_id. If the bulb's light was renamed in
+        # HA and another light has taken its old entity_id, writing would move that other
+        # light, and the snapshot would record the bulb as moved. The match key is the
+        # bulb's identity (see "Bulb identity" in docs/DESIGN.md): compare, never address.
+        raise InventoryError(
+            f"{entity_id} is not this bulb's light any more (it was renamed in HA, and "
+            "another light has its old entity_id); sync from HA first"
         )
     if area_id is not None and area_id not in {a.get("area_id") for a in await ha.list_areas()}:
         raise InventoryError(f"there is no HA Area '{area_id}'")
@@ -421,12 +437,15 @@ def set_hard_switches(
         if holder is not owner
         for h in holder.get("hard_switches", [])
     }
-    taken |= {b.get("id") for b in cleaned if b.get("id")}
+    # Only string ids: anything else is the schema's to refuse when the edit is saved, and
+    # must not fail here first (a list can't go in a set).
+    taken |= {b["id"] for b in cleaned if isinstance(b.get("id"), str) and b["id"]}
     for binding in cleaned:
         if not binding.get("id"):
             name = str(binding.get("name") or "switch")
             slug = config_mod.new_id(name, (), "switch")
-            text = slug if slug.startswith(owner_id) else f"{owner_id} {name}"
+            mine = slug == owner_id or slug.startswith(f"{owner_id}_")
+            text = slug if mine else f"{owner_id} {name}"
             binding["id"] = config_mod.new_id(text, taken, f"{owner_id}_switch")
             taken.add(binding["id"])
     owner["hard_switches"] = cleaned

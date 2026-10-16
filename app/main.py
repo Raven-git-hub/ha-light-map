@@ -22,7 +22,10 @@ deploys. Everything under /api/ answers JSON; an error is `{error, detail, ...}`
   switch can take as its source).
 - Config edits, each validate-then-write: `PUT /api/rooms/{room}/adaptive`,
   `PUT /api/bulbs/{bulb}/hard_switches`, `POST /api/rooms/{room}/groups`,
-  `PUT|DELETE /api/rooms/{room}/groups/{group}`.
+  `PUT|DELETE /api/rooms/{room}/groups/{group}`. Each edit of something that exists
+  carries the `version` the Map showed for it as `base`, and is refused (409
+  `edit_stale`) if it has changed since: a save from a stale tab never silently reverts
+  another edit, and an acknowledgement or confirmation covers only what was shown.
 - Area edits, which change HA first (verified) and then commit exactly that change to the
   snapshot: `POST /api/rooms` (create the Area), `PUT /api/rooms/{room}/name` (rename it),
   `POST /api/bulbs/{bulb}/move/preview` then `.../move` (reassign the bulb's Area).
@@ -34,13 +37,19 @@ deploys. Everything under /api/ answers JSON; an error is `{error, detail, ...}`
 
 Hard rules:
 
-- Config writes are validate-then-write (`config.save`); an edit that also writes to HA
-  checks its config (`config.checked`) before the HA write, so the config write after it
-  can't be the step that fails on validation. A config on disk that doesn't load is never
-  overwritten from here: every write is refused until it is fixed by hand.
+- Config writes are validate-then-write (`config.save`). A move checks its config
+  (`config.checked`) before its HA write, so the config write after it can't be the step
+  that fails on validation; creating or renaming a room adds or renames one empty room,
+  which can't invalidate the config, and is validated before it is saved. A config on disk
+  that doesn't load is never overwritten from here: every write is refused until it is
+  fixed by hand, and nothing is written to HA from the Map before the first reviewed sync
+  has saved one.
 - Area writes are previewed, verified, and never destructive by surprise: a Map edit
   commits only its own change to the snapshot; anything else HA changed waits for a sync,
-  whose changes are shown before they are saved.
+  whose changes are shown before they are saved. A move never writes a light whose
+  registry entry isn't the bulb's (its `ha_match_key`, compared, never addressed), and an
+  Area write that stops partway says which moves landed (502 `areas_partial`) rather than
+  reporting a refusal.
 - The deploy preview is mandatory before apply (the fingerprint), and the switching
   deploy and the Area writes are separate actions.
 - Coexistence (until cutover, P6): binding a hard switch makes its bulbs' bridges live
@@ -68,7 +77,7 @@ from pydantic import BaseModel, Field
 from app.core import config as config_mod
 from app.core import deploy, inventory, switching
 from app.core.config import ConfigError
-from app.core.deploy import DeployError
+from app.core.deploy import DeployError, StalePreview
 from app.core.ha import HAAuthError, HAClient, HAError
 from app.core.inventory import InventoryError, NotFound
 
@@ -189,6 +198,7 @@ class RoomName(BaseModel):
 class AdaptiveFlag(BaseModel):
     adaptive: bool
     discard_adaptive_config: bool = False
+    base: str
 
 
 class Move(BaseModel):
@@ -204,6 +214,7 @@ class HardSwitches(BaseModel):
     # their shape has one definition (schema/config.schema.json), not a second one here.
     hard_switches: list[dict[str, Any]]
     acknowledge_live: bool = False
+    base: str
 
 
 class Group(BaseModel):
@@ -211,6 +222,7 @@ class Group(BaseModel):
     members: list[str]
     hard_switches: list[dict[str, Any]] = Field(default_factory=list)
     acknowledge_live: bool = False
+    base: str | None = None  # required when editing an existing group
 
 
 # -- Wiring ----------------------------------------------------------------------------
@@ -247,6 +259,36 @@ def _write(request: Request, doc: Mapping[str, Any], *, after_ha: str | None = N
         ) from exc
 
 
+def _check_base(seen: str | None, current: str, what: str) -> None:
+    """Refuse an edit made against a `version` other than the current one: another tab, or
+    a sync, changed the thing after the Map showed it. Edits replace whole lists (a bulb's
+    hard switches, a group's members), so saving the stale view would silently undo the
+    other change, and an acknowledgement or confirmation given for the old view would
+    cover what the user never saw."""
+    if seen != current:
+        raise ApiError(
+            409,
+            "edit_stale",
+            f"{what} has changed since the Map showed it (in another tab, or by a sync): "
+            "reload the Map and make the edit again.",
+        )
+
+
+# The `version` the Map shows for each editable thing, which an edit sends back as `base`.
+
+
+def bulb_version(bulb: Mapping[str, Any]) -> str:
+    return fingerprint(bulb.get("hard_switches", []))
+
+
+def group_version(group: Mapping[str, Any]) -> str:
+    return fingerprint({k: group.get(k) for k in ("name", "members", "hard_switches")})
+
+
+def room_version(room: Mapping[str, Any]) -> str:
+    return fingerprint({"adaptive": room.get("adaptive"), "config": room.get("adaptive_config")})
+
+
 def _commit(
     request: Request, before: Mapping[str, Any], after: Mapping[str, Any], acknowledge: bool
 ) -> dict[str, Any]:
@@ -276,6 +318,7 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
             "id": bulb_id,
             "name": bulb["name"],
             "entity_id": bulb["entity_id"],
+            "version": bulb_version(bulb),
             "soft": switching.soft_entity(bulb_id),
             "hard_switches": bulb.get("hard_switches", []),
             "groups": groups_of.get(bulb_id, []),
@@ -302,6 +345,7 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
                 "id": room["id"],
                 "name": room["name"],
                 "ha_area_id": room["ha_area_id"],
+                "version": room_version(room),
                 "adaptive": room["adaptive"],
                 "adaptive_config": room.get("adaptive_config"),
                 "adaptive_drops": inventory.adaptive_config_content(room),
@@ -309,6 +353,7 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
                 "groups": [
                     {
                         "id": g["id"],
+                        "version": group_version(g),
                         "name": g["name"],
                         "members": g["members"],
                         "hard_switches": g.get("hard_switches", []),
@@ -458,10 +503,18 @@ def _stale(what: str) -> ApiError:
 @router.post("/rooms", status_code=201)
 async def create_room(request: Request, body: RoomName) -> dict[str, Any]:
     """Create a room by creating its HA Area (verified), then commit that room alone to the
-    snapshot."""
+    snapshot. Refused (409 `sync_first`) before the first sync has saved a config: that
+    would save a config holding only this room, skipping the review of everything else."""
     ha = _ha(request)
     async with _store(request).lock:
         doc = _store(request).read()
+        if not _store(request).exists():
+            raise ApiError(
+                409,
+                "sync_first",
+                "No config has been saved yet: sync from HA first, so the rooms it builds "
+                "are reviewed before anything is saved.",
+            )
         area = await inventory.create_room(ha, body.name)
         proposed = inventory.snapshot_with_area(doc, area)
         _write(request, proposed, after_ha=f"Area {area['name']!r} was created")
@@ -488,10 +541,12 @@ async def rename_room(request: Request, room_id: str, body: RoomName) -> dict[st
 async def set_adaptive(request: Request, room_id: str, body: AdaptiveFlag) -> dict[str, Any]:
     """Flag a room adaptive (it gets a minimal adaptive_config; the editor arrives in P5)
     or not. Unflagging a room whose adaptive_config holds anything is refused (409
-    `confirm_required`, with what would be dropped) unless `discard_adaptive_config`."""
+    `confirm_required`, with what would be dropped) unless `discard_adaptive_config`; the
+    `base` check makes that confirmation cover exactly what the Map listed."""
     async with _store(request).lock:
         doc = _store(request).read()
         room = _room(doc, room_id)
+        _check_base(body.base, room_version(room), f"Room {room['name']}")
         drops = inventory.adaptive_config_content(room)
         if not body.adaptive and drops and not body.discard_adaptive_config:
             raise ApiError(
@@ -528,7 +583,9 @@ async def move_preview(request: Request, bulb_id: str, body: Move) -> dict[str, 
         "area_id": area_id,
         "changes": config_mod.snapshot_changes(doc, proposed),
         "problems": _problems(proposed),
-        "refused": await inventory.check_move(ha, bulb["entity_id"], area_id),
+        "refused": await inventory.check_move(
+            ha, bulb["entity_id"], area_id, match_key=bulb.get("ha_match_key")
+        ),
         "fingerprint": fingerprint(proposed),
     }
 
@@ -543,7 +600,9 @@ async def move(request: Request, bulb_id: str, body: MoveConfirm) -> dict[str, A
         if fingerprint(proposed) != body.fingerprint:
             raise _stale("The config has changed since the preview")
         config_mod.checked(proposed)  # before the HA write: validate-then-write
-        await inventory.move_bulb(ha, bulb["entity_id"], area_id)
+        await inventory.move_bulb(
+            ha, bulb["entity_id"], area_id, match_key=bulb.get("ha_match_key")
+        )
         _write(request, proposed, after_ha=f"{bulb['entity_id']} was moved")
         log.info("moved %s to Area %s", bulb["entity_id"], area_id)
         return {"saved": True, "changes": config_mod.snapshot_changes(doc, proposed)}
@@ -556,7 +615,8 @@ async def set_bulb_hard_switches(
     """Replace the hard switches bound to a bulb's soft switch."""
     async with _store(request).lock:
         doc = _store(request).read()
-        inventory.find_bulb(doc, bulb_id)
+        _, bulb = inventory.find_bulb(doc, bulb_id)
+        _check_base(body.base, bulb_version(bulb), f"{bulb['name']}'s hard switches")
         proposed = inventory.set_hard_switches(doc, bulb_id, body.hard_switches)
         return _commit(request, doc, proposed, body.acknowledge_live)
 
@@ -588,17 +648,22 @@ async def update_group(
 ) -> dict[str, Any]:
     async with _store(request).lock:
         doc = _store(request).read()
-        _group(_room(doc, room_id), group_id)
+        group = _group(_room(doc, room_id), group_id)
+        _check_base(body.base, group_version(group), f"Switching group {group['name']}")
         proposed = _group_edit(doc, room_id, group_id, body)
         return _commit(request, doc, proposed, body.acknowledge_live)
 
 
 @router.delete("/rooms/{room_id}/groups/{group_id}")
-async def delete_group(request: Request, room_id: str, group_id: str) -> dict[str, Any]:
-    """Remove a switching group; its hard switches go with it (the next deploy removes
-    their automations)."""
+async def delete_group(
+    request: Request, room_id: str, group_id: str, base: str | None = None
+) -> dict[str, Any]:
+    """Remove a switching group (`?base=` its version, as shown); its hard switches go
+    with it (the next deploy removes their automations)."""
     async with _store(request).lock:
         doc = _store(request).read()
+        group = _group(_room(doc, room_id), group_id)
+        _check_base(base, group_version(group), f"Switching group {group['name']}")
         proposed = inventory.remove_switching_group(doc, room_id, group_id)
         return _commit(request, doc, proposed, False)
 
@@ -703,11 +768,14 @@ async def areas_preview(request: Request) -> dict[str, Any]:
     """The Area writes that would make HA match the committed snapshot, and anything that
     would refuse them. Writes nothing."""
     ha = _ha(request)
-    _, area_plan, areas = await _areas_plan(request)
+    doc, area_plan, areas = await _areas_plan(request)
     names = {a.get("area_id"): a.get("name") for a in areas}
+    keys = deploy.match_keys(doc)
     problems = list(area_plan["problems"])
     for move_ in area_plan["moves"]:
-        reason = await inventory.check_move(ha, move_["entity_id"], move_["to"])
+        reason = await inventory.check_move(
+            ha, move_["entity_id"], move_["to"], match_key=keys.get(move_["bulb"])
+        )
         if reason:
             problems.append(f"bulb '{move_['bulb']}': {reason}")
     return {
@@ -734,7 +802,22 @@ async def areas_deploy(request: Request, body: Confirm) -> dict[str, Any]:
         doc, area_plan, _ = await _areas_plan(request)
         if fingerprint(area_plan["moves"]) != body.fingerprint:
             raise _stale("HA's Areas, or the snapshot, have changed since the preview")
-        result = await deploy.deploy_areas(ha, doc, expected=area_plan["moves"])
+        try:
+            result = await deploy.deploy_areas(ha, doc, expected=area_plan["moves"])
+        except StalePreview as exc:
+            raise _stale("HA's Areas have changed since the preview") from exc
+        except DeployError as exc:
+            if exc.written is None:
+                raise  # refused before writing anything
+            raise ApiError(
+                502,
+                "areas_partial",
+                f"The Area writes stopped partway or did not verify: {len(exc.written)} of "
+                f"{len(area_plan['moves'])} moves landed. Preview again: it starts from "
+                "whatever HA now holds.",
+                problems=exc.problems,
+                written=exc.written,
+            ) from exc
         log.info("wrote %d Area moves to HA", len(result["moves"]))
         return result
 
@@ -770,6 +853,11 @@ def _install_errors(app: FastAPI) -> None:
 
     @app.exception_handler(DeployError)
     async def deploy_refused(_: Request, exc: DeployError) -> JSONResponse:
+        if exc.written is not None:
+            # Every caller that writes handles its own partial failure; this is the net.
+            return _error(
+                502, "deploy_failed", "Stopped after writing part of it.", problems=exc.problems
+            )
         return _error(409, "deploy_refused", "Refused before writing.", problems=exc.problems)
 
     @app.exception_handler(HAAuthError)

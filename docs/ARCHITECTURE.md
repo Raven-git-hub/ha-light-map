@@ -173,9 +173,11 @@ ported from `ha-adaptive-light` and were hard-won — preserve them.
   Avoid dict/set ordering, timestamps, or other nondeterminism leaking into output.
 - **Entity IDs only, never device IDs.** Device IDs are opaque, break on re-pairing, and
   can't be validated by an entity-existence check. A bulb's `ha_match_key` (its HA
-  entity-registry entry id) is an opaque HA id the config holds as a match key for the
-  snapshot reconcile only: never addressed, validated against HA, or written into
-  generated artefacts. Anything that addresses a bulb uses its `entity_id`. **One carved-out
+  entity-registry entry id) is an opaque HA id the config holds as a match key only: the
+  snapshot reconcile matches on it, and an Area write compares it with the registry entry
+  at the bulb's `entity_id` so it never moves a different light (P3). It is never
+  addressed, required to exist in HA, or written into generated artefacts. Anything that
+  addresses a bulb uses its `entity_id`. **One carved-out
   exception:** a hard switch's `device` source names a `device_id`, only to *read* a button
   press from a device that exposes no entity or event to bind instead. That id appears
   only in the trigger of its `lm_hard_` automation; it never addresses a light or targets
@@ -346,8 +348,12 @@ says why it can't run.
   `fingerprint` of what it showed; the apply must carry it, recomputes from fresh state, and
   is refused (409 `preview_stale`) if the result digests differently. So a deploy, a sync,
   an Area write or a move is never applied unless it was previewed as it now stands.
-- **Validate-then-write**, every edit; one that also writes HA checks its config first. A
-  config on disk that doesn't load is never overwritten from the Map.
+- **Validate-then-write**, every edit; a move also checks its config before its HA write.
+  A config on disk that doesn't load is never overwritten from the Map.
+- **Edits carry what they were made against.** Each edit of an existing bulb's hard
+  switches, group, or room's adaptive flag sends the `version` the Map showed as `base`, and
+  is refused (409 `edit_stale`) if it has changed since, so a stale tab never silently
+  reverts another edit, and an acknowledgement covers only what was shown.
 - **A Map edit commits only its own change** to the snapshot; whatever else HA changed waits
   for a reviewed sync.
 - **Coexistence.** An edit that makes a hard switch drive something new is refused (409
@@ -426,6 +432,13 @@ system's `al_` ones among them) that already drive the same bulbs.
   internal boundary with adaptive as the only module until Presence Rules lands. So far two
   seams are code-level registries the composition root fills: `register_namespace`
   (artefacts) and `register_bridge_brightness` (P2).
+- **Access to the HTTP API** (P3) — the API has no authentication of its own and listens on
+  the container's port; it can write HA's Areas and deploy with an administrator's token.
+  Cross-site requests from a browser are blocked (JSON bodies need CORS, which isn't
+  enabled), but anyone who can reach the port, or a DNS-rebinding page, can drive it. Until
+  this is settled, expose the port only to a trusted network (or put it behind HA ingress
+  or a reverse proxy with authentication); options are a Host allowlist, a shared token, or
+  running as an HA add-on behind ingress.
 - **Hard-switch source picker** (P3) — the Map offers `state` (an entity picker) and `event`
   (an event-type field) as the primary paths and keeps `device` as an advanced, manual
   entry (device id and trigger copied from an HA automation), so device ids never travel to

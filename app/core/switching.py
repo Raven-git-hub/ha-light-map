@@ -62,8 +62,8 @@ Hard rules:
   them.
 - Entity IDs only, never device IDs, with one carved-out exception: a hard switch's
   `device` source names a device id, and only inside the trigger that reads its press.
-  A bulb is addressed by its `entity_id`, never by its `ha_match_key` (an opaque match key
-  for the inventory's reconcile only).
+  A bulb is addressed by its `entity_id`, never by its `ha_match_key` (an opaque match key,
+  compared, never addressed, and never in a generated artefact).
 - Output is plain Python data for `core.generate` to serialise: no template engine, HA
   Jinja kept as inert strings, byte-identical output for the same config, and no almanac
   values baked in.

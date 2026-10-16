@@ -92,6 +92,10 @@
     const liveCount = map.live.bulbs.length;
     document.getElementById("live-summary").textContent =
       `${plural(map.live.hard_switches, "hard switch", "hard switches")} · ${plural(liveCount, "live bulb")}`;
+    const newRoom = document.getElementById("new-room");
+    // Before the first reviewed sync there is no config to add a room to (the API refuses).
+    newRoom.disabled = !map.config.exists;
+    newRoom.title = map.config.exists ? "Creates an Area in Home Assistant" : "Sync from HA first";
     const banner = document.getElementById("map-banner");
     banner.replaceChildren();
     if (!map.config.exists) {
@@ -720,16 +724,44 @@
       items,
       h("label", { class: "ack-label" }, ack, " I understand: make these bulbs live"),
     );
+    // What the popup worked out itself (`set`), plus what the server last said would go
+    // live (`server`), kept until the next answer: the client's view can be behind the
+    // server's, and recomputing from it alone would hide the server's warning again.
+    let client = [];
+    let server = [];
+    let shown = "";
+    const draw = () => {
+      const lines = [...new Set([...client, ...server])];
+      const key = lines.join("\n");
+      // A different list needs a fresh acknowledgement: ticking for one binding must not
+      // carry over to the next one added.
+      if (key !== shown) ack.checked = false;
+      shown = key;
+      fill(items, ...lines.map((line) => h("li", {}, line)));
+      el.hidden = !lines.length;
+    };
     return {
       el,
       ack,
       set(lines) {
-        fill(items, ...lines.map((line) => h("li", {}, line)));
-        el.hidden = !lines.length;
-        if (!lines.length) ack.checked = false;
+        client = lines;
+        draw();
+      },
+      server(lines) {
+        server = lines;
+        draw();
       },
       ok: () => el.hidden || ack.checked,
     };
+  }
+
+  // An edit refused because what it was made against has changed since (another tab, or a
+  // sync): close the popup, say so, and show the Map as it now is.
+  async function afterStale(result) {
+    if (!result?.stale) return false;
+    notify(result.stale.message, { kind: "error" }); // expected, so not fail(): nothing to log
+    await reload();
+    return true;
   }
 
   function goingLiveLines(goingLive, nameOf) {
@@ -778,13 +810,17 @@
           save.disabled = true;
           try {
             close(
-              await api("PUT", `/api/bulbs/${bulb.id}/hard_switches`, {
-                hard_switches: editor.value(),
-                acknowledge_live: coexist.ack.checked,
-              }),
+              await close.during(
+                api("PUT", `/api/bulbs/${bulb.id}/hard_switches`, {
+                  hard_switches: editor.value(),
+                  acknowledge_live: coexist.ack.checked,
+                  base: bulb.version,
+                }),
+              ),
             );
           } catch (err) {
-            if (err.error === "coexistence") coexist.set(goingLiveLines(err.body.going_live, bulbNamer()));
+            if (err.error === "edit_stale") return close({ stale: err });
+            if (err.error === "coexistence") coexist.server(goingLiveLines(err.body.going_live, bulbNamer()));
             showError(errors, err);
             save.disabled = editor.editing() || !coexist.ok();
           }
@@ -820,6 +856,7 @@
       },
       { wide: true, name: "hard-switches" },
     );
+    if (await afterStale(saved)) return;
     if (saved) {
       savedNotice(saved);
       await reload();
@@ -878,15 +915,19 @@
             members: members(),
             hard_switches: editor.value(),
             acknowledge_live: coexist.ack.checked,
+            base: group?.version,
           };
           try {
             close(
-              group
-                ? await api("PUT", `/api/rooms/${room.id}/groups/${group.id}`, body)
-                : await api("POST", `/api/rooms/${room.id}/groups`, body),
+              await close.during(
+                group
+                  ? api("PUT", `/api/rooms/${room.id}/groups/${group.id}`, body)
+                  : api("POST", `/api/rooms/${room.id}/groups`, body),
+              ),
             );
           } catch (err) {
-            if (err.error === "coexistence") coexist.set(goingLiveLines(err.body.going_live, nameOf));
+            if (err.error === "edit_stale") return close({ stale: err });
+            if (err.error === "coexistence") coexist.server(goingLiveLines(err.body.going_live, nameOf));
             showError(errors, err);
             update();
           }
@@ -903,9 +944,12 @@
           );
           if (!sure) return;
           try {
-            await api("DELETE", `/api/rooms/${room.id}/groups/${group.id}`);
+            await close.during(
+              api("DELETE", `/api/rooms/${room.id}/groups/${group.id}?base=${encodeURIComponent(group.version)}`),
+            );
             close({ deleted: true });
           } catch (err) {
+            if (err.error === "edit_stale") return close({ stale: err });
             showError(errors, err);
           }
         };
@@ -935,6 +979,7 @@
       },
       { wide: true, name: "group" },
     );
+    if (await afterStale(result)) return;
     if (result?.deleted) {
       notify(`Deleted ${group.name}. Deploy to remove its automations from Home Assistant.`, {
         kind: "ok",
@@ -960,9 +1005,11 @@
           save.disabled = true;
           try {
             close(
-              room
-                ? await api("PUT", `/api/rooms/${room.id}/name`, { name: input.value })
-                : await api("POST", "/api/rooms", { name: input.value }),
+              await close.during(
+                room
+                  ? api("PUT", `/api/rooms/${room.id}/name`, { name: input.value })
+                  : api("POST", "/api/rooms", { name: input.value }),
+              ),
             );
           } catch (err) {
             showError(errors, err);
@@ -1016,11 +1063,16 @@
     }
     checkbox.disabled = true;
     try {
-      await api("PUT", `/api/rooms/${room.id}/adaptive`, { adaptive, discard_adaptive_config: discard });
+      await api("PUT", `/api/rooms/${room.id}/adaptive`, {
+        adaptive,
+        discard_adaptive_config: discard,
+        base: room.version,
+      });
       await reload();
     } catch (err) {
       checkbox.checked = !adaptive;
       checkbox.disabled = false;
+      if (err.error === "edit_stale") await reload();
       throw err;
     }
   }
@@ -1067,17 +1119,24 @@
         const go = h("button", { class: "primary confirm-move", disabled: true }, "Move");
         let preview = null;
         let target = null;
+        let asked = 0;
         select.addEventListener("change", async () => {
           target = select.value === "" ? null : select.value;
           go.disabled = true;
           preview = null;
           fill(out, h("p", { class: "muted" }, "Checking…"));
+          // Only the answer for the latest choice counts: picking A then B quickly must not
+          // show A's preview under B (the server would refuse its fingerprint anyway).
+          const mine = ++asked;
+          let answer;
           try {
-            preview = await api("POST", `/api/bulbs/${bulb.id}/move/preview`, { room_id: target });
+            answer = await api("POST", `/api/bulbs/${bulb.id}/move/preview`, { room_id: target });
           } catch (err) {
-            showError(out, err);
+            if (mine === asked) showError(out, err);
             return;
           }
+          if (mine !== asked) return;
+          preview = answer;
           fill(
             out,
             h("h3", {}, "What changes"),
@@ -1100,7 +1159,9 @@
           go.disabled = true;
           try {
             close(
-              await api("POST", `/api/bulbs/${bulb.id}/move`, { room_id: target, fingerprint: preview.fingerprint }),
+              await close.during(
+                api("POST", `/api/bulbs/${bulb.id}/move`, { room_id: target, fingerprint: preview.fingerprint }),
+              ),
             );
           } catch (err) {
             showError(out, err);
@@ -1203,7 +1264,7 @@
           save.disabled = true;
           errors.replaceChildren();
           try {
-            close(await api("POST", "/api/sync", { fingerprint: preview.fingerprint }));
+            close(await close.during(api("POST", "/api/sync", { fingerprint: preview.fingerprint })));
           } catch (err) {
             if (err.error === "preview_stale")
               await load("Home Assistant changed while you were reviewing: this is the new preview.");
@@ -1444,7 +1505,7 @@
           go.textContent = "Deploying…";
           errors.replaceChildren();
           try {
-            const done = await api("POST", "/api/deploy", { fingerprint: preview.fingerprint });
+            const done = await close.during(api("POST", "/api/deploy", { fingerprint: preview.fingerprint }));
             fill(out, deployResult(done.result));
             go.hidden = true;
             ackLabel.hidden = true;
@@ -1528,11 +1589,15 @@
           go.disabled = true;
           errors.replaceChildren();
           try {
-            close(await api("POST", "/api/areas/deploy", { fingerprint: preview.fingerprint }));
+            close(await close.during(api("POST", "/api/areas/deploy", { fingerprint: preview.fingerprint })));
           } catch (err) {
             if (err.error === "preview_stale")
               await load("Home Assistant changed while you were reviewing: this is the new preview.");
-            else showError(errors, err);
+            else if (err.error === "areas_partial") {
+              // Part of it landed: what is left to write is a new plan, so show that.
+              await load("Part of the Area writes landed before they stopped: this is what is left.");
+              showError(errors, err);
+            } else showError(errors, err);
           }
         });
         load();
@@ -1548,8 +1613,8 @@
     );
     if (written) {
       notify(`Wrote ${plural(written.moves.length, "Area move")} to Home Assistant.`, { kind: "ok", timeout: 5000 });
-      await reload();
     }
+    await reload(); // HA's Areas may have changed even if this didn't finish: re-check the sync state
   }
 
   // -- Helpers -------------------------------------------------------------------------

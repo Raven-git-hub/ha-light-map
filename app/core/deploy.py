@@ -40,9 +40,10 @@ Hard rules:
 - Every write is verified after the fact.
 - Area/registry writes are a new write surface: verified, reconcilable, never destructive by
   surprise.
-- Entity IDs only, never device IDs, and never a bulb's `ha_match_key` (an opaque match
-  key for the inventory's reconcile only). A hard switch's device source is read only to
-  check the device still exists.
+- Entity IDs only, never device IDs. A bulb's `ha_match_key` is an opaque match key: an
+  Area write compares it with the registry entry at the bulb's entity_id (so it never moves
+  a different light), and nothing addresses it. A hard switch's device source is read only
+  to check the device still exists.
 - During the parallel build (P0-P4) Light Map runs beside the live ha-adaptive-light, so
   only new artefacts are deployed and the new bridges stay unbound (no hard switches; bridge
   not yet authoritative) until cutover (P6). Binding a hard switch in the config is the
@@ -80,11 +81,23 @@ _ADDRESSABLE = re.compile(r"^[a-z0-9_]+$")
 
 class DeployError(Exception):
     """A deploy was refused before writing, a write was not taken as asked, or HA did not
-    hold what was written when re-read. Carries every problem found."""
+    hold what was written when re-read. Carries every problem found.
 
-    def __init__(self, problems: str | Sequence[str]) -> None:
+    `written` is None for a refusal before anything was written; once writing has begun it
+    lists what was written (for `deploy_areas`, the moves that landed), so a caller never
+    reports a half-done write as a refusal.
+    """
+
+    def __init__(
+        self, problems: str | Sequence[str], *, written: Sequence[Any] | None = None
+    ) -> None:
         self.problems = [problems] if isinstance(problems, str) else list(problems)
+        self.written = None if written is None else list(written)
         super().__init__("; ".join(self.problems))
+
+
+class StalePreview(DeployError):
+    """HA no longer matches the preview the caller was shown; nothing was written."""
 
 
 # -- Reading ---------------------------------------------------------------------------
@@ -221,9 +234,10 @@ def plan(
                     # Caught here, before anything is written: found only after the create
                     # (see `apply`), it would leave a stray `<id>_2` helper behind.
                     problems.append(
-                        f"{domain}.{item_id} already exists in HA but is not a UI-managed "
-                        f"helper (defined in YAML?), so HA would create {domain}.{item_id}_2: "
-                        "remove it there"
+                        f"{domain}.{item_id} already exists in HA but is not one of Light "
+                        "Map's UI-managed helpers (a YAML helper, or another helper's entity "
+                        f"renamed to it?), so HA would create {domain}.{item_id}_2: free the "
+                        "id there"
                     )
                 helper_writes.append(_step("create", domain, item_id, fields))
             elif dict(have[item_id]) != dict(fields):
@@ -631,8 +645,9 @@ async def crossover(ha: HAClient, config: Mapping[str, Any]) -> dict[str, Any]:
         for item_id in desired.get(domain, {}):
             if f"{domain}.{item_id}" in by_entity and item_id not in helpers[domain]:
                 collisions.append(
-                    f"{domain}.{item_id} is already in HA but isn't a UI-managed helper "
-                    "(defined in YAML?): the deploy is refused until it is removed"
+                    f"{domain}.{item_id} is already in HA but isn't one of Light Map's "
+                    "UI-managed helpers (a YAML helper, or another helper's entity renamed "
+                    "to it?): the deploy is refused until the id is freed"
                 )
     for automation in desired.get(AUTOMATION, []):
         entity_id = f"automation.{automation['id']}"
@@ -723,32 +738,53 @@ async def deploy_areas(
     Moves each bulb whose light HA has in another Area (or none) into the Area its room
     snapshots, with `inventory.move_bulb`, which re-reads HA after each write. Never
     creates, renames, or deletes an Area, and touches no entity but the bulbs' own.
-    Every move is checked first (`plan_areas`, then `inventory.check_move` for each): if
-    any would be refused, nothing is written. Returns `{moves}`. To preview, call
-    `plan_areas` with HA's Areas and lights, and pass the previewed moves as `expected`:
-    if HA has changed since, so the moves differ, nothing is written.
+    Every move is checked first (`plan_areas`, then `inventory.check_move` for each, which
+    also refuses a light whose registry entry isn't the bulb's any more): if any would be
+    refused, nothing is written. Returns `{moves}`. To preview, call `plan_areas` with HA's
+    Areas and lights, and pass the previewed moves as `expected`: if HA has changed since,
+    so the moves differ, nothing is written (StalePreview).
+
+    A failure once writing has begun raises DeployError with `written` set to the moves
+    that landed: the next preview starts from whatever HA then holds.
     """
     deploy_plan = plan_areas(config, await ha.list_areas(), await inventory.discover_lights(ha))
     if expected is not None and deploy_plan["moves"] != list(expected):
-        raise DeployError(
+        raise StalePreview(
             "HA's Areas have changed since the preview: preview the Area writes again"
         )
+    keys = match_keys(config)
     problems = list(deploy_plan["problems"])
     for move in deploy_plan["moves"]:
-        reason = await inventory.check_move(ha, move["entity_id"], move["to"])
+        reason = await inventory.check_move(
+            ha, move["entity_id"], move["to"], match_key=keys.get(move["bulb"])
+        )
         if reason:
             problems.append(f"bulb '{move['bulb']}': {reason}")
     if problems:
         raise DeployError(problems)
+    landed: list[dict[str, Any]] = []
     try:
         for move in deploy_plan["moves"]:
-            await inventory.move_bulb(ha, move["entity_id"], move["to"])
-    except InventoryError as exc:
-        raise DeployError(str(exc)) from exc
-    after = plan_areas(config, await ha.list_areas(), await inventory.discover_lights(ha))
+            await inventory.move_bulb(
+                ha, move["entity_id"], move["to"], match_key=keys.get(move["bulb"])
+            )
+            landed.append(move)
+        after = plan_areas(config, await ha.list_areas(), await inventory.discover_lights(ha))
+    except (InventoryError, HAError) as exc:
+        raise DeployError(str(exc), written=landed) from exc
     if after["moves"] or after["problems"]:
         raise DeployError(
             [f"{m['entity_id']} is not in {m['to'] or 'Unassigned'}" for m in after["moves"]]
-            + after["problems"]
+            + after["problems"],
+            written=landed,
         )
     return {"moves": deploy_plan["moves"]}
+
+
+def match_keys(config: Mapping[str, Any]) -> dict[str, str]:
+    """Bulb id -> its `ha_match_key`, for every bulb that has one: what an Area write
+    checks HA's registry entry against, so it can't move a different light that has
+    since taken the bulb's entity_id."""
+    bulbs = [b for room in config.get("rooms", []) for b in room.get("bulbs", [])]
+    bulbs += list(config.get("unassigned", []))
+    return {b["id"]: b["ha_match_key"] for b in bulbs if b.get("ha_match_key")}

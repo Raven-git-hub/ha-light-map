@@ -6,7 +6,7 @@ import unittest
 from app.core import config, inventory
 from app.core.config import ConfigError
 from app.core.inventory import InventoryError
-from tests.fakes import FakeHA, committed_config
+from tests.fakes import FakeHA, committed_config, registry_id
 
 
 def by_id(lights):
@@ -199,6 +199,21 @@ class MoveBulbTest(unittest.IsolatedAsyncioTestCase):
         write = ha.calls.index(("set_entity_area", ("light.reading_lamp", "kitchen")))
         self.assertIn(("get_entity_registry_entry", ("light.reading_lamp",)), ha.calls[write + 1 :])
 
+    async def test_a_different_light_under_the_bulbs_entity_id_is_refused(self):
+        ha = FakeHA()
+        # The bulb's own light was renamed; another light took its old entity_id.
+        entry = next(e for e in ha.entities if e["entity_id"] == "light.reading_lamp")
+        entry["entity_id"] = "light.reading_lamp_old"
+        ha.entities.append({"entity_id": "light.reading_lamp", "id": "reg_other", "area_id": None})
+        key = registry_id("light.reading_lamp")
+        with self.assertRaises(InventoryError) as caught:
+            await inventory.move_bulb(ha, "light.reading_lamp", "kitchen", match_key=key)
+        self.assertIn("is not this bulb's light any more", str(caught.exception))
+        self.assertEqual(ha.writes, [])
+        # Without a key (a bulb outside the registry when snapshotted) there is nothing to
+        # compare, and entity_id is all there is.
+        self.assertIsNone(await inventory.check_move(ha, "light.reading_lamp", "kitchen"))
+
     async def test_check_move_answers_in_advance_without_writing(self):
         ha = FakeHA()
         self.assertIsNone(await inventory.check_move(ha, "light.reading_lamp", "kitchen"))
@@ -372,6 +387,37 @@ class SnapshotCommitTest(unittest.TestCase):
         )
         self.assertEqual([r["id"] for r in renamed["rooms"]], ["living_room", "kitchen", "garage"])
 
+    def test_a_dropped_group_names_the_hard_switches_it_takes(self):
+        doc = committed_config()
+        doc["rooms"][1]["switching_groups"] = [
+            {
+                "id": "kitchen_all",
+                "name": "Kitchen all",
+                "members": ["kitchen_strip"],
+                "hard_switches": [
+                    {
+                        "id": "kitchen_wall",
+                        "name": "Wall",
+                        "source": {"type": "state", "entity_id": "switch.reading_relay"},
+                        "mode": "follow",
+                    }
+                ],
+            }
+        ]
+        result = inventory.snapshot_with_move(doc, "kitchen_strip", None)
+        self.assertIn(
+            "switching group removed: 'kitchen/kitchen_all'; drops hard switch(es): kitchen_wall",
+            config.snapshot_changes(doc, result),
+        )
+
+    def test_a_room_name_with_stray_spaces_is_not_renamed_by_an_edit(self):
+        doc = committed_config()
+        doc["rooms"][1]["name"] = "Kitchen "  # a hand edit; the schema allows it
+        result = inventory.snapshot_with_area(doc, {"area_id": "attic", "name": "Attic"})
+        self.assertEqual(
+            config.snapshot_changes(doc, result), ["room added: 'attic' (Attic, Area attic)"]
+        )
+
     def test_unknown_names(self):
         with self.assertRaises(inventory.NotFound):
             inventory.snapshot_with_move(committed_config(), "ghost", None)
@@ -462,6 +508,19 @@ class MapEditTest(unittest.TestCase):
         with self.assertRaises(ConfigError) as caught:
             config.checked(result)
         self.assertIn("a toggle can't take light.porch", str(caught.exception))
+
+    def test_an_id_is_the_owners_only_on_a_whole_word(self):
+        result = inventory.set_hard_switches(
+            committed_config(), "porch", [{**self.BUTTON, "name": "Porches light"}]
+        )
+        self.assertEqual(result["unassigned"][0]["hard_switches"][0]["id"], "porch_porches_light")
+
+    def test_a_non_string_id_is_left_for_the_schema(self):
+        result = inventory.set_hard_switches(
+            committed_config(), "porch", [{**self.BUTTON, "id": ["a"]}]
+        )
+        with self.assertRaises(ConfigError):
+            config.checked(result)
 
     def test_unknown_owner(self):
         with self.assertRaises(inventory.NotFound):

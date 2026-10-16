@@ -277,11 +277,15 @@ switching-group and learning-unit memberships pruned.
   memberships (though not its hard switches) by coincidence.
 - `snapshot_changes` follows bulbs by id, so a rename reads as `bulb entity_id changed`, and
   the keys a sync records for the first time are counted in one line.
-- **The key is opaque.** It is a match key for the reconcile only. Nothing addresses a bulb by
-  it, validates it against HA, or writes it into generated artefacts: everything that
-  addresses a bulb uses its `entity_id`, so "entity IDs only, never device IDs" holds. The
-  worst a stale key can do is make the reconcile treat a light as new, which
-  `snapshot_changes` reports before anything is saved; it can never misdirect a command.
+- **The key is opaque.** It is a match key only. The reconcile matches on it, and (since P3)
+  an Area write compares it with the registry entry now at the bulb's `entity_id` before
+  moving that light: a snapshot not synced since the bulb's light was renamed in HA, and
+  another light took its old entity_id, would otherwise move that other light and record
+  the bulb as moved. Nothing addresses a bulb by it, requires it to exist in HA, or writes
+  it into generated artefacts: everything that addresses a bulb uses its `entity_id`, so
+  "entity IDs only, never device IDs" holds. The worst a stale key can do is make the
+  reconcile treat a light as new, which `snapshot_changes` reports before anything is
+  saved, or refuse an Area write until a sync; it can never misdirect a command.
 - No schema-version bump: the key is optional, so a P1 snapshot still loads, and its first
   sync records keys by matching on entity_id. Rename entities in HA only after that first
   sync; until a bulb has its key, a rename still reads as remove + add.
@@ -292,9 +296,10 @@ commit, unreviewed, whatever else HA has changed meanwhile.
 
 - **Move a bulb** sets the entity's own Area. It is refused, before writing, for a light with
   no registry entry (a YAML light without a `unique_id`, which HA can't give an Area), for an
-  Area that doesn't exist, and for unassigning a bulb whose device has an Area — clearing the
-  entity's Area would leave it in the device's, and unassigning the device would move its other
-  entities too, which is the user's call in HA. After writing it re-reads the registry and
+  Area that doesn't exist, for a light whose registry entry isn't the bulb's (its
+  `ha_match_key`; the snapshot is stale: sync first), and for unassigning a bulb whose device
+  has an Area — clearing the entity's Area would leave it in the device's, and unassigning
+  the device would move its other entities too, which is the user's call in HA. After writing it re-reads the registry and
   fails loudly if the bulb isn't where it was asked to go.
 - **Create / rename a room** creates / renames the HA Area (its id, and so the room's, never
   changes). A name HA would reject as a duplicate is refused up front; the result is re-read
@@ -431,7 +436,9 @@ the inventory's own verified `move_bulb`. Every move is checked first (`inventor
 answers what `move_bulb` would refuse) and if any would be refused — or the snapshot is too
 stale to write: a room whose Area HA no longer has, a bulb whose light it no longer has —
 nothing is written; given the moves its preview showed (`expected`), it also writes nothing
-if HA has moved on since. It never creates, renames, or deletes an Area. It is a separate call
+if HA has moved on since. A failure once writing has begun says which moves landed (the
+error's `written`), so a half-done write is never reported as a refusal; the next preview
+plans from whatever HA then holds. It never creates, renames, or deletes an Area. It is a separate call
 from the switching deploy (which needs no Areas), and `plan_areas` previews it: because
 edits made from the Map reach HA first, a difference usually means HA moved on, and writing
 the snapshot back reverts that, so it should be reviewed before it is applied.
@@ -497,12 +504,26 @@ later sync then shows only what really differs. The edit's config is validated b
 HA write; if saving fails after it, the error says the HA change stands and a sync will
 pick it up.
 
+**Edits carry the version they were made against.** The Map shows a `version` for each
+bulb's hard switches, each switching group, and each room's adaptive flag and config, and
+an edit sends it back as `base`; one made against an older version is refused (409
+`edit_stale`) and the popup closes onto the Map as it now is. Edits replace whole lists (a
+bulb's bindings, a group's members), so without this a popup left open in a second tab
+would silently undo the first tab's edit when saved, and an acknowledgement (going live)
+or confirmation (dropping an adaptive config) given for the view on screen would cover
+bindings or settings the user never saw.
+
 **The committed config** lives at `LM_CONFIG_PATH` and is read fresh for every request (it
 is small, and a hand edit is picked up at once), written only through `config.save`, one
 edit at a time under a lock held across the HA writes. Before the first save there is no
-file: the Map starts blank and the first sync, reviewed, creates it. A config on disk that
-doesn't load is never overwritten from the Map; every write is refused until it is fixed
-by hand.
+file: the Map starts blank and the first sync, reviewed, creates it; creating a room
+before then is refused (409 `sync_first`), since it would save a config holding only that
+room. A config on disk that doesn't load is never overwritten from the Map; every write is
+refused until it is fixed by hand.
+
+**A dialog stays open while its request runs.** Dismissed mid-save, it would drop the
+save's answer, and the Map would go on showing what was there before a write that did
+land; so Esc, × and Cancel wait for the request to settle.
 
 ---
 

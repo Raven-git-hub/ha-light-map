@@ -407,3 +407,7 @@ input[type="radio"] {
 .form-error {
   color: var(--danger);
 }
+
+dialog.modal.busy {
+  cursor: progress;
+}

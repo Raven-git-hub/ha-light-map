@@ -53,6 +53,10 @@ container, point `LM_CONFIG_PATH` somewhere writable:
 LM_CONFIG_PATH=data/config.json uvicorn app.main:app --port 8099
 ```
 
+The API has no authentication of its own and can write to Home Assistant with your token:
+expose port 8099 only to a trusted network (see "Open decisions" in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+
 ## Docs
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): structure, module boundaries, config shape,

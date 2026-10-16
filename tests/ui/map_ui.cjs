@@ -126,6 +126,35 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
       assert.match(await page.textContent('button.group[data-group="kitchen_all"]'), /Kitchen strip/);
     });
 
+    await step("a popup another tab made stale closes instead of reverting the other edit", async () => {
+      await page.click('tr[data-bulb="chandelier_1"] button.soft');
+      const popup = dialog("hard-switches");
+      await page.waitForSelector(`${popup} .add-binding`);
+      const status = await page.evaluate(async () => {
+        const map = await (await fetch("/api/map")).json();
+        const bulb = map.rooms.flatMap((r) => r.bulbs).find((b) => b.id === "chandelier_1");
+        const response = await fetch("/api/bulbs/chandelier_1/hard_switches", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            base: bulb.version,
+            acknowledge_live: true,
+            hard_switches: [
+              { name: "Other tab", source: { type: "event", event_type: "zha_event" }, mode: "press", turn: "off" },
+            ],
+          }),
+        });
+        return response.status;
+      });
+      assert.equal(status, 200);
+      await page.click(`${popup} button.save`); // the popup's own, now stale, empty list
+      await page.waitForSelector(popup, { state: "detached" });
+      assert.match(await page.textContent("#notices .notice.error"), /changed since the Map showed it/);
+      await page.waitForFunction(() =>
+        document.querySelector('tr[data-bulb="chandelier_1"] .switch-count').textContent.startsWith("1 hard switch"),
+      );
+    });
+
     await step("move a bulb, previewed first", async () => {
       await page.click('tr[data-bulb="porch"] .move');
       const popup = dialog("move");
