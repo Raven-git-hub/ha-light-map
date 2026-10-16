@@ -1,0 +1,27 @@
+# Light Map. Copy .env.example to .env and set the HA connection first.
+services:
+  light-map:
+    build: .
+    image: ha-light-map:latest
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    # HA connection: LM_HA_BASE_URL plus LM_HA_TOKEN (or LM_HA_TOKEN_FILE).
+    env_file:
+      - .env
+    # A named volume, so the non-root user (uid 10001) owns /data. To bind-mount a host
+    # directory instead, chown it to 10001 first.
+    volumes:
+      - light-map-data:/data
+    # To keep the token out of .env, put it in a file, uncomment this and the top-level
+    # `secrets:` block below, and set LM_HA_TOKEN_FILE=/run/secrets/lm_ha_token in .env
+    # instead of LM_HA_TOKEN. The file must be readable by uid 10001.
+    # secrets:
+    #   - lm_ha_token
+
+# secrets:
+#   lm_ha_token:
+#     file: ./secrets/lm_ha_token
+
+volumes:
+  light-map-data:

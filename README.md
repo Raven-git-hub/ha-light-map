@@ -1,4 +1,44 @@
 # Light Map
 
-Home Assistant lighting control: a switching plane (soft/hard switches)
-with Adaptive Light as a module. Rebuild of ha-adaptive-light.
+Light Map is a self-hosted container that runs a home's lighting through Home Assistant as
+two planes:
+
+- **The switching plane.** Every bulb gets a soft switch (an `input_boolean`), the single
+  source of truth for its power. Hard switches bind to the soft switch, and a soft→bulb
+  bridge makes the bulb follow it.
+- **Modules.** Behaviour layered on top, acting only by commanding soft switches and setting
+  brightness. **Adaptive Light**, which learns a preferred light level for each section of
+  the day and drives brightness, is the first module.
+
+Rooms come from Home Assistant Areas and are edited two-way from the Map. A room that never
+enables a module still gets the full switching plane.
+
+Light Map is a ground-up rebuild of `ha-adaptive-light`.
+
+## Status
+
+**P0: scaffold.** Repository structure, stub modules, the config-schema skeleton, and the
+container. There is no behaviour yet, and nothing talks to Home Assistant. See
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Run
+
+```sh
+cp .env.example .env     # set LM_HA_BASE_URL and LM_HA_TOKEN
+docker compose up --build
+curl http://localhost:8099/healthz
+```
+
+The UI shell is at <http://localhost:8099/>.
+
+## Docs
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): structure, module boundaries, config shape,
+  storage, naming, house rules.
+- [docs/DESIGN.md](docs/DESIGN.md): the reasoning and the detailed data model.
+- [docs/ROADMAP.md](docs/ROADMAP.md): the build phases.
+- [CLAUDE.md](CLAUDE.md): contributor guidance.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
