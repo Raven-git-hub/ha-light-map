@@ -12,7 +12,7 @@ from unittest import mock
 from app.core import config
 from app.core.config import ConfigError
 from app.core.ha import HAError
-from tests.fakes import bulb, committed_config
+from tests.fakes import bulb, committed_config, without_keys
 
 
 def problems_of(call, *args) -> list[str]:
@@ -82,6 +82,15 @@ class SchemaTest(unittest.TestCase):
         doc = committed_config()
         doc["homeassistant"]["base_url"] = "homeassistant.local:8123"
         self.assert_rejected(doc, "homeassistant/base_url")
+
+    def test_rejects_a_bad_match_key(self):
+        for key in ("", 42):
+            doc = committed_config()
+            living(doc)["bulbs"][0]["ha_match_key"] = key
+            self.assert_rejected(doc, "rooms/0/bulbs/0/ha_match_key")
+
+    def test_a_p1_config_without_match_keys_still_loads(self):
+        config.loads(without_keys(committed_config()))
 
     def test_rejects_an_unassigned_entry_that_is_not_a_bulb(self):
         doc = committed_config()
@@ -162,6 +171,13 @@ class CrossCheckTest(unittest.TestCase):
         doc = committed_config()
         doc["unassigned"].append(bulb("porch_again", entity_id="light.kitchen_strip"))
         self.assert_flags(doc, "entity_id 'light.kitchen_strip' is used more than once")
+
+    def test_a_registry_entry_is_one_bulb(self):
+        doc = committed_config()
+        doc["unassigned"].append(
+            bulb("porch_light", entity_id="light.porch_light", key="reg_light_kitchen_strip")
+        )
+        self.assert_flags(doc, "ha_match_key 'reg_light_kitchen_strip' is used more than once")
 
     def test_hard_switch_ids_are_global(self):
         doc = committed_config()

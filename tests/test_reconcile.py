@@ -5,7 +5,7 @@ import random
 import unittest
 
 from app.core import config
-from tests.fakes import committed_config, light
+from tests.fakes import bulb, committed_config, light, without_keys
 
 AREAS = [
     {"area_id": "living_room", "name": "Living Room"},
@@ -42,14 +42,32 @@ def lights_with(*changes, drop=()):
     return result
 
 
+def renamed(old, new, lights=LIGHTS, **changes):
+    """LIGHTS with entity `old` renamed to `new` in HA: the same registry entry, so the same
+    match key."""
+    return [
+        {**item, "entity_id": new, **changes} if item["entity_id"] == old else item
+        for item in lights
+    ]
+
+
+def reconcile(areas=AREAS, lights=LIGHTS, doc=None):
+    doc = committed_config() if doc is None else doc
+    result = config.reconcile_area_snapshot(doc, areas, lights)
+    # Whatever the reconcile does, its output must be a config that saves.
+    config.validate(result)
+    config.cross_check(result)
+    return result
+
+
+def find(doc, entity_id):
+    holders = [*(r["bulbs"] for r in doc["rooms"]), doc["unassigned"]]
+    return next(b for bulbs in holders for b in bulbs if b["entity_id"] == entity_id)
+
+
 class ReconcileTest(unittest.TestCase):
     def reconcile(self, areas=AREAS, lights=LIGHTS, doc=None):
-        doc = committed_config() if doc is None else doc
-        result = config.reconcile_area_snapshot(doc, areas, lights)
-        # Whatever the reconcile does, its output must be a config that saves.
-        config.validate(result)
-        config.cross_check(result)
-        return result
+        return reconcile(areas, lights, doc)
 
     def test_nothing_changed_means_nothing_changes(self):
         self.assertEqual(self.reconcile(), committed_config())
@@ -67,7 +85,13 @@ class ReconcileTest(unittest.TestCase):
                 "ha_area_id": "home_office",
                 "adaptive": False,
                 "bulbs": [
-                    {"id": "desk", "name": "Desk", "entity_id": "light.desk", "hard_switches": []}
+                    {
+                        "id": "desk",
+                        "name": "Desk",
+                        "entity_id": "light.desk",
+                        "ha_match_key": "reg_light_desk",
+                        "hard_switches": [],
+                    }
                 ],
                 "switching_groups": [],
             },
@@ -243,6 +267,144 @@ class ReconcileTest(unittest.TestCase):
             bulb_ids(room(result, "living_room")),
             ["chandelier_1", "chandelier_2", "chandelier_3", "reading_lamp"],
         )
+
+
+class StableIdentityTest(unittest.TestCase):
+    """A bulb is its HA registry entry (ha_match_key), not its entity_id."""
+
+    def test_a_renamed_entity_keeps_its_bulb(self):
+        lights = renamed("light.reading_lamp", "light.reading_light", name="Reading light")
+        result = reconcile(lights=lights)
+        living, before = room(result, "living_room"), room(committed_config(), "living_room")
+        self.assertEqual(bulb_ids(living), bulb_ids(before))
+        self.assertEqual(
+            living["bulbs"][3],
+            {
+                **before["bulbs"][3],
+                "entity_id": "light.reading_light",
+                "name": "Reading light",
+            },
+        )
+        self.assertEqual(living["bulbs"][3]["hard_switches"][0]["id"], "reading_switch")
+        self.assertEqual(living["switching_groups"], before["switching_groups"])
+        self.assertEqual(living["adaptive_config"], before["adaptive_config"])
+        self.assertEqual(
+            config.snapshot_changes(committed_config(), result),
+            [
+                "bulb entity_id changed: light.reading_lamp -> light.reading_light",
+                "bulb renamed: light.reading_light: 'Reading lamp' -> 'Reading light'",
+            ],
+        )
+
+    def test_a_renamed_entity_that_also_moved(self):
+        lights = renamed("light.reading_lamp", "light.kitchen_reader", area_id="kitchen")
+        result = reconcile(lights=lights)
+        moved = find(result, "light.kitchen_reader")
+        self.assertEqual(
+            (moved["id"], moved["hard_switches"][0]["id"]), ("reading_lamp", "reading_switch")
+        )
+        self.assertEqual(bulb_ids(room(result, "kitchen")), ["kitchen_strip", "reading_lamp"])
+        self.assertEqual(
+            config.snapshot_changes(committed_config(), result)[:2],
+            [
+                "bulb entity_id changed: light.reading_lamp -> light.kitchen_reader",
+                "bulb moved: light.kitchen_reader: room 'living_room' -> room 'kitchen'",
+            ],
+        )
+
+    def test_entities_that_swap_entity_ids_keep_their_bulbs(self):
+        swap = {
+            "light.chandelier_1": "light.chandelier_2",
+            "light.chandelier_2": "light.chandelier_1",
+        }
+        lights = [{**x, "entity_id": swap.get(x["entity_id"], x["entity_id"])} for x in LIGHTS]
+        result = reconcile(lights=lights)
+        self.assertEqual(
+            [(b["id"], b["entity_id"]) for b in room(result, "living_room")["bulbs"][:2]],
+            [("chandelier_1", "light.chandelier_2"), ("chandelier_2", "light.chandelier_1")],
+        )
+
+    def test_a_genuinely_new_entity_is_added(self):
+        result = reconcile(lights=[*LIGHTS, light("light.floor_lamp", "living_room")])
+        added = find(result, "light.floor_lamp")
+        self.assertEqual(
+            (added["id"], added["ha_match_key"]), ("floor_lamp", "reg_light_floor_lamp")
+        )
+        self.assertEqual(
+            config.snapshot_changes(committed_config(), result),
+            ["bulb added: light.floor_lamp -> room 'living_room'"],
+        )
+
+    def test_a_removed_entity_is_dropped(self):
+        result = reconcile(lights=lights_with(drop={"light.reading_lamp"}))
+        self.assertNotIn("reading_lamp", bulb_ids(room(result, "living_room")))
+        self.assertIn(
+            "bulb removed: light.reading_lamp (was in room 'living_room')",
+            config.snapshot_changes(committed_config(), result),
+        )
+
+    def test_a_different_light_under_an_old_entity_id_is_a_new_bulb(self):
+        # The old reading lamp was deleted in HA and another light now holds its entity_id:
+        # a different registry entry, so a different bulb. A keyed bulb is never matched by
+        # entity_id.
+        lights = [
+            {**x, "ha_match_key": "reg_replacement"}
+            if x["entity_id"] == "light.reading_lamp"
+            else x
+            for x in LIGHTS
+        ]
+        result = reconcile(lights=lights)
+        living = room(result, "living_room")
+        replacement = find(result, "light.reading_lamp")
+        self.assertEqual(
+            replacement,
+            {
+                "id": "reading_lamp_2",
+                "name": "Reading lamp",
+                "entity_id": "light.reading_lamp",
+                "ha_match_key": "reg_replacement",
+                "hard_switches": [],
+            },
+        )
+        # It gets a fresh id rather than the dropped bulb's, so it can't half-inherit the
+        # old bulb's memberships.
+        self.assertNotIn("reading_lamp", bulb_ids(living))
+        members = [m for g in living["switching_groups"] for m in g["members"]]
+        members += [m for u in living["adaptive_config"]["learning_units"] for m in u["members"]]
+        self.assertNotIn("reading_lamp_2", members)
+        self.assertNotIn("reading_lamp", members)
+        changes = config.snapshot_changes(committed_config(), result)
+        self.assertIn("bulb added: light.reading_lamp -> room 'living_room'", changes)
+        self.assertIn("bulb removed: light.reading_lamp (was in room 'living_room')", changes)
+
+    def test_a_p1_snapshot_matches_by_entity_id_and_records_the_keys(self):
+        before = without_keys(committed_config())
+        result = reconcile(doc=before)
+        self.assertEqual(result, committed_config())
+        self.assertEqual(
+            config.snapshot_changes(before, result), ["match key recorded for 6 bulb(s)"]
+        )
+
+    def test_without_a_key_a_rename_still_reads_as_remove_and_add(self):
+        # Why the first sync after upgrading should come before renaming entities in HA.
+        result = reconcile(
+            lights=renamed("light.reading_lamp", "light.reading_light"),
+            doc=without_keys(committed_config()),
+        )
+        self.assertEqual(find(result, "light.reading_light")["id"], "reading_light")
+
+    def test_a_light_outside_the_registry_is_matched_by_entity_id(self):
+        doc = committed_config()
+        doc["unassigned"].append(bulb("legacy_yaml", key=None))
+        lights = [*LIGHTS, light("light.legacy_yaml", None, "Legacy yaml", key=None)]
+        result = reconcile(lights=lights, doc=doc)
+        self.assertEqual(result, doc)
+        self.assertNotIn("ha_match_key", find(result, "light.legacy_yaml"))
+
+    def test_is_idempotent_after_a_rename(self):
+        lights = renamed("light.reading_lamp", "light.reading_light")
+        once = reconcile(lights=lights)
+        self.assertEqual(reconcile(lights=lights, doc=once), once)
 
 
 class SnapshotChangesTest(unittest.TestCase):

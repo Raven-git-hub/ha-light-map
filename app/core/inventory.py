@@ -7,6 +7,11 @@ Bulbs with no Area sit in an "Unassigned" bucket (the config's `unassigned` list
 Switching groups (UI: "group soft switch") are user-created per room and are independent
 of the adaptive module's learning units.
 
+A bulb is identified by its HA entity-registry entry, recorded as its `ha_match_key`, so
+renaming the light's entity_id in HA keeps the same bulb (its id, hard switches, and
+memberships). The key is opaque: it is matched, never addressed. A light outside the
+registry has no key and is matched by entity_id.
+
 A light's Area is its *effective* Area, the way HA itself resolves it: the entity's own
 Area if it has one, else its device's. Most lights get their Area from their device and
 carry none of their own, so reading only the entity registry would put nearly every bulb
@@ -31,7 +36,8 @@ Hard rules:
   preconditions before writing, writes only what was asked, and re-reads HA to confirm the
   write landed.
 - Entity IDs only, never device IDs. The device registry is read only to resolve an
-  inherited Area; device IDs never reach the result or the config.
+  inherited Area; device IDs never reach the result or the config. A bulb's
+  `ha_match_key` is an opaque match key: matched, never addressed or validated.
 """
 
 import copy
@@ -67,11 +73,16 @@ def join_lights(
 ) -> list[dict[str, Any]]:
     """Join HA's states to its entity and device registries: one record per light.*.
 
-    Each record: `entity_id`; `name` (HA's friendly name); `state`; `area_id` (the
-    effective Area, or None); `area_inherited` (True when that Area comes from the
-    device); `in_registry` (False for a light with no registry entry, e.g. a YAML light
-    with no unique_id, which HA can't give an Area at all); `is_group`. Sorted by
-    entity_id.
+    Each record: `entity_id`; `ha_match_key` (the registry entry's `id`, or None);
+    `name` (HA's friendly name); `state`; `area_id` (the effective Area, or None);
+    `area_inherited` (True when that Area comes from the device); `in_registry` (False for
+    a light with no registry entry, e.g. a YAML light with no unique_id, which HA can't
+    give an Area at all); `is_group`. Sorted by entity_id.
+
+    The match key is the registry entry's `id` rather than the integration's `unique_id`:
+    `id` is HA's own handle for the entry, kept across entity_id renames and unique
+    across integrations, while a `unique_id` is unique only within its integration and
+    often embeds hardware identifiers that have no business in a committed config.
     """
     entries = {e["entity_id"]: e for e in entities if isinstance(e.get("entity_id"), str)}
     device_areas = {d["id"]: d.get("area_id") for d in devices if isinstance(d.get("id"), str)}
@@ -83,9 +94,11 @@ def join_lights(
         attributes = state.get("attributes") or {}
         entry = entries.get(entity_id)
         area_id, inherited = _effective_area(entry, device_areas)
+        key = entry.get("id") if entry is not None else None
         lights.append(
             {
                 "entity_id": entity_id,
+                "ha_match_key": key if isinstance(key, str) and key else None,
                 "name": attributes.get("friendly_name") or entity_id.partition(".")[2],
                 "state": state.get("state"),
                 "area_id": area_id,

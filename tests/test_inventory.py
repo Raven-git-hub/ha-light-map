@@ -36,6 +36,7 @@ class DiscoverTest(unittest.IsolatedAsyncioTestCase):
             lights["light.chandelier_3"],
             {
                 "entity_id": "light.chandelier_3",
+                "ha_match_key": "reg_light_chandelier_3",
                 "name": "Chandelier 3",
                 "state": "unavailable",
                 "area_id": "living_room",
@@ -45,6 +46,7 @@ class DiscoverTest(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertFalse(lights["light.legacy_yaml"]["in_registry"])
+        self.assertIsNone(lights["light.legacy_yaml"]["ha_match_key"])
         self.assertTrue(lights["light.living_room_group"]["is_group"])
 
     async def test_device_ids_never_leave_the_join(self):
@@ -102,6 +104,30 @@ class SyncSnapshotTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
         config.cross_check(result)
+
+    async def test_follows_an_entity_renamed_in_ha(self):
+        ha = FakeHA()
+        # HA renames in place: same registry entry (same id), new entity_id.
+        for record in (*ha.entities, *ha.states):
+            if record["entity_id"] == "light.reading_lamp":
+                record["entity_id"] = "light.reading_light"
+        result = await inventory.sync_snapshot(ha, committed_config())
+        living = result["rooms"][0]
+        moved = next(b for b in living["bulbs"] if b["id"] == "reading_lamp")
+        self.assertEqual(moved["entity_id"], "light.reading_light")
+        self.assertEqual(moved["hard_switches"][0]["id"], "reading_switch")
+        self.assertEqual(
+            living["switching_groups"], committed_config()["rooms"][0]["switching_groups"]
+        )
+        self.assertIn(
+            "bulb entity_id changed: light.reading_lamp -> light.reading_light",
+            config.snapshot_changes(committed_config(), result),
+        )
+
+    async def test_a_light_outside_the_registry_gets_no_key(self):
+        result = await inventory.sync_snapshot(FakeHA(), committed_config())
+        legacy = next(b for b in result["unassigned"] if b["entity_id"] == "light.legacy_yaml")
+        self.assertNotIn("ha_match_key", legacy)
 
 
 class MoveBulbTest(unittest.IsolatedAsyncioTestCase):

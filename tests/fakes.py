@@ -32,10 +32,16 @@ DEVICES: list[dict[str, Any]] = [
 ]
 
 
+def registry_id(entity_id: str) -> str:
+    """The fixture registry's entry id for an entity, as first registered. It stays put if
+    the entity_id is later renamed, as HA's does."""
+    return f"reg_{entity_id.replace('.', '_')}"
+
+
 def _entity(entity_id: str, device_id: str | None, area_id: str | None) -> dict[str, Any]:
     return {
         "entity_id": entity_id,
-        "id": f"reg_{entity_id.replace('.', '_')}",
+        "id": registry_id(entity_id),
         "device_id": device_id,
         "area_id": area_id,
         "platform": "hue",
@@ -86,12 +92,22 @@ STATES: list[dict[str, Any]] = [
 ]
 
 
+_REGISTERED = object()
+
+
 def light(
-    entity_id: str, area_id: str | None, name: str | None = None, *, is_group: bool = False
+    entity_id: str,
+    area_id: str | None,
+    name: str | None = None,
+    *,
+    is_group: bool = False,
+    key: Any = _REGISTERED,
 ) -> dict[str, Any]:
-    """A discovered-light record, as `inventory.discover_lights` returns it."""
+    """A discovered-light record, as `inventory.discover_lights` returns it. `key` defaults
+    to the fixture registry id; pass None for a light outside the registry."""
     return {
         "entity_id": entity_id,
+        "ha_match_key": registry_id(entity_id) if key is _REGISTERED else key,
         "name": name or entity_id.partition(".")[2].replace("_", " ").capitalize(),
         "state": "off",
         "area_id": area_id,
@@ -101,18 +117,39 @@ def light(
     }
 
 
-def bulb(bulb_id: str, entity_id: str | None = None, name: str | None = None, **extra: Any):
-    return {
+def bulb(
+    bulb_id: str,
+    entity_id: str | None = None,
+    name: str | None = None,
+    *,
+    key: Any = _REGISTERED,
+    **extra: Any,
+) -> dict[str, Any]:
+    """A snapshot bulb, keyed by the fixture registry id unless `key` says otherwise."""
+    entity_id = entity_id or f"light.{bulb_id}"
+    result: dict[str, Any] = {
         "id": bulb_id,
         "name": name or bulb_id.replace("_", " ").capitalize(),
-        "entity_id": entity_id or f"light.{bulb_id}",
-        "hard_switches": [],
-        **extra,
+        "entity_id": entity_id,
     }
+    key = registry_id(entity_id) if key is _REGISTERED else key
+    if key:
+        result["ha_match_key"] = key
+    return {**result, "hard_switches": [], **extra}
+
+
+def without_keys(doc: dict[str, Any]) -> dict[str, Any]:
+    """The same snapshot as P1 wrote it, before bulbs carried a match key."""
+    doc = copy.deepcopy(doc)
+    for holder in [*doc["rooms"], {"bulbs": doc["unassigned"]}]:
+        for item in holder["bulbs"]:
+            item.pop("ha_match_key", None)
+    return doc
 
 
 def committed_config() -> dict[str, Any]:
-    """A valid committed config for the fixture house, as of some earlier sync."""
+    """A valid committed config for the fixture house, as of some earlier sync. Its bulbs
+    carry match keys; `without_keys` gives the P1-era equivalent."""
     return {
         "version": 1,
         "homeassistant": {"base_url": "http://ha.local:8123", "verify_ssl": True},
