@@ -89,13 +89,16 @@ Everything downstream is a pure function of the committed document.
   - `switching_groups[]`: `{ id, name, members (bulb ids), hard_switches[] }` — a soft-switch
     helper is implicit (generated) per group, modelled as an HA group of its members' soft
     switches.
-  - `hard_switches[]`: `{ id, name, source (entity_id or event/device ref), mode }`, `mode` ∈
-    `toggle` | `follow` | `press`.
-  - `adaptive_config` (only when `adaptive`): `{ lux_sensors[], presence_sensors[],
-    schedule_profile, learning_units[], scenes }`. `learning_units[]` =
-    `{ id, name, members (bulb ids) }`; `scenes` is the per-section matrix keyed by
-    learning-unit id × section (per-unit, per-section `mode` auto/off, plus lux margin,
-    maintenance flag, transition, max step).
+  - `adaptive_config` (required when `adaptive` is true, forbidden when false):
+    `{ lux_sensors[], presence_sensors[], schedule_profile, learning_units[], scenes }`.
+    `learning_units[]` = `{ id, name, members (bulb ids) }`; `scenes` is the per-section matrix
+    keyed by learning-unit id × section (per-unit, per-section `mode` auto/off, plus lux
+    margin, maintenance flag, transition, max step).
+
+  `hard_switches[]` is the binding shape used inside `bulbs[]` and `switching_groups[]` — not a
+  key on the room. Shape: `{ id, name, source (entity_id or event/device ref), mode }`,
+  `mode` ∈ `toggle` | `follow` | `press`. A room-wide "all off" is a hard switch on a
+  switching group covering the room, not a room-level binding.
 
 The existing single room from `ha-adaptive-light` is re-expressed against this shape rather
 than migrated; history starts fresh (as the n8n→container cutover did).

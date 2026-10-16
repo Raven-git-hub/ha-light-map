@@ -80,6 +80,8 @@ Stub files declare their responsibility in the module docstring; later phases fi
 ```
 app/
   __init__.py
+  main.py            Composition root: the FastAPI app wiring core + modules, plus HTTP
+                     endpoints. The entry point; `python -c "import app.main"` must succeed.
   core/
     __init__.py
     ha.py            Transport: HA REST + WebSocket + Area/entity-registry read & write.
@@ -103,7 +105,6 @@ app/
     deploy.py        Reconcile helpers/automations/Area writes against live HA across
                      namespaces; create/update/remove; verify after write. Each namespace
                      stays in its own lane.
-    main.py          FastAPI app and HTTP endpoints.
   modules/
     __init__.py
     adaptive/
@@ -191,8 +192,10 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
 `docs/DESIGN.md` ("Data model").
 
 - `version` — schema version; the container migrates forward on load.
-- `homeassistant` — `base_url`, `access_token` (redacted from exports; held in secrets),
-  `verify_ssl`, reconnect backoff.
+- `homeassistant` — `base_url`, `access_token` (redacted from exports; never persisted),
+  `verify_ssl`, reconnect backoff. At runtime the connection is read from the environment /
+  secrets: `LM_HA_BASE_URL`, `LM_HA_TOKEN` (or `LM_HA_TOKEN_FILE`). Whether `LM_HA_BASE_URL`
+  overrides `base_url` is decided in P1.
 - `system` — observation cadence, reactive window/min-delta, data dir, CSV toggle, event-log
   retention.
 - `rooms[]` — from HA Areas, each:
@@ -202,12 +205,17 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
   - `switching_groups[]`: `{ id (slug), name, members (bulb ids), hard_switches[] }` — a
     soft-switch helper is implicit (generated) per group, modelled as an HA group of its
     members' soft switches.
-  - `hard_switches[]`: `{ id, name, source (entity_id or event/device ref), mode }`, `mode`
-    ∈ `toggle` | `follow` | `press`.
-  - `adaptive_config?` — present only when `adaptive` is true:
-    `{ lux_sensors[], presence_sensors[], schedule_profile, learning_units[], scenes }`,
-    where `learning_units[]` = `{ id (slug), name, members (bulb ids) }` and `scenes` is the
-    per-section matrix keyed by learning-unit id × section.
+  - `adaptive_config` — the per-module block, **required when `adaptive` is true** and
+    forbidden when false: `{ lux_sensors[], presence_sensors[], schedule_profile,
+    learning_units[], scenes }`, where `learning_units[]` = `{ id (slug), name,
+    members (bulb ids) }` and `scenes` is the per-section matrix keyed by learning-unit id ×
+    section.
+
+  `hard_switches[]` is the binding shape used **inside `bulbs[]` and `switching_groups[]`** —
+  it is not a key on the room itself: `{ id, name, source (entity_id or event/device ref),
+  mode }`, `mode` ∈ `toggle` | `follow` | `press`. A room-wide action (e.g. an "all off"
+  button) is a hard switch bound to a switching group that covers the room, not a room-level
+  binding.
 - `schedule_profiles[]` — reusable time-section schedules (adaptive module). A profile with
   id `default` must always exist.
 - `learning` — adaptive analyser tuning.
@@ -231,7 +239,8 @@ Tables (skeleton):
 - `bulb_reading` — long format, one row per bulb per heartbeat: `id`, `heartbeat_id` (fk),
   `bulb_id`, `brightness` (nullable), `is_on` (bool).
 - `reactive_event` — a consolidated manual change: `id`, `ts`, `room_id`, `section`,
-  `bulb_id`, `before`, `after`, `weight`.
+  `bulb_id`, `brightness_before`, `brightness_after`, `weight` (avoid `before`/`after` —
+  they are SQL keywords).
 - `almanac` — insert-only learned snapshots: `id`, `ts`, `room_id`, `section`,
   `learning_unit_id`, `lux_target`, `lux_margin`, `maintenance_enabled`, `max_step_pct`,
   `trust_weight`, `valid_from`, `mode`.
