@@ -402,7 +402,8 @@ class HAClient:
         )
 
     async def list_entity_registry(self) -> list[dict[str, Any]]:
-        """Return the entity registry, which carries each entity's own Area assignment.
+        """Return the entity registry, which carries each entity's own Area assignment and
+        its entry `id` (HA's stable handle for the entry, kept across entity_id renames).
 
         An entity with no Area of its own inherits its device's (see
         `list_device_registry`).

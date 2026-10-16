@@ -20,7 +20,8 @@ Hard rules:
   command can never power a bulb on.
 - Soft switches are `input_boolean`s, pure power toggles: brightness never flows through
   them.
-- Entity IDs only, never device IDs.
+- Entity IDs only, never device IDs. A bulb is addressed by its `entity_id`, never by its
+  `ha_match_key` (an opaque match key for the inventory's reconcile only).
 - Output is plain Python data for `core.generate` to serialise: no template engine, HA
   Jinja kept as inert strings, byte-identical output for the same config, and no almanac
   values baked in.

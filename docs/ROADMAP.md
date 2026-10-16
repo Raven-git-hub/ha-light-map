@@ -5,7 +5,7 @@ truth; update both together.
 
 Parallel build in this repo: the live `ha-adaptive-light` keeps running untouched until P6.
 
-**Current phase: P1.** (P0 done.)
+**Current phase: P1** (P0 done; P1.1 adds stable bulb identity across HA entity renames).
 
 ## Phases
 

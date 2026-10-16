@@ -23,7 +23,10 @@ hard-won, so preserve them.
 - **Deterministic generation.** The same config must always produce byte-identical YAML.
   Avoid dict/set ordering, timestamps, or other nondeterminism leaking into output.
 - **Entity IDs only, never device IDs.** Device IDs are opaque, break on re-pairing, and
-  can't be validated by an entity-existence check.
+  can't be validated by an entity-existence check. A bulb's `ha_match_key` (its HA
+  entity-registry entry id) is the one opaque HA id the config holds, and it is a match key
+  for the snapshot reconcile only: never addressed, validated against HA, or written into
+  generated artefacts. Anything that addresses a bulb uses its `entity_id`.
 - **The soft switch owns power.** The soft→bulb bridge is the only thing that powers a bulb
   on or off. Modules act only by commanding soft switches and setting brightness, and every
   brightness command is guarded on "soft is on" so it can never power a bulb on.

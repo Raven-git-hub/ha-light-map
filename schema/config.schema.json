@@ -141,7 +141,7 @@
       }
     },
     "bulb": {
-      "description": "One light.* entity, the actuation atom. Its soft-switch helper is implicit (generated). Matched to HA by entity_id; its id and hard switches travel with it when it moves.",
+      "description": "One light.* entity, the actuation atom. Its soft-switch helper is implicit (generated). Matched to HA by ha_match_key, or by entity_id when it has none; its id, hard switches, and memberships travel with it when it moves or its entity_id is renamed.",
       "type": "object",
       "required": ["id", "name", "entity_id"],
       "additionalProperties": false,
@@ -156,6 +156,11 @@
         "entity_id": {
           "type": "string",
           "pattern": "^light\\.[a-z0-9_]+$"
+        },
+        "ha_match_key": {
+          "description": "The HA entity-registry entry id of this bulb's light, recorded by the inventory. An OPAQUE match key only: the reconcile uses it to recognise the bulb when its entity_id is renamed in HA. Never addressed, validated against HA, or written into generated artefacts; entity_id is what everything addresses. Absent for a light outside the entity registry, and until the first sync records it.",
+          "type": "string",
+          "minLength": 1
         },
         "hard_switches": {
           "type": "array",

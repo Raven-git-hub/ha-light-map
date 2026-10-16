@@ -19,6 +19,8 @@ Id scopes, which follow the HA names the ids end up in:
 - Hard-switch ids are global (`lm_hard_<id>`).
 - Learning-unit ids are unique within their room (the almanac is per room).
 - Schedule-profile ids are global.
+- A bulb's `ha_match_key`, when it has one, is unique across all bulbs: one HA registry
+  entry is one bulb.
 
 Hard rules:
 
@@ -33,6 +35,9 @@ Hard rules:
   reconciled against them, never overwritten destructively by surprise: the reconcile is
   a proposal, `snapshot_changes` lists what it would change, and nothing is written until
   the result is saved.
+- Entity IDs only, never device IDs. A bulb's `ha_match_key` (its entity-registry entry
+  id) is the one opaque HA id the config holds, and it is a match key for the reconcile
+  only: never addressed, validated against HA, or written into generated artefacts.
 """
 
 import copy
@@ -253,6 +258,7 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
     bulb_home: dict[str, str] = {}
     soft_ids: list[tuple[str, str]] = []
     entity_ids: list[tuple[str, str]] = []
+    match_keys: list[tuple[str, str]] = []
     hard_ids: list[tuple[str, str]] = []
     holders = [(f"room '{r.get('id')}'", r.get("bulbs", [])) for r in rooms]
     holders.append(("unassigned", unassigned))
@@ -261,6 +267,8 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
             bulb_home.setdefault(bulb.get("id"), where)
             soft_ids.append((bulb.get("id"), f"bulb in {where}"))
             entity_ids.append((bulb.get("entity_id"), where))
+            if bulb.get("ha_match_key"):
+                match_keys.append((bulb["ha_match_key"], f"bulb '{bulb.get('id')}'"))
             hard_ids += [
                 (h.get("id"), f"bulb '{bulb.get('id')}'")
                 for h in _dicts(bulb.get("hard_switches", []))
@@ -276,6 +284,7 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
         "soft-switch id", soft_ids, "bulb and switching-group ids share one namespace"
     )
     problems += _clashes("entity_id", entity_ids, "a bulb can be in only one place")
+    problems += _clashes("ha_match_key", match_keys, "one HA registry entry is one bulb")
     problems += _clashes("hard-switch id", hard_ids, None)
 
     for room in rooms:
@@ -416,8 +425,9 @@ def reconcile_area_snapshot(
     """Return the config with its room snapshot reconciled against HA's Areas and lights.
 
     `areas` is HA's Area registry (`area_id`, `name`); `lights` is what
-    `core.inventory.discover_lights` returns (`entity_id`, `name`, `area_id` - the
-    effective Area, inherited from the device where the entity has none - and `is_group`).
+    `core.inventory.discover_lights` returns (`entity_id`, `ha_match_key`, `name`,
+    `area_id` - the effective Area, inherited from the device where the entity has none -
+    and `is_group`).
 
     HA is the source of truth for which rooms exist and which bulbs are in them; the
     config owns everything the user layered on top. So:
@@ -426,10 +436,13 @@ def reconcile_area_snapshot(
       groups, `adaptive`, `adaptive_config`) for as long as its Area exists, matched by
       `ha_area_id`; its name follows the Area's. A new Area becomes a new, non-adaptive
       room. A room whose Area is gone from HA is dropped.
-    - A bulb is matched by `entity_id` and keeps its id and hard switches wherever it goes:
-      a moved bulb follows its Area, a light with no (known) Area goes to `unassigned`, a
-      light HA no longer has is dropped, and a new light becomes a new bulb. Its name
-      follows HA's.
+    - A bulb is matched by its `ha_match_key` (HA's entity-registry entry id, which
+      survives an entity_id rename), or by `entity_id` only when the bulb has no key. A
+      matched bulb keeps its id, hard switches, and memberships wherever it goes, and
+      takes its light's current entity_id and name (and key, if it had none yet). A moved
+      bulb follows its Area, a light with no (known) Area goes to `unassigned`, a bulb
+      whose light HA no longer has is dropped, and a new light becomes a new bulb, under
+      an id no bulb in the old snapshot used.
     - Switching-group and learning-unit members that are no longer bulbs in the room are
       dropped, and a group or unit left with no members is dropped with them.
     - HA light groups are not bulbs and are skipped: driving a group alongside its member
@@ -478,11 +491,34 @@ def reconcile_area_snapshot(
         )
     linked_areas = {room["ha_area_id"] for room in rooms}
 
-    old_bulbs: dict[str, dict[str, Any]] = {}
-    for bulb in [b for room in old_rooms for b in _dicts(room.get("bulbs", []))] + old_unassigned:
-        old_bulbs.setdefault(bulb.get("entity_id"), bulb)
-    live_ids = {light["entity_id"] for light in live}
-    taken = {b.get("id") for eid, b in old_bulbs.items() if eid in live_ids}
+    # A bulb's identity is its HA entity-registry entry, not its entity_id. Renaming an
+    # entity in HA keeps the registry entry (so its ha_match_key) and changes the
+    # entity_id, and matching on entity_id read that as one bulb removed and another added:
+    # a new id, its hard switches gone, its switching-group and learning-unit memberships
+    # pruned. entity_id is the fallback only for a bulb with no key: a light outside the
+    # registry, or a snapshot from before keys were recorded. A keyed bulb whose key HA no
+    # longer has is gone, even if another light now holds its old entity_id.
+    old_bulbs = [b for room in old_rooms for b in _dicts(room.get("bulbs", []))]
+    old_bulbs += old_unassigned
+    by_key: dict[str, dict[str, Any]] = {}
+    by_entity: dict[str, dict[str, Any]] = {}
+    for bulb in old_bulbs:
+        if bulb.get("ha_match_key"):
+            by_key.setdefault(bulb["ha_match_key"], bulb)
+        else:
+            by_entity.setdefault(bulb.get("entity_id"), bulb)
+    matched: dict[str, dict[str, Any]] = {}
+    for light in live:
+        if light.get("ha_match_key") in by_key:
+            matched[light["entity_id"]] = by_key.pop(light["ha_match_key"])
+    for light in live:
+        if light["entity_id"] not in matched and light["entity_id"] in by_entity:
+            matched[light["entity_id"]] = by_entity.pop(light["entity_id"])
+
+    # Every id in the old snapshot stays reserved, matched or not. A new bulb given a
+    # just-dropped bulb's id would inherit that bulb's switching-group and learning-unit
+    # memberships (they name bulbs by id) though not its hard switches: half an identity.
+    taken = {b.get("id") for b in old_bulbs}
     taken |= {g.get("id") for room in rooms for g in _dicts(room.get("switching_groups", []))}
 
     bulbs: dict[str, dict[str, Any]] = {}
@@ -490,13 +526,19 @@ def reconcile_area_snapshot(
     for light in live:
         entity_id = light["entity_id"]
         name = light.get("name") or entity_id.partition(".")[2]
-        bulb = old_bulbs.get(entity_id)
+        key = light.get("ha_match_key")
+        bulb = matched.get(entity_id)
         if bulb is None:
             bulb_id = _unique(_slugify(entity_id.partition(".")[2], "bulb"), taken)
             taken.add(bulb_id)
-            bulb = {"id": bulb_id, "name": name, "entity_id": entity_id, "hard_switches": []}
+            bulb = {"id": bulb_id, "name": name, "entity_id": entity_id}
+            bulb |= {"ha_match_key": key} if key else {}
+            bulb["hard_switches"] = []
         else:
             bulb["name"] = name
+            bulb["entity_id"] = entity_id
+            if key:
+                bulb["ha_match_key"] = key
         bulbs[entity_id] = bulb
         area_id = light.get("area_id")
         location[entity_id] = area_id if area_id in linked_areas else None
@@ -507,9 +549,12 @@ def reconcile_area_snapshot(
         seen: set[str] = set()
         for bulb in previous:
             entity_id = bulb.get("entity_id")
-            if entity_id in location and location[entity_id] == here and entity_id not in seen:
-                placed.append(bulbs[entity_id])
-                seen.add(entity_id)
+            # `is`: only a matched bulb is already here. A dropped one can share its old
+            # entity_id with the new bulb that has taken it over.
+            if bulbs.get(entity_id) is bulb and location[entity_id] == here:
+                if entity_id not in seen:
+                    placed.append(bulb)
+                    seen.add(entity_id)
         for light in live:
             entity_id = light["entity_id"]
             if location[entity_id] == here and entity_id not in seen:
@@ -547,8 +592,10 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
     """Describe, one line each, how the room snapshot differs between two configs.
 
     This is what makes a reconcile reviewable before it is saved: rooms added, removed,
-    and renamed; bulbs added, removed, moved, and renamed; switching groups and learning
-    units dropped or losing members. Deterministic order.
+    and renamed; bulbs added, removed, moved, renamed, and re-pointed at a renamed
+    entity_id; match keys recorded; switching groups and learning units dropped or losing
+    members. A bulb is followed by its id, which a reconcile keeps for a matched bulb and
+    never hands to a new one. Deterministic order.
     """
     changes: list[str] = []
     rooms_before = {r.get("id"): r for r in _dicts(before.get("rooms", []))}
@@ -575,26 +622,43 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
         if old.get("name") != new.get("name"):
             changes.append(f"room renamed: '{room_id}': {old.get('name')!r} -> {new.get('name')!r}")
 
-    def where_bulbs(doc: Mapping[str, Any]) -> dict[str, tuple[str, Mapping[str, Any]]]:
-        found: dict[str, tuple[str, Mapping[str, Any]]] = {}
+    def where_bulbs(doc: Mapping[str, Any]) -> dict[Any, tuple[str, Mapping[str, Any]]]:
+        found: dict[Any, tuple[str, Mapping[str, Any]]] = {}
         for room in _dicts(doc.get("rooms", [])):
             for bulb in _dicts(room.get("bulbs", [])):
-                found[bulb.get("entity_id")] = (f"room '{room.get('id')}'", bulb)
+                found[bulb.get("id")] = (f"room '{room.get('id')}'", bulb)
         for bulb in _dicts(doc.get("unassigned", [])):
-            found[bulb.get("entity_id")] = ("unassigned", bulb)
+            found[bulb.get("id")] = ("unassigned", bulb)
         return found
 
     bulbs_before, bulbs_after = where_bulbs(before), where_bulbs(after)
-    for entity_id in sorted(bulbs_after.keys() - bulbs_before.keys(), key=str):
-        changes.append(f"bulb added: {entity_id} -> {bulbs_after[entity_id][0]}")
-    for entity_id in sorted(bulbs_before.keys() - bulbs_after.keys(), key=str):
-        changes.append(f"bulb removed: {entity_id} (was in {bulbs_before[entity_id][0]})")
-    for entity_id in sorted(bulbs_before.keys() & bulbs_after.keys(), key=str):
-        (old_where, old), (new_where, new) = bulbs_before[entity_id], bulbs_after[entity_id]
+
+    def by_entity(found: Mapping[Any, tuple[str, Mapping[str, Any]]]) -> Callable[[Any], str]:
+        return lambda bulb_id: str(found[bulb_id][1].get("entity_id"))
+
+    for bulb_id in sorted(bulbs_after.keys() - bulbs_before.keys(), key=by_entity(bulbs_after)):
+        where, bulb = bulbs_after[bulb_id]
+        changes.append(f"bulb added: {bulb.get('entity_id')} -> {where}")
+    for bulb_id in sorted(bulbs_before.keys() - bulbs_after.keys(), key=by_entity(bulbs_before)):
+        where, bulb = bulbs_before[bulb_id]
+        changes.append(f"bulb removed: {bulb.get('entity_id')} (was in {where})")
+    keys_recorded = 0
+    for bulb_id in sorted(bulbs_before.keys() & bulbs_after.keys(), key=by_entity(bulbs_after)):
+        (old_where, old), (new_where, new) = bulbs_before[bulb_id], bulbs_after[bulb_id]
+        entity_id = new.get("entity_id")
+        if old.get("entity_id") != entity_id:
+            changes.append(f"bulb entity_id changed: {old.get('entity_id')} -> {entity_id}")
         if old_where != new_where:
             changes.append(f"bulb moved: {entity_id}: {old_where} -> {new_where}")
         if old.get("name") != new.get("name"):
             changes.append(f"bulb renamed: {entity_id}: {old.get('name')!r} -> {new.get('name')!r}")
+        if old.get("ha_match_key") != new.get("ha_match_key"):
+            if old.get("ha_match_key"):
+                changes.append(f"bulb match key changed: {entity_id}")
+            else:
+                keys_recorded += 1
+    if keys_recorded:
+        changes.append(f"match key recorded for {keys_recorded} bulb(s)")
 
     for room_id in sorted(rooms_before.keys() & rooms_after.keys(), key=str):
         old, new = rooms_before[room_id], rooms_after[room_id]

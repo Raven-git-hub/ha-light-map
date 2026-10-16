@@ -84,8 +84,9 @@ A room is the single shared container. (Config shape summary in `docs/ARCHITECTU
 Everything downstream is a pure function of the committed document.
 
 - `rooms[]`: `{ id, name, ha_area_id, adaptive, bulbs[], switching_groups[], adaptive_config? }`
-  - `bulbs[]`: `{ id, name, entity_id (light.*), hard_switches[] }` — a soft-switch helper is
-    implicit (generated) per bulb.
+  - `bulbs[]`: `{ id, name, entity_id (light.*), ha_match_key?, hard_switches[] }` — a
+    soft-switch helper is implicit (generated) per bulb. `ha_match_key` is an opaque match
+    key (see "Bulb identity").
   - `switching_groups[]`: `{ id, name, members (bulb ids), hard_switches[] }` — a soft-switch
     helper is implicit (generated) per group, modelled as an HA group of its members' soft
     switches.
@@ -100,8 +101,8 @@ Everything downstream is a pure function of the committed document.
   `mode` ∈ `toggle` | `follow` | `press`. A room-wide "all off" is a hard switch on a
   switching group covering the room, not a room-level binding.
 - `unassigned[]`: bulbs whose light has no HA Area (the Map's "Unassigned" bucket), same shape
-  as a room's bulbs. A bulb is identified by its `entity_id`; its `id` — which names its soft
-  switch — and its hard switches stay with it as it moves between rooms and Unassigned.
+  as a room's bulbs. A bulb's `id` — which names its soft switch — and its hard switches stay
+  with it as it moves between rooms and Unassigned.
 
 The existing single room from `ha-adaptive-light` is re-expressed against this shape rather
 than migrated; history starts fresh (as the n8n→container cutover did).
@@ -192,10 +193,12 @@ destructive by surprise.
   (switching groups, `adaptive`, `adaptive_config`) while the Area exists; its name follows the
   Area's. A new Area becomes a new, non-adaptive room (id from the Area id). A room whose Area
   is gone from HA is dropped.
-- **A bulb is matched by `entity_id`.** A moved bulb follows its Area with its id and hard
-  switches; a light with no (known) Area goes to `unassigned`; a light HA no longer has is
-  dropped; a new light becomes a new bulb (id from its object id, kept unique across the soft-
-  switch namespace). Its name follows HA's friendly name.
+- **A bulb is matched by its `ha_match_key`**, or by `entity_id` when it has none (see "Bulb
+  identity" below). A moved bulb follows its Area with its id and hard switches; a light with
+  no (known) Area goes to `unassigned`; a bulb whose light HA no longer has is dropped; a new
+  light becomes a new bulb (id from its object id, kept unique across the soft-switch
+  namespace and never one a bulb in the old snapshot used). Its name and entity_id follow
+  HA's.
 - **Switching-group and learning-unit members that leave the room are dropped**, and a group
   or unit left empty is dropped with it.
 - **HA light groups are not bulbs.** A `light.*` that lists member `entity_id`s (HA's group
@@ -206,6 +209,37 @@ destructive by surprise.
   bulb it adds, removes, renames or moves and every member it drops, and nothing is written
   until the result is saved (validate-then-write). That review step is what keeps a sync from
   being destructive by surprise.
+
+### Bulb identity (settled in P1.1)
+
+A bulb is its light's **HA entity-registry entry**, not its `entity_id`. Renaming a light's
+entity_id in HA keeps its registry entry, and matching on entity_id read the rename as one
+bulb removed and another added: a new id (so a new soft switch), its hard switches gone, its
+switching-group and learning-unit memberships pruned.
+
+- On discovery each light records its registry entry's `id` as `ha_match_key`. That is HA's
+  own handle for the entry: kept across entity_id renames and unique across integrations. The
+  integration's `unique_id` is not used: it is unique only within its integration and often
+  embeds hardware identifiers that have no place in a committed config.
+- The reconcile matches a snapshot bulb to a light by `ha_match_key` first, and by
+  `entity_id` only when the bulb has no key: a light outside the entity registry (a YAML light
+  with no `unique_id`), or a snapshot written before keys were recorded. A matched bulb keeps
+  its id, hard switches and memberships and takes the light's current entity_id (and its key,
+  the first time). A keyed bulb whose key HA no longer has is gone, even when another light now
+  holds its old entity_id: a different registry entry is a different bulb.
+- A new bulb never takes an id a bulb in the old snapshot used. Memberships name bulbs by id,
+  so a new light given a just-dropped bulb's id would inherit its group and learning-unit
+  memberships (though not its hard switches) by coincidence.
+- `snapshot_changes` follows bulbs by id, so a rename reads as `bulb entity_id changed`, and
+  the keys a sync records for the first time are counted in one line.
+- **The key is opaque.** It is a match key for the reconcile only. Nothing addresses a bulb by
+  it, validates it against HA, or writes it into generated artefacts: everything that
+  addresses a bulb uses its `entity_id`, so "entity IDs only, never device IDs" holds. The
+  worst a stale key can do is make the reconcile treat a light as new, which
+  `snapshot_changes` reports before anything is saved; it can never misdirect a command.
+- No schema-version bump: the key is optional, so a P1 snapshot still loads, and its first
+  sync records keys by matching on entity_id. Rename entities in HA only after that first
+  sync; until a bulb has its key, a rename still reads as remove + add.
 
 The writes from the Map change HA first; a sync then brings the snapshot up to date:
 

@@ -9,7 +9,8 @@ Hard rules:
 - Every write is verified after the fact.
 - Area/registry writes are a new write surface: verified, reconcilable, never destructive by
   surprise.
-- Entity IDs only, never device IDs.
+- Entity IDs only, never device IDs, and never a bulb's `ha_match_key` (an opaque match
+  key for the inventory's reconcile only).
 - During the parallel build (P0-P4) Light Map runs beside the live ha-adaptive-light, so
   only new artefacts are deployed and the new bridges stay unbound (no hard switches; bridge
   not yet authoritative) until cutover (P6).

@@ -160,7 +160,10 @@ ported from `ha-adaptive-light` and were hard-won — preserve them.
 - **Deterministic generation.** The same config must always produce byte-identical YAML.
   Avoid dict/set ordering, timestamps, or other nondeterminism leaking into output.
 - **Entity IDs only, never device IDs.** Device IDs are opaque, break on re-pairing, and
-  can't be validated by an entity-existence check.
+  can't be validated by an entity-existence check. A bulb's `ha_match_key` (its HA
+  entity-registry entry id) is the one opaque HA id the config holds, and it is a match key
+  for the snapshot reconcile only: never addressed, validated against HA, or written into
+  generated artefacts. Anything that addresses a bulb uses its `entity_id`.
 - **The soft switch owns power.** The soft→bulb bridge is the only thing that powers a bulb
   on or off. Modules act only by commanding soft switches and setting brightness, and every
   brightness command is guarded on "soft is on" so it can never power a bulb on.
@@ -205,8 +208,10 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
   retention.
 - `rooms[]` — from HA Areas (every Area is a room, with or without lights), each:
   - `id` (slug), `name`, `ha_area_id`, `adaptive` (bool)
-  - `bulbs[]`: `{ id (slug), name, entity_id (light.*), hard_switches[] }` — a soft-switch
-    helper is implicit (generated) per bulb.
+  - `bulbs[]`: `{ id (slug), name, entity_id (light.*), ha_match_key?, hard_switches[] }` —
+    a soft-switch helper is implicit (generated) per bulb. `ha_match_key` is the light's HA
+    entity-registry entry id: an opaque key the reconcile matches on, so a bulb survives its
+    entity_id being renamed in HA (see `docs/DESIGN.md`, "Bulb identity").
   - `switching_groups[]`: `{ id (slug), name, members (bulb ids), hard_switches[] }` — a
     soft-switch helper is implicit (generated) per group, modelled as an HA group of its
     members' soft switches.
@@ -232,8 +237,9 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
 (`sensor.al_almanac_<room>`), and no two rooms share an HA Area. Bulb ids and switching-group
 ids share one global namespace, because both name a soft switch (`input_boolean.lm_soft_<id>`)
 — including the bulbs in `unassigned[]`. Hard-switch ids are global (`lm_hard_<id>`).
-Learning-unit ids are unique within their room. Schedule-profile ids are global. The schema
-checks shape; `app/core/config.py` cross-checks these scopes and every reference.
+Learning-unit ids are unique within their room. Schedule-profile ids are global. A bulb's
+`ha_match_key`, when present, is unique across all bulbs. The schema checks shape;
+`app/core/config.py` cross-checks these scopes and every reference.
 
 As of P1 the core sections (`homeassistant`, `rooms[]`, `unassigned[]`) are validated in
 depth; `system`, `learning`, `schedule_profiles` and `adaptive_config` fill in with the
