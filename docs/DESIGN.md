@@ -323,7 +323,7 @@ The **source** says what fires it, and the **mode** what it does:
 
 | `source.type` | what fires it |
 | --- | --- |
-| `state` (`entity_id`) | a stateful switch, binary_sensor, light, or `event.*` entity. `follow` acts on its `off→on` / `on→off` changes; `toggle` and `press` on every real change of its state (a latching switch's flip, an event entity's new timestamp), never on one to or from `unavailable` / `unknown` or on the entity appearing or disappearing, so a restart or an integration reload is never a press |
+| `state` (`entity_id`) | a stateful switch, binary_sensor, light, or `event.*` entity. `follow` acts on its `off→on` / `on→off` changes; `toggle` and `press` on every real change of its state (a latching switch's flip, an event entity's new timestamp), never on one to or from `unavailable` / `unknown` or on the entity appearing or disappearing, so a source that comes back from a restart or reload straight to its state is never a press (one that settles through a real change as it loads, like an HA group whose members come up one by one, does act: bind the physical switch's own entity) |
 | `event` (`event_type`, `event_data?`) | a stateless button firing an HA event; `event_data` matches a subset of the event's data |
 | `device` (`device_id`, `trigger`) | a device automation trigger (`trigger` holds `domain`, `type`, `subtype`, ...), only for a button that exposes no entity or event. The device id only *reads* a press: it appears in the trigger, never in a target — the one carved-out exception to "entity IDs only" |
 
@@ -338,12 +338,17 @@ Hard-switch automations run `queued`: each press applies in turn and sees the la
 result, so two quick presses of a toggle are two toggles. A soft switch may carry several
 hard switches of mixed modes.
 
-Some bindings would feed back on themselves, and the cross-check refuses them: a source in
-Light Map's own `lm_` namespace (bind the physical switch, or use a switching group); a
-`toggle` whose source is a bulb Light Map drives (its bridge's change would toggle it again,
-forever — `follow` and `press` set a state rather than flip one, so they settle); and an
-event source on the HA core events the plane's own work fires (`state_changed`,
-`call_service`, `automation_triggered`, `script_started`).
+Some bindings would feed back on themselves, and are refused: a source in Light Map's own
+`lm_` namespace (bind the physical switch, or use a switching group); a `toggle` whose
+source is a bulb Light Map drives (its bridge's change would toggle it again, forever —
+`follow` and `press` set a state rather than flip one, so they settle); and an event source
+on an HA core event (`state_changed`, `call_service`, `automation_triggered`,
+`automation_reloaded`, the registry updates, the start/stop events, ...), which fire for
+the plane's own work, a deploy, or a restart. The config cross-check catches these; deploy
+also refuses a `toggle` whose source is an HA group of bulbs Light Map drives, which only
+HA's state can show. The general rule, which no check can fully enforce (a relay exposed
+through `switch_as_x`, a device trigger on a bulb's own device): a toggle's source must not
+be something the bulbs it switches can change.
 
 A `toggle` on a state source flips on every change, which is right for a latching wall
 switch, a relay in detached mode, or an `event.*` entity; a momentary contact (on while held,
@@ -392,8 +397,20 @@ was generated, each helper's entity has the id the automations address (one rena
 is caught), each automation loaded (HA marks one it rejected `unavailable`), nothing
 removed is still there, and each synced soft switch holds its bulb's state. HA reloads a
 written automation in the background, so verification retries for a few seconds before
-reporting what still doesn't match. A failed or interrupted deploy is reconciled by the
-next one, which plans from whatever HA then holds.
+reporting what still doesn't match; an update is confirmed by its stored config, since HA
+exposes nothing that says the reload has picked it up. A failed or interrupted deploy is
+reconciled by the next one, which plans from whatever HA then holds.
+
+HA lists automations only as entities, so deploy reads each automation it wants by id from
+the config API rather than trusting the entity list. An automation stored but not loaded
+(its entity disabled, `unavailable`, or still reloading after an interrupted deploy) is
+written again, which reloads it, but never "created" again: re-creating a bridge would
+re-sync its soft switch to the bulb while the bridge may already be live, driving it.
+
+The `lm_` prefix is reserved: any helper or automation in HA whose id starts with `lm_`
+belongs to the plane, and one the config doesn't call for is removed (the doctor's preview
+lists every removal). An `lm_` automation that HA's YAML defines outside `automations.yaml`
+can't be managed: deploy refuses to write over one, and warns about the others.
 
 **Area writes** (`deploy_areas`) make HA's Areas match the committed room snapshot, through
 the inventory's own verified `move_bulb`. Every move is checked first (`inventory.check_move`

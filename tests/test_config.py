@@ -450,7 +450,7 @@ class HardSwitchTest(unittest.TestCase):
                 source={"type": "event", "event_type": event_type},
                 mode="toggle",
             )
-            self.assert_loop(doc, f"event {event_type} fires for Light Map's own changes")
+            self.assert_loop(doc, f"event {event_type} is an HA core event")
 
 
 class LoadSaveTest(unittest.TestCase):

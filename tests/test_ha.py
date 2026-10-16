@@ -134,7 +134,8 @@ class RestTest(unittest.IsolatedAsyncioTestCase):
 
         def respond(request):
             if request.url.path.endswith("/lm_missing"):
-                return httpx.Response(404, json={"message": "Resource not found"})
+                status = 404 if request.method == "GET" else 400
+                return httpx.Response(status, json={"message": "Resource not found"})
             if request.method == "GET":
                 return httpx.Response(200, json=stored)
             return httpx.Response(200, json={"result": "ok"})
@@ -145,14 +146,16 @@ class RestTest(unittest.IsolatedAsyncioTestCase):
         await client.save_automation_config("lm_bridge_a", stored)
         self.assertTrue(await client.delete_automation_config("lm_bridge_a"))
         self.assertFalse(await client.delete_automation_config("lm_missing"))
+        # A delete looks first: HA answers a DELETE of a missing id with a bare 400.
         self.assertEqual(
             [(r.method, r.url.path) for r in self.requests],
             [
                 ("GET", "/api/config/automation/config/lm_bridge_a"),
                 ("GET", "/api/config/automation/config/lm_missing"),
                 ("POST", "/api/config/automation/config/lm_bridge_a"),
+                ("GET", "/api/config/automation/config/lm_bridge_a"),
                 ("DELETE", "/api/config/automation/config/lm_bridge_a"),
-                ("DELETE", "/api/config/automation/config/lm_missing"),
+                ("GET", "/api/config/automation/config/lm_missing"),
             ],
         )
         self.assertEqual(json.loads(self.requests[2].content), stored)

@@ -48,7 +48,7 @@ import asyncio
 import copy
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from app.core import config as config_mod
@@ -69,6 +69,9 @@ HELPER_DOMAINS = ("input_boolean",)
 VERIFY_ATTEMPTS = 5
 VERIFY_DELAY = 1.0
 
+# The automation ids HA's config API can address in a URL path (see `core.ha`).
+_ADDRESSABLE = re.compile(r"^[a-z0-9_]+$")
+
 
 class DeployError(Exception):
     """A deploy was refused before writing, a write was not taken as asked, or HA did not
@@ -82,28 +85,37 @@ class DeployError(Exception):
 # -- Reading ---------------------------------------------------------------------------
 
 
-async def fetch_live(ha: HAClient, prefix: str) -> dict[str, Any]:
+async def fetch_live(ha: HAClient, prefix: str, *, expected: Iterable[str] = ()) -> dict[str, Any]:
     """Return the artefacts currently in HA under one namespace prefix.
 
     Each helper domain maps object id -> the stored fields (the item without its `id`);
-    `automation` maps id -> stored config; `unmanaged` lists the lane's automations that
-    HA's config API can't see (defined in YAML outside automations.yaml), which a deploy
-    can neither update nor remove.
+    `automation` maps id -> stored config; `unloaded` lists the automations whose config
+    is stored but which HA hasn't loaded (no entity, or an `unavailable` one); `unmanaged`
+    lists the lane's automations that HA's config API can't see (defined in YAML outside
+    automations.yaml, or under an id the API can't address), which a deploy can neither
+    update nor remove.
+
+    HA lists automations only as entities, so one with no entity is found only if its id
+    is in `expected`: pass the ids the deploy wants, so that an automation whose entity is
+    disabled, or still reloading after an interrupted deploy, reads as there, not as
+    missing. (Taken for missing, its bridge would be "created" again, with its soft switch
+    re-synced to the bulb while the bridge might already be live.)
     """
-    return await _fetch(ha, prefix, await ha.get_states())
-
-
-async def _fetch(ha: HAClient, prefix: str, states: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    states = await ha.get_states()
     live: dict[str, Any] = {domain: await _helpers(ha, domain, prefix) for domain in HELPER_DOMAINS}
+    entities = _automation_entities(states, prefix)
     automations: dict[str, Any] = {}
     unmanaged: list[str] = []
-    for automation_id in sorted(_automation_entities(states, prefix)):
-        stored = await ha.get_automation_config(automation_id)
-        if stored is None:
-            unmanaged.append(automation_id)
-        else:
+    for automation_id in sorted(set(entities) | {i for i in expected if in_lane(i, prefix)}):
+        stored = None
+        if _ADDRESSABLE.match(automation_id):
+            stored = await ha.get_automation_config(automation_id)
+        if stored is not None:
             automations[automation_id] = stored
+        elif automation_id in entities:
+            unmanaged.append(automation_id)
     live[AUTOMATION] = automations
+    live["unloaded"] = [i for i in automations if entities.get(i, "unavailable") == "unavailable"]
     live["unmanaged"] = unmanaged
     return live
 
@@ -150,6 +162,8 @@ def plan(
     `desired` is the namespace's generated package, `live` what `fetch_live` returned.
     `mirrors` maps an automation id to `{helper, entity_id}`: before that automation is
     first created, the helper (an input_boolean) is set to the entity's current on/off.
+    An automation that is stored but not loaded is written again (HA reloads it), never
+    created, so its helper is not synced again.
 
     Returns `{prefix, desired, steps, warnings}`, `steps` in the order `apply` runs them
     (see the module docstring). Pure: nothing is read or written. Anything in `live`
@@ -191,6 +205,7 @@ def plan(
     wanted_ids = {automation["id"] for automation in wanted}
     have_automations = {k: v for k, v in live.get(AUTOMATION, {}).items() if in_lane(k, prefix)}
     unmanaged = [i for i in live.get("unmanaged", []) if in_lane(i, prefix)]
+    unloaded = set(live.get("unloaded", []))
     syncs: list[dict[str, Any]] = []
     automation_writes: list[dict[str, Any]] = []
     for automation in wanted:
@@ -205,14 +220,14 @@ def plan(
             if mirror is not None:
                 syncs.append(_sync_step(prefix, desired, automation_id, mirror))
             automation_writes.append(_step("create", AUTOMATION, automation_id, automation))
-        elif have_automations[automation_id] != automation:
+        elif have_automations[automation_id] != automation or automation_id in unloaded:
             automation_writes.append(_step("update", AUTOMATION, automation_id, automation))
     automation_removes = [
         _step("remove", AUTOMATION, i) for i in sorted(set(have_automations) - wanted_ids)
     ]
     warnings = [
-        f"automation {i} is in the '{prefix}' lane but defined in HA's YAML, so a deploy "
-        "can't remove it"
+        f"automation {i} is in the '{prefix}' lane but defined in HA's YAML (or under an id "
+        "its config API can't address), so a deploy can't remove it"
         for i in unmanaged
         if i not in wanted_ids
     ]
@@ -327,6 +342,9 @@ async def verify(
     still there, and each synced soft switch holds the state it was given. Retried
     `attempts` times, `delay` seconds apart, since HA reloads written automations in the
     background; raises DeployError with what still doesn't match.
+
+    An update is confirmed by its stored config: the entity already exists, and nothing
+    HA exposes says whether the background reload has picked the new config up yet.
     """
     problems: list[str] = []
     for attempt in range(max(1, attempts)):
@@ -367,6 +385,8 @@ async def _mismatches(
         if step["op"] == "remove" and step["kind"] == AUTOMATION
     }
     for automation_id in sorted(set(wanted) | set(entities) | removed):
+        if not _ADDRESSABLE.match(automation_id):
+            continue  # unmanaged: the plan warned about it
         stored = await ha.get_automation_config(automation_id)
         if automation_id not in wanted:
             # An entity with no config that the plan didn't remove is one HA's YAML defines
@@ -378,7 +398,9 @@ async def _mismatches(
         elif stored != wanted[automation_id]:
             problems.append(f"automation {automation_id} does not hold what was written")
         elif automation_id not in entities:
-            problems.append(f"automation {automation_id} has not loaded")
+            problems.append(
+                f"automation {automation_id} has not loaded (is its entity disabled in HA?)"
+            )
         elif entities[automation_id] == "unavailable":
             problems.append(
                 f"automation {automation_id} did not load: HA rejected it (see HA's log)"
@@ -404,10 +426,23 @@ async def deploy(
 ) -> dict[str, Any]:
     """Generate, plan, apply, and verify one namespace; return what was done.
 
+    See `prepare` for what is checked before anything is written. Returns `{prefix,
+    created, updated, removed, sync, synced, unsynced, warnings}` (see `summarise`).
+    """
+    deploy_plan = await prepare(ha, config, prefix)
+    report = await apply(ha, deploy_plan)
+    await verify(ha, deploy_plan, synced=report["synced"], attempts=attempts, delay=delay)
+    return summarise(deploy_plan, report)
+
+
+async def prepare(ha: HAClient, config: Mapping[str, Any], prefix: str) -> dict[str, Any]:
+    """Validate, generate, read HA, and plan one namespace's deploy, writing nothing: the
+    plan `deploy` would carry out (`summarise` it for a preview).
+
     The config is validated and cross-checked first, and for the switching plane every
-    bulb and hard-switch source must exist in HA (a missing one means the snapshot is
-    stale: sync it first). Returns `{prefix, created, updated, removed, synced, unsynced,
-    warnings}`.
+    bulb and hard-switch source must exist in HA (a missing bulb means the snapshot is
+    stale: sync it first), and no toggle may take an HA group of its own bulbs as its
+    source. Raises ConfigError or DeployError.
     """
     config_mod.validate(config)
     config_mod.cross_check(config)
@@ -416,22 +451,35 @@ async def deploy(
     if prefix == switching.PREFIX:
         await check_references(ha, switching.references(config))
         mirrors = switching.bridge_mirrors(config)
-    deploy_plan = plan(prefix, desired, await fetch_live(ha, prefix), mirrors=mirrors)
-    report = await apply(ha, deploy_plan)
-    await verify(ha, deploy_plan, synced=report["synced"], attempts=attempts, delay=delay)
-    return summarise(deploy_plan, report)
+    expected = [automation["id"] for automation in desired.get(AUTOMATION, [])]
+    live = await fetch_live(ha, prefix, expected=expected)
+    return plan(prefix, desired, live, mirrors=mirrors)
 
 
 async def check_references(ha: HAClient, references: Mapping[str, Mapping[str, str]]) -> None:
     """Raise DeployError unless every entity and device a lane addresses (as
-    `switching.references` lists them) exists in HA."""
-    present = {s.get("entity_id") for s in await ha.get_states()}
+    `switching.references` lists them) exists in HA, and no toggle's source is an HA
+    group whose members include a bulb the lane drives."""
+    states = {s.get("entity_id"): s for s in await ha.get_states()}
     problems = [
         f"{entity_id} ({who}) is not in Home Assistant"
         + ("; sync the room snapshot first" if who.startswith("bulb") else "")
         for entity_id, who in references["entities"].items()
-        if entity_id not in present
+        if entity_id not in states
     ]
+    for entity_id, who in references.get("toggles", {}).items():
+        # The config can't see inside an HA group, so this is checked against HA: a
+        # toggle on a group of its own bulbs is flipped again by every change it makes.
+        members = ((states.get(entity_id) or {}).get("attributes") or {}).get("entity_id")
+        if not isinstance(members, list):
+            continue
+        looped = sorted(set(members) & set(references.get("bulbs", {})))
+        if looped:
+            problems.append(
+                f"{entity_id} ({who}) is an HA group of bulbs Light Map drives "
+                f"({', '.join(looped)}): a toggle on it would set itself off again; bind the "
+                "physical switch instead"
+            )
     if references["devices"]:
         # Read only to check existence; the ids go nowhere else.
         devices = {d.get("id") for d in await ha.list_device_registry()}

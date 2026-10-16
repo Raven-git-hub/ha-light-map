@@ -70,11 +70,32 @@ SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "config.schema.js
 CURRENT_VERSION = 2
 DEFAULT_PROFILE = "default"
 
-# HA core events that fire for the switching plane's own work (every soft switch change is
-# a state_changed and starts with a call_service; every automation run fires
-# automation_triggered). A hard switch listening to one would be triggered by its own
-# action.
-CORE_EVENTS = ("automation_triggered", "call_service", "script_started", "state_changed")
+# HA core events, which fire for the switching plane's own work rather than for a button:
+# every soft switch change is a state_changed (and state_reported) that starts with a
+# call_service, every automation run fires automation_triggered, a deploy fires
+# automation_reloaded and registry updates, and a restart fires the start/stop events. A
+# hard switch listening to one would be set off by Light Map itself, on every change, deploy,
+# or restart.
+CORE_EVENTS = (
+    "area_registry_updated",
+    "automation_reloaded",
+    "automation_triggered",
+    "call_service",
+    "component_loaded",
+    "core_config_updated",
+    "device_registry_updated",
+    "entity_registry_updated",
+    "homeassistant_close",
+    "homeassistant_final_write",
+    "homeassistant_start",
+    "homeassistant_started",
+    "homeassistant_stop",
+    "script_started",
+    "service_registered",
+    "service_removed",
+    "state_changed",
+    "state_reported",
+)
 
 
 def _v1_to_v2(doc: dict[str, Any]) -> dict[str, Any]:
@@ -394,8 +415,8 @@ def _hard_switch_loops(rooms: list[dict[str, Any]], unassigned: list[dict[str, A
             )
         if source.get("type") == "event" and source.get("event_type") in CORE_EVENTS:
             problems.append(
-                f"{where}: event {source['event_type']} fires for Light Map's own changes; bind "
-                "the button's own event, or use a state source"
+                f"{where}: event {source['event_type']} is an HA core event that fires for "
+                "Light Map's own work; bind the button's own event, or use a state source"
             )
     return problems
 

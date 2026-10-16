@@ -311,13 +311,15 @@ class FakeHA:
         yaml_helpers: tuple[str, ...] = (),
         yaml_automations: tuple[str, ...] = (),
         rejected: tuple[str, ...] = (),
+        disabled: tuple[str, ...] = (),
         lag: int = 0,
     ) -> None:
         """`helpers` and `automations` pre-populate the UI-managed helpers and
         automations.yaml. `yaml_helpers` are helper ids taken by YAML helpers (unlisted,
         but a create can't have them); `yaml_automations` are automation ids defined in
         YAML outside automations.yaml (an entity, but no config the API can see).
-        `rejected` automations load as `unavailable`. `lag` is how many state reads a
+        `rejected` automations load as `unavailable`; `disabled` ones have a config but no
+        entity (disabled in HA's entity registry). `lag` is how many state reads a
         written or deleted automation's entity takes to catch up, as HA reloads it in the
         background."""
         self.areas = copy.deepcopy(AREAS if areas is None else areas)
@@ -344,6 +346,7 @@ class FakeHA:
         self.yaml_helpers = set(yaml_helpers)
         self.yaml_automations = list(yaml_automations)
         self.rejected = set(rejected)
+        self.disabled = set(disabled)
         self.lag = lag
         # Automation entities lagging their config: id -> state reads left until they
         # catch up (appear after a write, go after a delete).
@@ -365,7 +368,8 @@ class FakeHA:
         states = copy.deepcopy(self.states)
         for entity_id, state in sorted(self.helper_states.items()):
             states.append(_state(entity_id, entity_id.partition(".")[2], state))
-        visible = [i for i in self.automations if i not in self.appearing]
+        hidden = {*self.appearing, *self.disabled}
+        visible = [i for i in self.automations if i not in hidden]
         visible += [*self.lingering, *self.yaml_automations]
         for automation_id in sorted(visible):
             state = "unavailable" if automation_id in self.rejected else "on"
@@ -474,7 +478,7 @@ class FakeHA:
     def trigger(self, entity_id: str, old: Any, new: Any) -> None:
         """Record which loaded automations a state change would trigger."""
         for automation_id, automation in sorted(self.automations.items()):
-            if automation_id in self.appearing:
+            if automation_id in self.appearing or automation_id in self.disabled:
                 continue
             for trigger in automation.get("triggers", []):
                 if state_trigger_matches(trigger, entity_id, old, new):

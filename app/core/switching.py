@@ -26,15 +26,17 @@ Sources (a hard switch's `source`, a tagged union):
   entity. `follow` acts on its off->on and on->off edges; `toggle` and `press` act on
   every real change of its state (a latching wall switch's flip, an event entity's new
   timestamp), never on a change to or from `unavailable`/`unknown` or the entity
-  appearing or disappearing, so an integration reload or an HA restart never counts as
-  a press.
+  appearing or disappearing. So a source that comes back from a restart or a reload
+  straight to its state is never a press. One that settles through a real change as it
+  loads (an HA group whose members come up one by one) does act: bind the physical
+  switch's own entity or event, not a group or template built on it.
 - `{type: event, event_type, event_data?}`: a stateless button that fires an HA event.
 - `{type: device, device_id, trigger}`: a device automation trigger, for a button that
   exposes nothing else. The device id only ever reads a press: it appears in a trigger,
   never in a target.
 
-The bridge never fires on a reload or restart either: it triggers only on an `off`->`on`
-or `on`->`off` change of its soft switch, so the soft being restored at startup, created,
+The bridge never fires on a reload or restart: it triggers only on an `off`->`on` or
+`on`->`off` change of its soft switch, so the soft being restored at startup, created,
 deleted, or going `unavailable` drives nothing. It runs in `restart` mode and branches on
 the soft's state when it runs, so the bulb always ends on the soft's latest state however
 fast it is flipped. `core.deploy` sets a soft switch to its bulb's current state before
@@ -252,23 +254,31 @@ def bridge_mirrors(config: Mapping[str, Any]) -> dict[str, dict[str, str]]:
 
 
 def references(config: Mapping[str, Any]) -> dict[str, dict[str, str]]:
-    """What the generated lane addresses in HA: `entities` (each bulb and each state
-    source) and `devices` (device sources), each mapped to a description of who uses it.
-    `core.deploy` checks they exist before writing anything."""
-    entities: dict[str, str] = {}
+    """What the generated lane addresses in HA, each mapped to a description of who uses
+    it: `entities` (every bulb and state source), `devices` (device sources), and the
+    subsets `bulbs` and `toggles` (the state sources of toggle bindings). `core.deploy`
+    checks them against HA before writing anything."""
+    bulbs = {bulb["entity_id"]: f"bulb '{bulb['id']}'" for _, bulb in _bulbs(config)}
+    entities: dict[str, str] = dict(bulbs)
     devices: dict[str, str] = {}
-    for _, bulb in _bulbs(config):
-        entities.setdefault(bulb["entity_id"], f"bulb '{bulb['id']}'")
+    toggles: dict[str, str] = {}
     for binding in _bindings(config):
         source = binding["source"]
         who = f"hard switch '{binding['id']}'"
         if source["type"] == "state":
             entities.setdefault(source["entity_id"], who)
+            if binding["mode"] == "toggle":
+                toggles.setdefault(source["entity_id"], who)
         elif source["type"] == "device":
             devices.setdefault(source["device_id"], who)
     return {
-        "entities": dict(sorted(entities.items())),
-        "devices": dict(sorted(devices.items())),
+        name: dict(sorted(found.items()))
+        for name, found in (
+            ("entities", entities),
+            ("devices", devices),
+            ("bulbs", bulbs),
+            ("toggles", toggles),
+        )
     }
 
 

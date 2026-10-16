@@ -513,10 +513,11 @@ class HAClient:
     async def delete_automation_config(self, automation_id: str) -> bool:
         """Remove an automation from automations.yaml; False if it wasn't there. Like a
         save, the entity goes away with a background reload."""
-        try:
-            await self.request("DELETE", _automation_path(automation_id))
-        except HANotFoundError:
+        # Asked to delete an id it doesn't have, HA answers 400 ("Resource not found"),
+        # indistinguishable from any other refusal, so look first. (A GET answers 404.)
+        if await self.get_automation_config(automation_id) is None:
             return False
+        await self.request("DELETE", _automation_path(automation_id))
         return True
 
 

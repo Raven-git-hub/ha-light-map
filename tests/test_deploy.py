@@ -270,6 +270,66 @@ class CoexistenceTest(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class StoredButNotLoadedTest(unittest.IsolatedAsyncioTestCase):
+    """HA lists automations only as entities. One whose config is stored but which has no
+    entity (still reloading, or disabled) must read as there: re-creating a bridge would
+    re-sync its soft switch while the bridge may already be live, driving the bulb."""
+
+    async def drifted(self):
+        ha = FakeHA()
+        await deploy.deploy(ha, committed_config(), "lm", delay=0)
+        # The bulb is switched outside the plane, so its soft switch is now stale.
+        ha.set_light("light.porch", "on")
+        return ha
+
+    async def test_one_still_reloading_is_rewritten_never_recreated(self):
+        ha = await self.drifted()
+        # Hidden for the two state reads planning makes, as if an interrupted deploy had
+        # written it a moment ago.
+        ha.appearing["lm_bridge_porch"] = 2
+        mark = len(ha.calls)
+        result = await deploy.deploy(ha, committed_config(), "lm", delay=0)
+        self.assertEqual(result["updated"]["automation"], ["lm_bridge_porch"])
+        self.assertEqual((result["created"]["automation"], result["sync"]), ([], []))
+        self.assertNotIn("call_service", [call[0] for call in writes(ha, mark)])
+        self.assertEqual(ha.fired, [])
+        self.assertEqual(ha.helper_states["input_boolean.lm_soft_porch"], "off")
+
+    async def test_one_whose_entity_is_disabled_fails_loudly_without_driving_anything(self):
+        ha = await self.drifted()
+        ha.disabled.add("lm_bridge_porch")
+        with self.assertRaises(DeployError) as caught:
+            await deploy.deploy(ha, committed_config(), "lm", delay=0, attempts=2)
+        self.assertEqual(
+            caught.exception.problems,
+            ["automation lm_bridge_porch has not loaded (is its entity disabled in HA?)"],
+        )
+        self.assertEqual([c for c in named(ha, "call_service")[2:]], [])
+        self.assertEqual(ha.fired, [])
+
+    async def test_one_ha_rejected_is_written_again(self):
+        ha = FakeHA()
+        await deploy.deploy(ha, committed_config(), "lm", delay=0)
+        ha.rejected.add("lm_hard_reading_switch")  # e.g. its integration loaded late
+        deploy_plan = await deploy.prepare(ha, committed_config(), "lm")
+        self.assertEqual(
+            [(s["op"], s["id"]) for s in deploy_plan["steps"]],
+            [("update", "lm_hard_reading_switch")],
+        )
+
+    async def test_an_id_the_config_api_cannot_address_is_left_alone(self):
+        ha = FakeHA(yaml_automations=("lm_Porch-2",))
+        result = await deploy.deploy(ha, committed_config(), "lm", delay=0)
+        self.assertEqual(
+            result["warnings"],
+            [
+                "automation lm_Porch-2 is in the 'lm' lane but defined in HA's YAML (or under an "
+                "id its config API can't address), so a deploy can't remove it"
+            ],
+        )
+        self.assertNotIn("lm_Porch-2", repr(writes(ha)))
+
+
 class LaneTest(unittest.IsolatedAsyncioTestCase):
     def foreign_ha(self, **kwargs):
         return FakeHA(
@@ -295,7 +355,9 @@ class LaneTest(unittest.IsolatedAsyncioTestCase):
     async def test_fetch_live_reads_only_the_lane(self):
         ha = self.foreign_ha()
         live = await deploy.fetch_live(ha, "lm")
-        self.assertEqual(live, {"input_boolean": {}, "automation": {}, "unmanaged": []})
+        self.assertEqual(
+            live, {"input_boolean": {}, "automation": {}, "unloaded": [], "unmanaged": []}
+        )
         al = await deploy.fetch_live(ha, "al")
         self.assertEqual(sorted(al["input_boolean"]), ["al_active_lounge", "al_hold_lounge"])
         self.assertEqual(sorted(al["automation"]), ["al_scene_lounge_day", "al_watchdog_guard"])
@@ -352,7 +414,10 @@ class VerifyTest(unittest.IsolatedAsyncioTestCase):
         await deploy.deploy(ha, committed_config(), "lm", delay=0)
         with self.assertRaises(DeployError) as caught:
             await deploy.deploy(FakeHA(lag=3), committed_config(), "lm", delay=0, attempts=1)
-        self.assertIn("automation lm_bridge_porch has not loaded", caught.exception.problems)
+        self.assertIn(
+            "automation lm_bridge_porch has not loaded (is its entity disabled in HA?)",
+            caught.exception.problems,
+        )
         # And for a removal, until the entity is gone.
         mark = len(ha.calls)
         await deploy.deploy(ha, config.blank(), "lm", delay=0)
@@ -429,6 +494,27 @@ class RefusalTest(unittest.IsolatedAsyncioTestCase):
         ]
         await self.assert_refused(FakeHA(), doc, "device dev_gone (hard switch 'strip_remote')")
         doc["rooms"][1]["bulbs"][0]["hard_switches"][0]["source"]["device_id"] = "dev_strip"
+        await deploy.deploy(FakeHA(), doc, "lm", delay=0)
+
+    async def test_a_toggle_on_an_ha_group_of_its_own_bulbs(self):
+        doc = committed_config()
+        doc["rooms"][0]["switching_groups"][0]["hard_switches"] = [
+            {
+                "id": "living_toggle",
+                "name": "Living toggle",
+                "source": {"type": "state", "entity_id": "light.living_room_group"},
+                "mode": "toggle",
+            }
+        ]
+        config.cross_check(doc)  # The config alone can't see inside the group.
+        await self.assert_refused(
+            FakeHA(),
+            doc,
+            "light.living_room_group (hard switch 'living_toggle') is an HA group of bulbs "
+            "Light Map drives (light.chandelier_1, light.chandelier_2, light.chandelier_3)",
+        )
+        # follow settles, so it may.
+        doc["rooms"][0]["switching_groups"][0]["hard_switches"][0]["mode"] = "follow"
         await deploy.deploy(FakeHA(), doc, "lm", delay=0)
 
     async def test_an_invalid_config(self):

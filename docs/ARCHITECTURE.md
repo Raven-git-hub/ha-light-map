@@ -265,8 +265,9 @@ Learning-unit ids are unique within their room. Schedule-profile ids are global.
 
 The cross-check also refuses a hard switch wired into a feedback loop: a source in Light
 Map's own `lm_` namespace, a `toggle` whose source is a bulb Light Map drives, or an event
-source on the HA core events the plane's own changes fire (`state_changed`, `call_service`,
-`automation_triggered`, `script_started`).
+source on an HA core event (`state_changed`, `call_service`, `automation_reloaded`, ...),
+which fires for the plane's own work. Deploy adds the one check that needs HA's state: no
+`toggle` on an HA group of bulbs Light Map drives.
 
 As of P1 the core sections (`homeassistant`, `rooms[]`, `unassigned[]`) are validated in
 depth; `system`, `learning`, `schedule_profiles` and `adaptive_config` fill in with the

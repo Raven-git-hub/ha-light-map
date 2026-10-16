@@ -29,7 +29,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core import config as config_mod  # noqa: E402
-from app.core import deploy, generate, inventory, switching  # noqa: E402
+from app.core import deploy, inventory, switching  # noqa: E402
 from app.core.ha import HAAuthError, HAClient, HAError  # noqa: E402
 
 OK, WARN, FAIL = "  ok  ", " warn ", " FAIL "
@@ -245,13 +245,7 @@ def _check_snapshot(
 async def _check_switching(report: Report, ha: HAClient, committed: Mapping[str, Any]) -> None:
     """Preview a deploy of the committed config's switching plane, without writing."""
     try:
-        await deploy.check_references(ha, switching.references(committed))
-        deploy_plan = deploy.plan(
-            switching.PREFIX,
-            generate.generate(committed, switching.PREFIX),
-            await deploy.fetch_live(ha, switching.PREFIX),
-            mirrors=switching.bridge_mirrors(committed),
-        )
+        deploy_plan = await deploy.prepare(ha, committed, switching.PREFIX)
     except deploy.DeployError as exc:
         report.listing(FAIL, "A deploy of the switching plane would be refused", exc.problems)
         return
