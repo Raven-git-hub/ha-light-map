@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Light Map config",
+  "description": "The committed config document. Everything downstream is a pure function of it; learned data (almanacs) is not stored here. See docs/ARCHITECTURE.md (Top-level config shape) and docs/DESIGN.md (Data model).",
+  "$comment": "P0 skeleton: top-level structure and obvious field types only. Deep per-field validation arrives with the config loader (P1) and the adaptive module (P5); cross-references (unique ids; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
+  "type": "object",
+  "required": ["version", "rooms", "schedule_profiles"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "Schema version. The container migrates forward on load.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "homeassistant": {
+      "$ref": "#/$defs/homeassistant"
+    },
+    "system": {
+      "description": "Observation cadence, reactive window and min-delta, data dir, CSV toggle, event-log retention. Field names are fixed with the config loader (P1) and the observer (P4).",
+      "type": "object"
+    },
+    "rooms": {
+      "description": "Rooms, from HA Areas: the committed snapshot of the resolved bulb->room mapping.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/room"
+      }
+    },
+    "schedule_profiles": {
+      "description": "Reusable time-section schedules (adaptive module). A profile with id `default` must always exist.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/schedule_profile"
+      },
+      "contains": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "const": "default"
+          }
+        },
+        "required": ["id"]
+      }
+    },
+    "learning": {
+      "description": "Adaptive analyser tuning. Field names are fixed when the analyser is ported (P5).",
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "slug": {
+      "description": "Lowercase identifier, usable inside an HA object id (e.g. input_boolean.lm_soft_<id>).",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "entity_id": {
+      "description": "An HA entity id. Entity IDs only, never device IDs.",
+      "type": "string",
+      "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$"
+    },
+    "homeassistant": {
+      "description": "HA connection. At runtime the connection is read from LM_HA_BASE_URL and LM_HA_TOKEN (or LM_HA_TOKEN_FILE); whether LM_HA_BASE_URL overrides base_url is decided in P1. Reconnect backoff settings are added with the transport (P1).",
+      "type": "object",
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "access_token": {
+          "description": "Never persisted: stripped on save and export, supplied at runtime from the environment or a secrets file.",
+          "type": "string"
+        },
+        "verify_ssl": {
+          "type": "boolean"
+        }
+      }
+    },
+    "room": {
+      "description": "A room is an HA Area. adaptive_config is required when adaptive is true and forbidden when false.",
+      "type": "object",
+      "required": ["id", "name", "ha_area_id", "adaptive"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ha_area_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adaptive": {
+          "type": "boolean"
+        },
+        "bulbs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bulb"
+          }
+        },
+        "switching_groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/switching_group"
+          }
+        },
+        "adaptive_config": {
+          "$ref": "#/$defs/adaptive_config"
+        }
+      },
+      "if": {
+        "properties": {
+          "adaptive": {
+            "const": true
+          }
+        },
+        "required": ["adaptive"]
+      },
+      "then": {
+        "required": ["adaptive_config"]
+      },
+      "else": {
+        "not": {
+          "required": ["adaptive_config"]
+        }
+      }
+    },
+    "bulb": {
+      "description": "One light.* entity, the actuation atom. Its soft-switch helper is implicit (generated).",
+      "type": "object",
+      "required": ["id", "name", "entity_id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entity_id": {
+          "type": "string",
+          "pattern": "^light\\.[a-z0-9_]+$"
+        },
+        "hard_switches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hard_switch"
+          }
+        }
+      }
+    },
+    "switching_group": {
+      "description": "A power fan-out: bulbs toggled together. Its soft switch is implicit (generated), modelled as an HA group of its members' soft switches.",
+      "type": "object",
+      "required": ["id", "name", "members"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "members": {
+          "description": "Bulb ids.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/slug"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "hard_switches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hard_switch"
+          }
+        }
+      }
+    },
+    "hard_switch": {
+      "description": "A hard-switch binding, used inside bulbs[] and switching_groups[] (not on the room).",
+      "type": "object",
+      "required": ["id", "name", "source", "mode"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "description": "An entity_id, or an event/device reference. Shape is fixed in P2.",
+          "type": ["string", "object"]
+        },
+        "mode": {
+          "enum": ["toggle", "follow", "press"]
+        }
+      }
+    },
+    "adaptive_config": {
+      "description": "Adaptive Light's per-room block.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lux_sensors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_id"
+          },
+          "uniqueItems": true
+        },
+        "presence_sensors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_id"
+          },
+          "uniqueItems": true
+        },
+        "schedule_profile": {
+          "description": "Id of an entry in schedule_profiles.",
+          "$ref": "#/$defs/slug"
+        },
+        "learning_units": {
+          "description": "A free partition of the room's adaptive bulbs, independent of switching groups.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/learning_unit"
+          }
+        },
+        "scenes": {
+          "description": "Per-section matrix keyed by learning-unit id x section: per unit per section, mode (auto/off) plus lux margin, maintenance flag, transition, max step. Shape is fixed in P5.",
+          "type": "object"
+        }
+      }
+    },
+    "learning_unit": {
+      "description": "Bulbs that share one learned brightness target per section. The almanac key.",
+      "type": "object",
+      "required": ["id", "name", "members"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "members": {
+          "description": "Bulb ids.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/slug"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "schedule_profile": {
+      "description": "A reusable time-section schedule. Section fields arrive with the scheduler port (P5).",
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug"
+        }
+      }
+    }
+  }
+}
