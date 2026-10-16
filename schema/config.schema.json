@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Light Map config",
   "description": "The committed config document. Everything downstream is a pure function of it; learned data (almanacs) is not stored here. See docs/ARCHITECTURE.md (Top-level config shape) and docs/DESIGN.md (Data model).",
-  "$comment": "Version 2 (P2) fixed hard_switch.source as a tagged union and added turn for presses; app/core/config.py migrates version 1 forward. Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1; system, learning, schedule_profiles and adaptive_config fill in with the observer (P4) and the adaptive module (P5). Cross-references (ids unique within their scope; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
+  "$comment": "Version 2 (P2) fixed hard_switch.source as a tagged union and added turn for presses; app/core/config.py migrates version 1 forward. Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1, system as of P4 (the observer); learning, schedule_profiles and adaptive_config fill in with the adaptive module (P5). Cross-references (ids unique within their scope; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
   "type": "object",
   "required": ["version", "rooms", "schedule_profiles"],
   "additionalProperties": false,
@@ -16,8 +16,7 @@
       "$ref": "#/$defs/homeassistant"
     },
     "system": {
-      "description": "Observation cadence, reactive window and min-delta, data dir, CSV toggle, event-log retention. Field names are fixed with the observer (P4), which is the first thing to read them.",
-      "type": "object"
+      "$ref": "#/$defs/system"
     },
     "rooms": {
       "description": "Rooms, from HA Areas: the committed snapshot of the resolved bulb->room mapping. Every HA Area is a room.",
@@ -66,7 +65,7 @@
       "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$"
     },
     "homeassistant": {
-      "description": "HA connection. LM_HA_BASE_URL, when set, overrides base_url; the token comes only from LM_HA_TOKEN (or LM_HA_TOKEN_FILE). Reconnect backoff settings arrive with the event subscription's reconnect loop (P4).",
+      "description": "HA connection. LM_HA_BASE_URL, when set, overrides base_url; the token comes only from LM_HA_TOKEN (or LM_HA_TOKEN_FILE).",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -82,6 +81,48 @@
         },
         "verify_ssl": {
           "type": "boolean"
+        },
+        "reconnect_backoff_seconds": {
+          "description": "The WebSocket reconnect ladder: seconds to wait before each reconnect attempt after a drop; the last step repeats. Default [1, 2, 5, 10, 30, 60].",
+          "type": "array",
+          "items": {"type": "number", "exclusiveMinimum": 0, "maximum": 3600},
+          "minItems": 1
+        }
+      }
+    },
+    "system": {
+      "description": "The observer's settings (P4). Every field is optional; app/core/config.py (system) supplies the defaults.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "heartbeat_interval_minutes": {
+          "description": "Observation cadence, aligned to the clock: one heartbeat per room with bulbs, plus one reading per bulb, every this many minutes. Default 10.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "reactive_window_seconds": {
+          "description": "After a room's first manual brightness change, further changes are collected for this long and recorded as one reactive event. Default 120.",
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 600
+        },
+        "reactive_min_delta": {
+          "description": "A bulb counts as changed in a reactive event only if its brightness moved by more than this (HA's 0-255 scale), or its power changed: filters rounding noise and transition echo. Default 5.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "event_log_retention_days": {
+          "description": "How long the event log stays in the query layer (the Log tab). The CSV archive keeps everything. Default 90; at most a century.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 36500
+        },
+        "data_dir": {
+          "description": "Where the CSV archive and the SQLite query layer live. Default, and the base of a relative path: the directory holding the config. Read at startup.",
+          "type": "string",
+          "minLength": 1
         }
       }
     },

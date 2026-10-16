@@ -7,19 +7,27 @@ LM_HA_TOKEN / LM_HA_TOKEN_FILE), which opens no connection until a request needs
 Tests pass their own client (`create_app(ha=...)`) and a config path.
 
 Core never imports a module: modules are attached here, through the four seams described
-in `app.modules`, so a module can be replaced or added without touching the trunk. Two of
-those seams are registries filled here: a module's namespace
-(`core.generate.register_namespace`) and its bridge brightness
-(`core.switching.register_bridge_brightness`). The core's own `lm` lane registers itself;
-no module is attached yet (Adaptive Light arrives in P5).
+in `app.modules`, so a module can be replaced or added without touching the trunk. The
+seams are registries filled here: a module's namespace (`core.generate.register_namespace`),
+its bridge brightness (`core.switching.register_bridge_brightness`), and its observation
+(`Observer.subscribe`, `register_guard`, `register_section`). The core's own `lm` lane
+registers itself; no module is attached yet (Adaptive Light arrives in P5).
 
-The HTTP surface (P3) is the Map tab's: the inventory and switching editor, and the
-deploys. Everything under /api/ answers JSON; an error is `{error, detail, ...}` with
-`problems` when there are several.
+The lifespan also opens the store (the CSV archive and its query layer, beside the config
+unless `system.data_dir` says otherwise) and starts the observer (P4), which subscribes to
+HA's events once the config has a room with bulbs. Every config save tells the observer to
+re-read the config. Without HA, or with a data directory that can't be opened, the Map
+still serves, and `/api/status` says what is missing.
+
+The HTTP surface is the Map tab's (P3) and the Log tab's (P4). Everything under /api/
+answers JSON; an error is `{error, detail, ...}` with `problems` when there are several.
+Every request first passes the Host allowlist (`LM_ALLOWED_HOSTS`, plus `localhost` and
+`127.0.0.1`), which refuses a DNS-rebinding page; it is not authentication.
 
 - Reads: `GET /api/status`, `/api/map` (the Map's view of the committed config),
   `/api/config` (the config itself, token-free), `/api/entities` (HA entities a hard
-  switch can take as its source).
+  switch can take as its source), `/api/log` (the event log, newest first, by minimum
+  level, category and room).
 - Config edits, each validate-then-write: `PUT /api/rooms/{room}/adaptive`,
   `PUT /api/bulbs/{bulb}/hard_switches`, `POST /api/rooms/{room}/groups`,
   `PUT|DELETE /api/rooms/{room}/groups/{group}`. Each edit of something that exists
@@ -56,6 +64,8 @@ Hard rules:
   beside ha-adaptive-light, so an edit that makes a hard switch drive something new is
   refused (409 `coexistence`) until the request acknowledges it (`acknowledge_live`).
 - The HA token never reaches the config or a response.
+- What changes HA or the config is recorded in the event log; a log entry that can't be
+  written never fails the action it records.
 """
 
 import asyncio
@@ -63,16 +73,17 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core import config as config_mod
 from app.core import deploy, inventory, switching
@@ -80,6 +91,8 @@ from app.core.config import ConfigError
 from app.core.deploy import DeployError, StalePreview
 from app.core.ha import HAAuthError, HAClient, HAError
 from app.core.inventory import InventoryError, NotFound
+from app.core.observe import Observer
+from app.core.store import LEVELS, Store
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +101,13 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 # Where the committed config lives. The container keeps it on its /data volume.
 CONFIG_PATH_ENV = "LM_CONFIG_PATH"
 DEFAULT_CONFIG_PATH = Path("/data/config.json")
+
+# The Host names the API answers, besides the loopback ones. A DNS-rebinding page points a
+# name it controls at this container, which makes its scripts same-origin with the API;
+# the Host header still carries that name, so an allowlist turns them away. IPv6 literals
+# can't be listed: Starlette's check cuts the header at its first colon.
+ALLOWED_HOSTS_ENV = "LM_ALLOWED_HOSTS"
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1")
 
 # The entities the hard-switch picker offers as a state source. Anything else can still be
 # typed in; Light Map's own (`lm_`) entities are left out, as the config refuses them.
@@ -247,7 +267,7 @@ def _write(request: Request, doc: Mapping[str, Any], *, after_ha: str | None = N
     """Save the config. `after_ha` says what was already written to HA, so a failed save
     says the HA change stands and a sync will pick it up."""
     try:
-        return _store(request).write(doc)
+        saved = _store(request).write(doc)
     except (ApiError, ConfigError) as exc:
         if after_ha is None:
             raise
@@ -257,6 +277,30 @@ def _write(request: Request, doc: Mapping[str, Any], *, after_ha: str | None = N
             f"{after_ha} in Home Assistant, but the snapshot could not be saved ({exc}). "
             "Sync from HA to bring it up to date.",
         ) from exc
+    observer = request.app.state.observer
+    if observer is not None:
+        observer.reload()  # a first sync starts it; a moved bulb is watched in its new room
+    return saved
+
+
+def _record(
+    request: Request,
+    category: str,
+    message: str,
+    *,
+    room_id: str | None = None,
+    detail: Mapping[str, Any] | None = None,
+    level: str = "info",
+) -> None:
+    """Note an action in the event log. Never raises: the action has already happened,
+    and failing to log it must not report it as failed."""
+    data = request.app.state.data
+    if data is None:
+        return
+    try:
+        data.log_event(level, category, message, room_id=room_id, detail=detail)
+    except Exception:  # noqa: BLE001
+        log.exception("could not write to the event log")
 
 
 def _check_base(seen: str | None, current: str, what: str) -> None:
@@ -290,15 +334,25 @@ def room_version(room: Mapping[str, Any]) -> str:
 
 
 def _commit(
-    request: Request, before: Mapping[str, Any], after: Mapping[str, Any], acknowledge: bool
+    request: Request,
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    acknowledge: bool,
+    *,
+    record: str,
+    room_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate a config edit, refuse it while it makes a hard switch drive something new
-    unless that is acknowledged, then save it. Returns what it made live."""
+    unless that is acknowledged, then save it and note it (`record`) in the event log.
+    Returns what it made live."""
     checked = config_mod.checked(after)
     live = inventory.going_live(before, checked)
     if live and not acknowledge:
         raise ApiError(409, "coexistence", COEXISTENCE_WARNING, going_live=live)
     _write(request, checked)
+    if live:
+        record += " It makes a hard switch drive something new (acknowledged)."
+    _record(request, "map", record, room_id=room_id, detail={"going_live": live} if live else None)
     return {"saved": True, "going_live": live}
 
 
@@ -411,9 +465,21 @@ def status(request: Request) -> dict[str, Any]:
     except ApiError as exc:
         problems = exc.extra.get("problems", [])
     state = request.app.state
+    data: Store | None = state.data
     return {
         "config": {"path": str(store.path), "exists": store.exists(), "problems": problems},
         "ha": {"configured": state.ha is not None, "error": state.ha_error},
+        "store": {
+            "open": data is not None,
+            "path": str(data.data_dir) if data is not None else None,
+            "error": state.data_error,
+            **(data.summary() if data is not None else {}),
+        },
+        "observer": (
+            state.observer.status()
+            if state.observer is not None
+            else {"running": False, "reason": state.observer_reason}
+        ),
         "coexistence": COEXISTENCE_NOTE,
     }
 
@@ -456,6 +522,46 @@ async def entities(request: Request) -> dict[str, Any]:
     return {"entities": sorted(found, key=lambda e: e["entity_id"])}
 
 
+@router.get("/log")
+def event_log(
+    request: Request,
+    level: str = "info",
+    category: str | None = None,
+    room: str | None = None,
+    # Bounded so an id past SQLite's integers is a 422, not a 500.
+    before: int | None = Query(None, ge=1, le=2**63 - 1),
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict[str, Any]:
+    """The event log, newest first: entries at `level` or above, optionally one
+    `category` and one `room`, older than the entry `before` (paging), at most `limit`.
+    Also the categories and rooms there are to filter by, with the rooms' names."""
+    data: Store | None = request.app.state.data
+    if data is None:
+        raise ApiError(
+            503,
+            "store_unavailable",
+            f"The event log is not available: {request.app.state.data_error}",
+        )
+    if level not in LEVELS:
+        raise ApiError(422, "bad_request", f"level must be one of {', '.join(LEVELS)}")
+    entries = data.events(
+        level=level, category=category or None, room_id=room or None, before=before, limit=limit
+    )
+    facets = data.event_facets()
+    try:
+        names = {r["id"]: r["name"] for r in _store(request).read().get("rooms", [])}
+    except ApiError:
+        names = {}  # a broken config doesn't hide the log
+    rooms = sorted(set(facets["rooms"]) | set(names), key=lambda r: (names.get(r, r).lower(), r))
+    return {
+        "entries": [{**e, "room_name": names.get(e["room_id"])} for e in entries],
+        "levels": list(LEVELS),
+        "categories": facets["categories"],
+        "rooms": [{"id": r, "name": names.get(r, r)} for r in rooms],
+        "more": len(entries) == limit,
+    }
+
+
 # -- Sync from HA ----------------------------------------------------------------------
 
 
@@ -490,7 +596,14 @@ async def sync(request: Request, body: Confirm) -> dict[str, Any]:
             raise _stale("HA's Areas, or the config, have changed since the preview")
         _write(request, proposed)
         log.info("saved the room snapshot synced from HA")
-        return {"saved": True, "changes": config_mod.snapshot_changes(doc, proposed)}
+        changes = config_mod.snapshot_changes(doc, proposed)
+        _record(
+            request,
+            "sync",
+            f"Saved the snapshot synced from Home Assistant: {len(changes)} change(s).",
+            detail={"changes": changes},
+        )
+        return {"saved": True, "changes": changes}
 
 
 def _stale(what: str) -> ApiError:
@@ -520,6 +633,12 @@ async def create_room(request: Request, body: RoomName) -> dict[str, Any]:
         _write(request, proposed, after_ha=f"Area {area['name']!r} was created")
         log.info("created Area %s", area["area_id"])
         room = next(r for r in proposed["rooms"] if r["ha_area_id"] == area["area_id"])
+        _record(
+            request,
+            "map",
+            f"Created the room {area['name']} (HA Area {area['area_id']}).",
+            room_id=room["id"],
+        )
         return {"room": {k: room[k] for k in ("id", "name", "ha_area_id")}}
 
 
@@ -534,6 +653,9 @@ async def rename_room(request: Request, room_id: str, body: RoomName) -> dict[st
         proposed = inventory.snapshot_with_area(doc, area)
         _write(request, proposed, after_ha=f"Area '{area['area_id']}' was renamed")
         log.info("renamed Area %s", area["area_id"])
+        _record(
+            request, "map", f"Renamed {room['name']} to {area['name']}.", room_id=room_id
+        )
         return {"room": {"id": room_id, "name": area["name"]}}
 
 
@@ -555,7 +677,14 @@ async def set_adaptive(request: Request, room_id: str, body: AdaptiveFlag) -> di
                 f"Unflagging {room['name']} drops its adaptive config: {'; '.join(drops)}.",
                 drops=drops,
             )
-        return _commit(request, doc, inventory.set_adaptive(doc, room_id, body.adaptive), False)
+        return _commit(
+            request,
+            doc,
+            inventory.set_adaptive(doc, room_id, body.adaptive),
+            False,
+            record=f"{'Flagged' if body.adaptive else 'Unflagged'} {room['name']} as adaptive.",
+            room_id=room_id,
+        )
 
 
 # -- Bulbs -----------------------------------------------------------------------------
@@ -605,6 +734,13 @@ async def move(request: Request, bulb_id: str, body: MoveConfirm) -> dict[str, A
         )
         _write(request, proposed, after_ha=f"{bulb['entity_id']} was moved")
         log.info("moved %s to Area %s", bulb["entity_id"], area_id)
+        target = _room(doc, body.room_id)["name"] if body.room_id else inventory.UNASSIGNED
+        _record(
+            request,
+            "map",
+            f"Moved {bulb['name']} ({bulb['entity_id']}) to {target}.",
+            room_id=body.room_id,
+        )
         return {"saved": True, "changes": config_mod.snapshot_changes(doc, proposed)}
 
 
@@ -615,10 +751,17 @@ async def set_bulb_hard_switches(
     """Replace the hard switches bound to a bulb's soft switch."""
     async with _store(request).lock:
         doc = _store(request).read()
-        _, bulb = inventory.find_bulb(doc, bulb_id)
+        room, bulb = inventory.find_bulb(doc, bulb_id)
         _check_base(body.base, bulb_version(bulb), f"{bulb['name']}'s hard switches")
         proposed = inventory.set_hard_switches(doc, bulb_id, body.hard_switches)
-        return _commit(request, doc, proposed, body.acknowledge_live)
+        return _commit(
+            request,
+            doc,
+            proposed,
+            body.acknowledge_live,
+            record=f"Saved {bulb['name']}'s hard switches ({len(body.hard_switches)}).",
+            room_id=room["id"] if room else None,
+        )
 
 
 # -- Switching groups ------------------------------------------------------------------
@@ -637,7 +780,12 @@ async def create_group(request: Request, room_id: str, body: Group) -> dict[str,
         _room(doc, room_id)
         group_id = inventory.new_group_id(doc, body.name)
         result = _commit(
-            request, doc, _group_edit(doc, room_id, group_id, body), body.acknowledge_live
+            request,
+            doc,
+            _group_edit(doc, room_id, group_id, body),
+            body.acknowledge_live,
+            record=f"Added the switching group {body.name.strip()}.",
+            room_id=room_id,
         )
         return {**result, "group": {"id": group_id}}
 
@@ -651,7 +799,14 @@ async def update_group(
         group = _group(_room(doc, room_id), group_id)
         _check_base(body.base, group_version(group), f"Switching group {group['name']}")
         proposed = _group_edit(doc, room_id, group_id, body)
-        return _commit(request, doc, proposed, body.acknowledge_live)
+        return _commit(
+            request,
+            doc,
+            proposed,
+            body.acknowledge_live,
+            record=f"Saved the switching group {body.name.strip()}.",
+            room_id=room_id,
+        )
 
 
 @router.delete("/rooms/{room_id}/groups/{group_id}")
@@ -665,7 +820,14 @@ async def delete_group(
         group = _group(_room(doc, room_id), group_id)
         _check_base(base, group_version(group), f"Switching group {group['name']}")
         proposed = inventory.remove_switching_group(doc, room_id, group_id)
-        return _commit(request, doc, proposed, False)
+        return _commit(
+            request,
+            doc,
+            proposed,
+            False,
+            record=f"Removed the switching group {group['name']}.",
+            room_id=room_id,
+        )
 
 
 # -- Deploy: the switching plane -------------------------------------------------------
@@ -742,6 +904,13 @@ async def deploy_apply(request: Request, body: Confirm) -> dict[str, Any]:
             )
         except (DeployError, HAError) as exc:
             problems = exc.problems if isinstance(exc, DeployError) else [str(exc)]
+            _record(
+                request,
+                "deploy",
+                "The switching-plane deploy stopped or did not verify.",
+                detail={"problems": problems},
+                level="error",
+            )
             raise ApiError(
                 502,
                 "deploy_failed",
@@ -750,7 +919,13 @@ async def deploy_apply(request: Request, body: Confirm) -> dict[str, Any]:
                 problems=problems,
             ) from exc
         log.info("deployed the lm_ lane: %d steps", len(deploy_plan["steps"]))
-        return {"deployed": True, "result": deploy.summarise(deploy_plan, report)}
+        result = deploy.summarise(deploy_plan, report)
+        counts = ", ".join(
+            f"{sum(len(ids) for ids in result[label].values())} {label}"
+            for label in ("created", "updated", "removed")
+        )
+        _record(request, "deploy", f"Deployed the switching plane: {counts}.", detail=result)
+        return {"deployed": True, "result": result}
 
 
 # -- Deploy: Area writes ---------------------------------------------------------------
@@ -809,6 +984,14 @@ async def areas_deploy(request: Request, body: Confirm) -> dict[str, Any]:
         except DeployError as exc:
             if exc.written is None:
                 raise  # refused before writing anything
+            _record(
+                request,
+                "areas",
+                f"The Area writes stopped partway: {len(exc.written)} of "
+                f"{len(area_plan['moves'])} moves landed.",
+                detail={"problems": exc.problems, "written": exc.written},
+                level="error",
+            )
             raise ApiError(
                 502,
                 "areas_partial",
@@ -819,6 +1002,12 @@ async def areas_deploy(request: Request, body: Confirm) -> dict[str, Any]:
                 written=exc.written,
             ) from exc
         log.info("wrote %d Area moves to HA", len(result["moves"]))
+        _record(
+            request,
+            "areas",
+            f"Wrote {len(result['moves'])} Area move(s) to Home Assistant.",
+            detail={"moves": result["moves"]},
+        )
         return result
 
 
@@ -877,27 +1066,62 @@ def _install_errors(app: FastAPI) -> None:
         return _error(422, "bad_request", "The request was not understood.", problems=problems)
 
 
+def allowed_hosts(value: str | None) -> tuple[list[str], list[str]]:
+    """The Host allowlist from LM_ALLOWED_HOSTS (comma-separated), and the entries it had
+    to leave out. Always the loopback names; an entry may be a name, an address, or
+    `*.domain`, and a scheme or port pasted with it is dropped, since the Host check
+    compares names only. `*` alone turns the check off."""
+    hosts, skipped = list(LOOPBACK_HOSTS), []
+    for raw in (value or "").split(","):
+        entry = raw.strip().lower()
+        if not entry:
+            continue
+        name = entry.split("://", 1)[-1].split("/", 1)[0].rsplit("@", 1)[-1]
+        if name.count(":") == 1:
+            name = name.split(":", 1)[0]
+        wildcard_ok = name == "*" or (name.startswith("*.") and "*" not in name[2:])
+        if not name or ("*" in name and not wildcard_ok) or ":" in name or "[" in name:
+            skipped.append(raw.strip())
+        elif name not in hosts:
+            hosts.append(name)
+    return hosts, skipped
+
+
 def create_app(
     *,
     ha: HAClient | None = None,
     config_path: Path | None = None,
     verify_delay: float = deploy.VERIFY_DELAY,
+    data_dir: Path | None = None,
+    observe: bool | None = None,
+    hosts: Sequence[str] | None = None,
 ) -> FastAPI:
-    """Build the app. No I/O: the config is read per request, and the HA client is made in
-    the lifespan unless `ha` is given (tests pass a fake). `config_path` defaults to
-    LM_CONFIG_PATH, else /data/config.json."""
+    """Build the app. No I/O: the config is read per request, and the HA client, the store
+    and the observer are made in the lifespan. `ha` replaces the client (tests pass a
+    fake); `config_path` defaults to LM_CONFIG_PATH, else /data/config.json; `data_dir`
+    overrides where the store lives. The observer runs when `observe` says so, by default
+    only with the app's own client (a test's fake may not speak HA's event API). `hosts` is
+    the Host allowlist, by default from LM_ALLOWED_HOSTS."""
     path = config_path or Path(os.environ.get(CONFIG_PATH_ENV, "").strip() or DEFAULT_CONFIG_PATH)
+    if hosts is None:
+        hosts, skipped = allowed_hosts(os.environ.get(ALLOWED_HOSTS_ENV))
+    else:
+        hosts, skipped = list(hosts), []
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if skipped:
+            log.warning("%s: ignoring what isn't a host name: %s", ALLOWED_HOSTS_ENV, skipped)
+        if "*" in hosts:
+            log.warning("%s=* turns the Host check off for every site", ALLOWED_HOSTS_ENV)
+        # The base URL and the data directory may come from the config; a config that
+        # doesn't load still leaves LM_HA_BASE_URL, and the config's own directory.
+        try:
+            base = app.state.store.read()
+        except ApiError:
+            base = config_mod.blank()
         owned = None
         if app.state.ha is None:
-            # The base URL may come from the config; a config that doesn't load still
-            # leaves LM_HA_BASE_URL to go on.
-            try:
-                base = app.state.store.read()
-            except ApiError:
-                base = config_mod.blank()
             try:
                 owned = HAClient(**config_mod.connection(base))
                 app.state.ha, app.state.ha_error = owned, None
@@ -906,9 +1130,39 @@ def create_app(
                 # action that needs HA says why it can't reach it.
                 app.state.ha_error = str(exc)
                 log.warning("Home Assistant is not configured: %s", exc)
+        data = Store(
+            data_dir or config_mod.data_dir(base, path),
+            retention_days=config_mod.system(base)["event_log_retention_days"],
+        )
+        try:
+            data.open()
+            app.state.data, app.state.data_error = data, None
+        except Exception as exc:  # noqa: BLE001 - whatever it was, the Map still serves
+            # Served anyway, without observation or the event log: the Map needs neither,
+            # and a damaged archive must never be what keeps it from starting.
+            app.state.data_error = f"{data.data_dir}: {exc}"
+            log.warning("the store did not open, so nothing is observed: %s", exc)
+            data = None
+        observer = None
+        if not (ha is None if observe is None else observe):
+            app.state.observer_reason = "observation is off for this app"
+        elif app.state.ha is None:
+            app.state.observer_reason = f"Home Assistant is not configured: {app.state.ha_error}"
+        elif data is None:
+            app.state.observer_reason = f"the store did not open: {app.state.data_error}"
+        else:
+            observer = Observer(app.state.ha, data, app.state.store.read)
+            app.state.observer = observer
+            await observer.start()
         try:
             yield
         finally:
+            if observer is not None:
+                app.state.observer = None
+                await observer.stop()
+            if data is not None:
+                app.state.data = None
+                data.close()
             if owned is not None:
                 app.state.ha = None
                 await owned.close()
@@ -922,6 +1176,13 @@ def create_app(
     app.state.ha = ha
     app.state.ha_error = None if ha is not None else "not connected yet"
     app.state.verify_delay = verify_delay
+    app.state.data = None  # the store: the archive and its query layer
+    app.state.data_error = "not opened yet"
+    app.state.observer = None
+    app.state.observer_reason = "not started yet"
+    app.state.allowed_hosts = hosts
+    # Outermost, so a request for an unknown Host reaches nothing, static files included.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False)
     _install_errors(app)
 
     @app.get("/healthz")

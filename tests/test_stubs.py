@@ -1,4 +1,4 @@
-"""The P0 boundary: importing does no work, /healthz serves, and every module P3 leaves for
+"""The P0 boundary: importing does no work, /healthz serves, and every module P4 leaves for
 a later phase still raises NotImplementedError rather than passing silently."""
 
 import asyncio
@@ -15,8 +15,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Later phases' modules: (module, callables and the arguments to call them with).
 STUBS = {
-    "app.core.observe": {"is_user_intervention": ({},), "Observer": (None, None, {})},
-    "app.core.store": {"Store": (Path("data"),)},
     "app.modules.adaptive.scheduler": {
         "compute_boundaries": ({}, None, {}),
         "apply_collision_policy": ([],),
@@ -37,7 +35,7 @@ STUBS = {
     "app.modules.adaptive.runtime": {"AdaptiveRuntime": (None, None, None, {})},
     "tools.sweep": {"main": ([],)},
 }
-KEYWORDS = {"is_user_intervention": {"guarded": False}, "run": {"now": None}}
+KEYWORDS = {"run": {"now": None}}
 
 # Any attempt to reach the network (HA) while importing fails the check.
 IMPORT_CHECK = """
@@ -70,7 +68,8 @@ class BoundaryTest(unittest.TestCase):
     def test_healthz(self):
         from app.main import app
 
-        self.assertEqual(TestClient(app).get("/healthz").json(), {"status": "ok"})
+        client = TestClient(app, base_url="http://localhost")
+        self.assertEqual(client.get("/healthz").json(), {"status": "ok"})
 
     def test_later_phases_are_still_stubs(self):
         for module_name, calls in STUBS.items():

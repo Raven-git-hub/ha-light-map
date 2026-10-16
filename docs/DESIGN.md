@@ -527,6 +527,136 @@ land; so Esc, × and Cancel wait for the request to settle.
 
 ---
 
+## Observation (settled in P4)
+
+The observer (`core.observe`) is a platform service: it watches the mapped bulbs, records
+what it sees, and hands each observation to the modules that subscribe. It collects nothing
+module-specific itself. Where a module's knowledge belongs in an observation (the section a
+room is in, a guard it raises while it changes lights), the module supplies it through a
+hook on the observer (`register_section`, `register_guard`).
+
+**One subscription, kept alive.** The observer subscribes to HA's `state_changed` over the
+WebSocket (`HAClient.subscribe_events`) and keeps the events for what it watches: the bulbs
+of every room that has any, those rooms' sensors, and the guards. The read loop starts
+before the subscribe command (house rule). A subscription lasts as long as the client: when
+the connection drops, the reconnect ladder (`homeassistant.reconnect_backoff_seconds`)
+reopens it and subscribes again, and a connection that fails to re-subscribe is closed and
+retried rather than left looking connected while deaf, which is how the predecessor's
+stream died silently. A rejected token stops the ladder; it never fixes itself. Events
+reach handlers from a queue, in order, outside the read loop, so a handler that sends a
+command can't deadlock waiting on the loop it is blocking. After every (re)connect the
+observer re-reads the states it watches, since events were missed while it was away.
+
+It runs when HA is configured and the config has a room with bulbs. The config is re-read
+at every tick and after every save from the Map, so the first sync starts it without a
+restart; a config that stops loading leaves it on the last one that did.
+
+**Heartbeats.** Every `system.heartbeat_interval_minutes`, aligned to the clock (a 10-minute
+cadence ticks at :00, :10, ...), each room with bulbs records one heartbeat and one
+reading per bulb (long format) from a fresh read of HA's states:
+
+- A reading is the bulb's on/off and brightness (0–255, when on and reported). `is_on` is
+  null when HA has no usable state for it (unavailable, unknown, missing), so an unreachable
+  bulb is never counted as off.
+- `lux` comes from the room's lux sensors: the mean of those reading above 0. A reading of 0
+  is the sensor's floor, not a measurement (sensors sit at 0 all night with the lights
+  visibly on), so it never drags a real reading down. When every available sensor reads 0,
+  `lux` is 0, the floor, which the analyser keeps out of lux targets (P5). Null when no
+  sensor is configured or available; `lux_sensors` counts the sensors the value came from.
+- `occupancy` is 1 if any presence sensor is on, 0 if none is, and null when none is
+  configured or available. Presence sensors are read as binary sensors (`on` is
+  occupied); a `person` or `device_tracker` reports `home`, which reads as not occupied. Recorded, not interpreted: what a room with no sensor means for
+  learning (the predecessor treated it as always occupied) is the analyser's call.
+- `section` is whatever the module with sections reports for the room (adaptive's
+  scheduler, P5), null until then. It is recorded at observation time, never inferred later
+  from the clock, which is what misfiled the predecessor's early history by season.
+- **Never sampled mid-transition.** A heartbeat waits while any guard on its room is raised,
+  recording the wait (`deferred_ms`), and is skipped with a warning if the guard is still up
+  after 90 seconds. A guard is an entity a module raises while its own automations are
+  changing the room's lights (`al_active_<room>`, P5). There is none before P5.
+
+Rooms without bulbs aren't observed. A room's lux and presence sensors are read from its
+`adaptive_config`, where the config shape keeps them (an open decision in
+`docs/ARCHITECTURE.md`).
+
+**Reactive detection.** A user intervention is a brightness change: a bulb that was on and
+is still on, at a different brightness, carrying no `context.parent_id`, not made under an
+automation run's own context, while no guard on its room is raised
+(`is_user_intervention`). An automation fired by a state change or an event gets the
+trigger's context as its parent, so everything the plane does carries a `parent_id` (a
+hard switch, the bridge and the brightness it applies on soft-on), as does an automation
+fired with `automation.trigger`. An automation fired by time, a time pattern or the sun
+doesn't: HA starts it with a fresh context, so its `light.turn_on` looks exactly like a
+hand on a dimmer. HA does fire `automation_triggered` under that run's context, so the
+observer subscribes to it too and remembers each run's context id (for six hours, the
+newest 20,000), and a change made under one is never counted. A dimmer at the wall or a
+slider in HA's UI has neither and counts. A power change is never a brightness preference:
+through the plane it carries a `parent_id`, and out of band it is a power decision (see
+"Out-of-band power changes").
+
+The guard is there for a gap no context closes: HA keeps a service call's context on an
+entity's state writes for only five seconds. A transition longer than that reports its
+later steps under a fresh context with neither mark, so a module driving a long transition
+must raise its guard for the whole of it, or its own ramp is learned as the user's. Until
+cutover the live `ha-adaptive-light` drives the same bulbs, raising only its own guards,
+which Light Map doesn't watch: the late steps of its maintenance transitions can be
+recorded as manual changes. Two other cases look like a dimmer and can't be told apart
+from one: a bulb power-cycled at a plain wall switch that comes back at its power-on
+brightness without HA ever marking it unavailable, and another system driving lights
+through HA's API under its own HA user (recorded, so the analyser can set it aside).
+
+Interventions are consolidated per room. The first opens a window of
+`system.reactive_window_seconds`; when it closes, one reactive event records the room:
+every bulb before (its state when the window opened, or just before the user's first
+change to it) and after, the lux before and after, and occupancy. For a bulb the user
+changed, after is where their last change left it, with the HA user who made it (none for
+a device); it is not re-read at the close, because by then the plane or an automation may
+have moved the bulb, and that is not the user's choice. The other bulbs are recorded as the
+close finds them, for context. A bulb is `changed` when the user touched it and it ended
+more than `system.reactive_min_delta` from where it started; a window where none did is
+dropped as rounding noise or transition echo. Someone adjusting three bulbs over a few
+seconds is one intervention, not a dozen. Occupancy is recorded but never filters a
+reactive event: a hand on a dimmer is proof of presence. Stopping the observer stops taking
+events, then closes any open window.
+
+**Fan-out.** Each heartbeat and reactive event is written to the store first, then handed to
+every handler registered with `subscribe` (`{"kind": "heartbeat" | "reactive", ...}`). A
+failing handler is logged and stops neither the others nor the observer.
+
+**The event log** is a feature, not debug output: it records what the platform did and saw
+for the Log tab. Connects and drops, reactive events, skipped heartbeats, a summary of each
+heartbeat tick (at `debug`, hidden by default), store rebuilds, and the actions taken from
+the Map (sync, deploy, Area writes, moves, room and config edits). Entries are archived to
+CSV like any observation; `system.event_log_retention_days` prunes the query layer, and the
+archive keeps everything.
+
+**Storage.** `core.store` writes each row to its CSV stream first, flushed to disk, then to
+SQLite: a database failure never costs an observation, and the query layer can always be
+rebuilt from the archive (`rebuild_from_csv`). Each stream mirrors its table column for
+column, minus the surrogate ids: a reading names its heartbeat by (`room_id`, `ts`), so the
+archive reads back on its own. A heartbeat's readings are written before the heartbeat, so
+a write cut short leaves readings with no heartbeat, which a rebuild skips, never a
+heartbeat silently missing its readings.
+
+The query layer records each archive file's size and mtime as of the last write it holds
+all of, and moves that record forward only from where it was. Once a write reaches the
+archive but not the database, the record stays behind for good (the store reports itself
+`stale`), so the next successful write can't cover the gap, and the next start rebuilds.
+At startup any mismatch (a deleted database, one left behind, an archive file edited)
+triggers a rebuild; a database from another schema version (a checksum of the DDL) is
+recreated; one that won't open or read cleanly is moved aside, never deleted, and rebuilt.
+
+The archive is guarded against torn writes. A write that fails is truncated back to where
+the file was; a file that doesn't end in a newline (cut short some other way) is never
+appended to, writing moving on to a numbered successor, as it does for a file whose header
+doesn't match the current columns; and re-ingest drops a last line without its newline,
+since the CSV reader would take `12` torn from `128` as a whole value. Re-ingest reads each
+file by its own header and skips what it can't read (a byte that isn't UTF-8, a value out
+of range, a line a spreadsheet mangled), counting and logging it, so a damaged archive
+never stops a start: with no store at all, the Map still serves.
+
+---
+
 ## Terminology
 
 - **Bulb** — one `light.*` entity; the actuation atom.

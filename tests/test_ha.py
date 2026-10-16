@@ -1,5 +1,6 @@
 """app.core.ha: the token, REST over a mock transport, and the WebSocket against a local
-fake HA server (127.0.0.1 only; no real Home Assistant)."""
+fake HA server (127.0.0.1 only; no real Home Assistant), including event subscriptions and
+the reconnect ladder that keeps them alive."""
 
 import asyncio
 import json
@@ -60,12 +61,11 @@ class ClientBasicsTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HAError):
             HAClient("ha:8123", TOKEN)
 
-    async def test_subscribe_events_arrives_in_p4(self):
-        async def handler(event):
-            pass
-
-        with self.assertRaises(NotImplementedError):
-            await HAClient("http://ha:8123", TOKEN).subscribe_events("state_changed", handler)
+    async def test_the_reconnect_ladder_defaults(self):
+        client = HAClient("http://ha:8123", TOKEN)
+        self.assertEqual(client.reconnect_backoff, (1, 2, 5, 10, 30, 60))
+        client = HAClient("http://ha:8123", TOKEN, reconnect_backoff=[3])
+        self.assertEqual(client.reconnect_backoff, (3,))
 
 
 class RestTest(unittest.IsolatedAsyncioTestCase):
@@ -185,11 +185,33 @@ SILENT, HANG_UP = object(), object()
 
 
 class FakeHAServer:
-    """Speaks just enough of HA's WebSocket API: auth, then one canned answer per type."""
+    """Speaks just enough of HA's WebSocket API: auth, then one canned answer per type, and
+    event subscriptions: `fire` sends an event to every connection subscribed to its type,
+    `hang_up` drops every connection. `token` is the one it accepts; `refuse_subscribe`
+    answers subscribe_events with a failure; `event_behind_result` sends an event right
+    behind each subscribe_events result, as HA can."""
 
     def __init__(self):
         self.received: list[dict] = []
         self.connections = 0
+        self.token = TOKEN
+        self.refuse_subscribe = False
+        # Connections still to close right after the greeting, as HA does while restarting.
+        self.close_after_greeting = 0
+        self.event_behind_result = None
+        # Open connections: websocket -> {subscription id: event type}.
+        self.open: dict = {}
+
+    async def fire(self, event_type, event):
+        for ws, subscriptions in list(self.open.items()):
+            for sub_id, kind in list(subscriptions.items()):
+                if kind == event_type:
+                    message = {"id": sub_id, "type": "event", "event": event}
+                    await ws.send(json.dumps(message))
+
+    async def hang_up(self):
+        for ws in list(self.open):
+            await ws.close()
 
     def answer(self, message):
         kind = message["type"]
@@ -197,6 +219,8 @@ class FakeHAServer:
             return HANG_UP
         if kind == "test/ignore":
             return SILENT
+        if kind == "subscribe_events" and self.refuse_subscribe:
+            return {"success": False, "error": {"code": "unauthorized", "message": "nope"}}
         if kind == "test/fail" or (
             kind == "config/entity_registry/get" and message["entity_id"] != "light.lamp"
         ):
@@ -227,20 +251,36 @@ class FakeHAServer:
     async def handler(self, ws):
         self.connections += 1
         await ws.send(json.dumps({"type": "auth_required", "ha_version": "2026.10.0"}))
+        if self.close_after_greeting:
+            self.close_after_greeting -= 1
+            await ws.close()
+            return
         auth = json.loads(await ws.recv())
-        if auth != {"type": "auth", "access_token": TOKEN}:
+        if auth != {"type": "auth", "access_token": self.token}:
             await ws.send(json.dumps({"type": "auth_invalid", "message": "Invalid access token"}))
             return
         await ws.send(json.dumps({"type": "auth_ok", "ha_version": "2026.10.0"}))
-        async for raw in ws:
-            message = json.loads(raw)
-            self.received.append(message)
-            reply = self.answer(message)
-            if reply is HANG_UP:
-                await ws.close()
-                return
-            if reply is not SILENT:
+        subscriptions = self.open[ws] = {}
+        try:
+            async for raw in ws:
+                message = json.loads(raw)
+                self.received.append(message)
+                reply = self.answer(message)
+                if reply is HANG_UP:
+                    await ws.close()
+                    return
+                if reply is SILENT:
+                    continue
                 await ws.send(json.dumps({"id": message["id"], "type": "result", **reply}))
+                if message["type"] == "subscribe_events" and reply["success"]:
+                    subscriptions[message["id"]] = message["event_type"]
+                    if self.event_behind_result is not None:
+                        event = {"id": message["id"], "type": "event"}
+                        await ws.send(json.dumps({**event, "event": self.event_behind_result}))
+                elif message["type"] == "unsubscribe_events":
+                    subscriptions.pop(message["subscription"], None)
+        finally:
+            self.open.pop(ws, None)
 
 
 class WebSocketTest(unittest.IsolatedAsyncioTestCase):
@@ -254,8 +294,8 @@ class WebSocketTest(unittest.IsolatedAsyncioTestCase):
         self.server.close()
         await self.server.wait_closed()
 
-    def client(self, token=TOKEN, timeout=5.0):
-        client = HAClient(self.base_url, token, timeout=timeout)
+    def client(self, token=TOKEN, timeout=5.0, backoff=(0.01,)):
+        client = HAClient(self.base_url, token, timeout=timeout, reconnect_backoff=backoff)
         self.addAsyncCleanup(client.close)
         return client
 
@@ -383,6 +423,221 @@ class WebSocketTest(unittest.IsolatedAsyncioTestCase):
         await self.server.wait_closed()
         with self.assertRaises(HAError):
             await self.client(timeout=2).connect()
+
+
+
+EVENT = {
+    "event_type": "state_changed",
+    "data": {"entity_id": "light.lamp", "old_state": None, "new_state": None},
+    "context": {"id": "c1", "parent_id": None, "user_id": None},
+}
+
+
+class Recorder:
+    """An event handler and a connection listener that keep what they are given."""
+
+    def __init__(self):
+        self.events: asyncio.Queue = asyncio.Queue()
+        self.states: asyncio.Queue = asyncio.Queue()
+
+    async def handler(self, event):
+        await self.events.put(event)
+
+    async def listener(self, state, detail):
+        await self.states.put(state)
+
+    async def next_event(self):
+        return await asyncio.wait_for(self.events.get(), 3)
+
+    async def next_state(self):
+        return await asyncio.wait_for(self.states.get(), 3)
+
+
+class SubscriptionTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.fake = FakeHAServer()
+        self.server = await serve(self.fake.handler, "127.0.0.1", 0)
+        port = self.server.sockets[0].getsockname()[1]
+        self.base_url = f"http://127.0.0.1:{port}"
+        self.seen = Recorder()
+        # A cleanup, registered before any client's: cleanups run last-in first-out, so
+        # the clients close first and no ladder sees the server go.
+        self.addAsyncCleanup(self.stop_server)
+
+    async def stop_server(self):
+        self.server.close()
+        await self.server.wait_closed()
+
+    client = WebSocketTest.client
+
+    async def subscribed(self, client):
+        client.add_connection_listener(self.seen.listener)
+        await client.subscribe_events("state_changed", self.seen.handler)
+        self.assertEqual(await self.seen.next_state(), "connected")
+
+    async def test_events_reach_the_handler(self):
+        client = self.client()
+        await self.subscribed(client)
+        self.assertEqual([m["type"] for m in self.fake.received], ["subscribe_events"])
+        await self.fake.fire("state_changed", EVENT)
+        await self.fake.fire("call_service", {"event_type": "call_service"})  # not subscribed
+        self.assertEqual(await self.seen.next_event(), EVENT)
+        self.assertTrue(self.seen.events.empty())
+
+    async def test_an_event_right_behind_the_result_is_not_lost(self):
+        self.fake.event_behind_result = EVENT
+        await self.subscribed(self.client())
+        self.assertEqual(await self.seen.next_event(), EVENT)
+
+    async def test_a_handler_may_send_a_command(self):
+        # Handlers run off the read loop: awaiting a result inside one would otherwise
+        # deadlock, since only the read loop can deliver it.
+        client = self.client(timeout=2)
+        answers = asyncio.Queue()
+
+        async def handler(event):
+            await answers.put(await client.list_areas())
+
+        await client.subscribe_events("state_changed", handler)
+        await self.fake.fire("state_changed", EVENT)
+        self.assertEqual(await asyncio.wait_for(answers.get(), 3), AREAS)
+
+    async def test_a_drop_is_reconnected_and_resubscribed(self):
+        client = self.client()
+        await self.subscribed(client)
+        await self.fake.hang_up()
+        self.assertEqual(await self.seen.next_state(), "disconnected")
+        self.assertEqual(await self.seen.next_state(), "connected")
+        self.assertEqual(self.fake.connections, 2)
+        self.assertEqual(
+            [m["type"] for m in self.fake.received], ["subscribe_events", "subscribe_events"]
+        )
+        await self.fake.fire("state_changed", EVENT)
+        self.assertEqual(await self.seen.next_event(), EVENT)
+
+    async def test_the_ladder_keeps_trying_while_ha_is_away(self):
+        client = self.client()
+        await self.subscribed(client)
+        with self.assertLogs("app.core.ha", "WARNING") as logs:
+            self.server.close()
+            await self.server.wait_closed()
+            await self.fake.hang_up()
+            self.assertEqual(await self.seen.next_state(), "disconnected")
+            await asyncio.sleep(0.1)  # several refused attempts
+            self.assertFalse(client.connected)
+            port = int(self.base_url.rsplit(":", 1)[1])
+            self.server = await serve(self.fake.handler, "127.0.0.1", port)
+            self.assertEqual(await self.seen.next_state(), "connected")
+        self.assertIn("cannot reach Home Assistant", logs.output[0])
+        await self.fake.fire("state_changed", EVENT)
+        self.assertEqual(await self.seen.next_event(), EVENT)
+
+    async def test_a_connection_that_cannot_subscribe_is_not_kept(self):
+        self.fake.refuse_subscribe = True
+        client = self.client()
+        client.add_connection_listener(self.seen.listener)
+        with self.assertLogs("app.core.ha", "WARNING"):
+            with self.assertRaises(HACommandError):
+                await client.subscribe_events("state_changed", self.seen.handler)
+            self.assertFalse(client.connected)
+            await asyncio.sleep(0.05)  # the ladder's retries are refused too
+            # Still registered: the ladder retries, and subscribes once HA accepts it.
+            self.fake.refuse_subscribe = False
+            # Never announced, so never reported dropped: the first word is "connected".
+            self.assertEqual(await self.seen.next_state(), "connected")
+        await self.fake.fire("state_changed", EVENT)
+        self.assertEqual(await self.seen.next_event(), EVENT)
+
+    async def test_a_socket_closed_mid_handshake_is_retried(self):
+        # The ladder retries anything but a rejected token: one that died on a close it
+        # didn't expect would leave the stream dead while HA came back.
+        client = self.client()
+        await self.subscribed(client)
+        self.fake.close_after_greeting = 3
+        with self.assertLogs("app.core.ha", "WARNING") as logs:
+            await self.fake.hang_up()
+            self.assertEqual(await self.seen.next_state(), "disconnected")
+            self.assertEqual(await self.seen.next_state(), "connected")
+        self.assertIn("closed during authentication", "\n".join(logs.output))
+        self.assertEqual(self.fake.connections, 5)
+        await self.fake.fire("state_changed", EVENT)
+        self.assertEqual(await self.seen.next_event(), EVENT)
+
+    async def test_only_a_subscribed_connection_is_announced(self):
+        client = self.client()
+        client.add_connection_listener(self.seen.listener)
+        await client.list_areas()  # the Map's commands open the socket first
+        await self.fake.hang_up()
+        await asyncio.sleep(0.05)
+        self.assertTrue(self.seen.states.empty())  # nothing listened on it
+        await client.list_areas()
+        await client.subscribe_events("state_changed", self.seen.handler)
+        self.assertEqual(await self.seen.next_state(), "connected")  # on the open socket
+        self.assertEqual(self.fake.connections, 2)
+        await client.unsubscribe_events("state_changed", self.seen.handler)
+        await self.fake.hang_up()
+        await asyncio.sleep(0.05)
+        self.assertTrue(self.seen.states.empty())
+
+    async def test_a_rejected_token_stops_the_ladder(self):
+        client = self.client()
+        await self.subscribed(client)
+        self.fake.token = "rotated"
+        with self.assertLogs("app.core.ha", "ERROR"):
+            await self.fake.hang_up()
+            self.assertEqual(await self.seen.next_state(), "disconnected")
+            self.assertEqual(await self.seen.next_state(), "auth_failed")
+        await asyncio.wait_for(client._ladder, 3)
+        connections = self.fake.connections
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.fake.connections, connections)  # not retried
+
+    async def test_a_failing_handler_does_not_stop_the_stream(self):
+        client = self.client()
+
+        async def broken(event):
+            raise RuntimeError("boom")
+
+        client.add_connection_listener(self.seen.listener)
+        await client.subscribe_events("state_changed", broken)
+        await client.subscribe_events("state_changed", self.seen.handler)
+        self.assertEqual(await self.seen.next_state(), "connected")
+        with self.assertLogs("app.core.ha", "ERROR") as logs:
+            for _ in range(2):
+                await self.fake.fire("state_changed", EVENT)
+                self.assertEqual(await self.seen.next_event(), EVENT)
+        self.assertEqual(len(logs.records), 2)
+
+    async def test_subscribing_twice_is_one_subscription(self):
+        client = self.client()
+        await self.subscribed(client)
+        await client.subscribe_events("state_changed", self.seen.handler)
+        await self.fake.fire("state_changed", EVENT)
+        self.assertEqual(await self.seen.next_event(), EVENT)
+        await asyncio.sleep(0.05)
+        self.assertTrue(self.seen.events.empty())
+        self.assertEqual([m["type"] for m in self.fake.received], ["subscribe_events"])
+
+    async def test_unsubscribing_ends_it_and_the_ladder(self):
+        client = self.client()
+        await self.subscribed(client)
+        await client.unsubscribe_events("state_changed", self.seen.handler)
+        self.assertIsNone(client._ladder)
+        self.assertEqual(self.fake.received[-1]["type"], "unsubscribe_events")
+        await self.fake.hang_up()
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.fake.connections, 1)  # nothing reconnects
+
+    async def test_close_drops_the_subscriptions(self):
+        client = self.client()
+        await self.subscribed(client)
+        await client.close()
+        await asyncio.sleep(0.05)
+        self.assertTrue(self.seen.states.empty())  # a deliberate close is not a drop
+        self.assertEqual(self.fake.connections, 1)
+        # Still usable for commands, with nothing subscribed.
+        self.assertEqual(await client.list_areas(), AREAS)
+        self.assertEqual(self.fake.received[-1]["type"], "config/area_registry/list")
 
 
 if __name__ == "__main__":

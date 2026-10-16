@@ -133,6 +133,7 @@ static/              Vanilla JS and CSS, no build step; desktop-oriented, dark.
   app.css            The theme and the components every view shares.
   app.js             The shell: tab router, API helper, DOM/notice/dialog helpers.
   map.css, map.js    The Map tab (P3). Each later view adds its own pair.
+  log.css, log.js    The Log tab (P4): the event log, read-only.
 schema/
   config.schema.json The config contract (see "Top-level config shape").
   storage.schema.sql SQLite DDL (see "Storage model").
@@ -142,9 +143,9 @@ tools/
   sweep.py           A year of section-boundary computations, checking for unexpected
                      collapses.
 tests/               Unit tests (stdlib unittest, `python -m unittest`) against fakes and
-                     fixtures; never a real HA. `test_ui.py` also drives the Map in headless
-                     Chromium (`tests/ui/map_ui.cjs`, Node's Playwright) where that is
-                     installed, and is skipped where it isn't.
+                     fixtures; never a real HA. `test_ui.py` also drives the Map and the Log
+                     in headless Chromium (`tests/ui/map_ui.cjs`, `log_ui.cjs`, Node's
+                     Playwright) where that is installed, and is skipped where it isn't.
 Dockerfile
 docker-compose.yml
 .env.example
@@ -191,9 +192,11 @@ ported from `ha-adaptive-light` and were hard-won — preserve them.
 - **Scene automations carry `conditions: []`.** They are fired via `automation.trigger`
   (default `skip_condition: true`); a condition placed there would be silently ignored.
 - **Reactive detection ignores the system's own changes.** A brightness change counts as a
-  user intervention only when it carries no `context.parent_id` and no guard is raised.
-  Switch-driven and bridge-driven changes carry a `parent_id`, so toggling power is never
-  learned as a brightness preference.
+  user intervention only when it carries no `context.parent_id`, wasn't made under an
+  automation run's own context, and no guard is raised. Switch-driven and bridge-driven
+  changes carry a `parent_id`, so toggling power is never learned as a brightness
+  preference. An automation fired by time or the sun carries no `parent_id` (HA starts it
+  with a fresh context), which is why the observer also watches `automation_triggered`.
 - **Observation is per bulb, long format**, pooled per learning unit at analysis time — so
   learning units can be redrawn without losing history.
 - **HA Areas are the source of truth for room membership.** The config holds a committed
@@ -217,7 +220,8 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
 
 - `version` — schema version (2 since P2); the container migrates forward on load.
 - `homeassistant` — `base_url`, `access_token` (redacted from exports; never persisted),
-  `verify_ssl`; reconnect backoff arrives with the event subscription's reconnect loop (P4).
+  `verify_ssl`, `reconnect_backoff_seconds` (the WebSocket reconnect ladder, default
+  `[1, 2, 5, 10, 30, 60]`; the last step repeats).
   At runtime the connection is read from the environment / secrets: `LM_HA_BASE_URL`,
   `LM_HA_TOKEN` (or `LM_HA_TOKEN_FILE`). `LM_HA_BASE_URL`, when set, overrides `base_url`
   (settled in P1): the environment belongs to the deployment, the config to the house. The
@@ -225,8 +229,12 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
   config file itself lives at `LM_CONFIG_PATH` (default `/data/config.json`, on the
   container's volume); before its first save there is none, and the app starts from a blank
   config.
-- `system` — observation cadence, reactive window/min-delta, data dir, CSV toggle, event-log
-  retention.
+- `system` — the observer's settings (P4), each optional with a default:
+  `heartbeat_interval_minutes` (10), `reactive_window_seconds` (120), `reactive_min_delta`
+  (5, in HA's 0–255 brightness), `event_log_retention_days` (90), and `data_dir` (where the
+  archive and the query layer live; default, and base for a relative path, the directory
+  holding the config). There is no CSV toggle: the CSV archive is the source of truth, so
+  it is always written (see "Storage model"). `data_dir` is read at startup.
 - `rooms[]` — from HA Areas (every Area is a room, with or without lights), each:
   - `id` (slug), `name`, `ha_area_id`, `adaptive` (bool)
   - `bulbs[]`: `{ id (slug), name, entity_id (light.*), ha_match_key?, hard_switches[] }` —
@@ -277,9 +285,9 @@ source on an HA core event (`state_changed`, `call_service`, `automation_reloade
 which fires for the plane's own work. Deploy adds the one check that needs HA's state: no
 `toggle` on an HA group of bulbs Light Map drives.
 
-As of P1 the core sections (`homeassistant`, `rooms[]`, `unassigned[]`) are validated in
-depth; `system`, `learning`, `schedule_profiles` and `adaptive_config` fill in with the
-observer (P4) and the adaptive module (P5).
+As of P4 the core sections (`homeassistant`, `system`, `rooms[]`, `unassigned[]`) are
+validated in depth; `learning`, `schedule_profiles` and `adaptive_config` fill in with the
+adaptive module (P5).
 
 ---
 
@@ -287,23 +295,44 @@ observer (P4) and the adaptive module (P5).
 
 CSV is the archive; SQLite is the rebuildable query layer. Readings are stored **per bulb**
 (long format), which is what learning-unit pooling needs. The almanac is insert-only
-snapshots keyed by learning unit, so history comes for free. This is the starting skeleton;
-exact columns are finalised when `store.py` and the analyser are ported (P4/P5).
+snapshots keyed by learning unit, so history comes for free. The observation tables were
+finalised with the store (P4); the almanac's columns are finalised with the analyser (P5).
 
-Tables (skeleton):
+Tables (`schema/storage.schema.sql`; `ts` is ISO-8601 UTC, booleans 0/1):
 
-- `heartbeat` — one row per observation tick: `id`, `ts`, `room_id`, `section`, `lux`
-  (nullable; 0 is a floor, not a measurement), `occupancy` (bool).
+- `heartbeat` — one row per room per observation tick: `id`, `ts`, `room_id`, `section`
+  (nullable: recorded at observation time from the module that has sections, P5),
+  `lux` (nullable; 0 is a floor, not a measurement), `lux_sensors` (how many sensors `lux`
+  came from), `occupancy` (nullable: no presence sensor, or none available),
+  `deferred_ms` (how long the tick waited for a guard). Unique on (`room_id`, `ts`).
 - `bulb_reading` — long format, one row per bulb per heartbeat: `id`, `heartbeat_id` (fk),
-  `bulb_id`, `brightness` (nullable), `is_on` (bool).
-- `reactive_event` — a consolidated manual change: `id`, `ts`, `room_id`, `section`,
-  `bulb_id`, `brightness_before`, `brightness_after`, `weight` (avoid `before`/`after` —
-  they are SQL keywords).
+  `bulb_id`, `is_on` (nullable: HA had no usable state for the bulb), `brightness`
+  (nullable; 0–255).
+- `reactive_event` — one consolidated manual change in a room (one reactive window):
+  `id`, `ts` (the window's start), `room_id`, `section`, `window_seconds`, `lux_before`,
+  `lux_after`, `occupancy`. Unique on (`room_id`, `ts`).
+- `reactive_change` — long format, one row per bulb of the room for each reactive event:
+  `id`, `reactive_event_id` (fk), `bulb_id`, `is_on_before`, `is_on_after`,
+  `brightness_before`, `brightness_after` (not `before`/`after`: SQL keywords; for a bulb
+  the user changed, after is where their last change left it), `changed` (the user changed
+  this bulb by more than the min-delta), `user_id` (the HA user behind that change; null
+  for a device). There is no stored weight: weighting is the analyser's (P5), applied at
+  analysis time, so retuning it reweights history.
 - `almanac` — insert-only learned snapshots: `id`, `ts`, `room_id`, `section`,
   `learning_unit_id`, `lux_target`, `lux_margin`, `maintenance_enabled`, `max_step_pct`,
   `trust_weight`, `valid_from`, `mode`.
-- `event_log` — `id`, `ts`, `level`, `category`, `room_id` (nullable), `message`,
-  `detail` (json).
+- `event_log` — `id`, `ts`, `level` (`debug` | `info` | `warning` | `error`), `category`,
+  `room_id` (nullable), `message`, `detail` (json).
+
+Each table has a CSV stream under `<data_dir>/archive/<table>/<YYYY-MM>.csv` (by the row's
+UTC month) with the table's columns minus the surrogate ids; a child row carries its
+parent's natural key (`room_id`, `ts`) instead of its id, so the archive needs nothing from
+SQLite to be read back. Every write goes to the CSV first, flushed to disk. The query
+layer (`<data_dir>/light_map.db`) records each archive file's size and mtime as of the last
+write it holds all of, and is rebuilt from the archive at startup when that doesn't match
+(deleted, behind after a failed write, an archive file edited), recreated when its schema
+version differs, and moved aside and rebuilt when it is broken. Event-log retention prunes
+the query layer only; the archive keeps everything.
 
 ---
 
@@ -329,17 +358,18 @@ Tables (skeleton):
 
 ---
 
-## HTTP surface (P3)
+## HTTP surface (P3, P4)
 
-`app/main.py` serves the Map tab's API under `/api/` (JSON; an error is `{error, detail}`,
+`app/main.py` serves the UI's API under `/api/` (JSON; an error is `{error, detail}`,
 with `problems` when there are several) beside `/healthz` and the static UI. The HA client
-is made in the app's lifespan from the environment, opening no connection until a request
-needs one; without a token the Map still serves the committed config and every HA action
-says why it can't run.
+is made in the app's lifespan from the environment; without a token the Map still serves
+the committed config and every HA action says why it can't run. The lifespan also opens
+the store and starts the observer (P4), which opens the WebSocket once the config has a
+room with bulbs to observe.
 
 | | |
 | --- | --- |
-| Reads | `GET /api/status`, `/api/map`, `/api/config` (export, token-free), `/api/entities` (hard-switch source picker) |
+| Reads | `GET /api/status`, `/api/map`, `/api/config` (export, token-free), `/api/entities` (hard-switch source picker), `/api/log` (the event log, filtered by minimum level, category and room; P4) |
 | Config edits | `PUT /api/rooms/{room}/adaptive`, `PUT /api/bulbs/{bulb}/hard_switches`, `POST /api/rooms/{room}/groups`, `PUT`/`DELETE /api/rooms/{room}/groups/{group}` |
 | Area edits (HA first) | `POST /api/rooms`, `PUT /api/rooms/{room}/name`, `POST /api/bulbs/{bulb}/move/preview` then `/move` |
 | Previewed actions | `GET /api/sync/preview` then `POST /api/sync`; `GET /api/deploy/preview` then `POST /api/deploy`; `GET /api/areas/preview` then `POST /api/areas/deploy` |
@@ -360,8 +390,16 @@ says why it can't run.
   `coexistence`) until the request acknowledges it; the Map warns before saving one and
   marks every live bulb and group.
 - The switching deploy and the Area writes are separate actions, each previewed.
+- **Host allowlist** (P4). A request whose `Host` header isn't on the allowlist is refused
+  (400) before it reaches any route, which closes the DNS-rebinding path (a page on another
+  site, re-pointed at the container's address, would otherwise be same-origin with the API).
+  The list is `localhost` and `127.0.0.1` plus the names in `LM_ALLOWED_HOSTS`
+  (comma-separated: the names or addresses you browse to Light Map by). It is not
+  authentication: anyone who can reach the port and send the right name can still drive the
+  API (see "Open decisions").
+- The actions that change HA or the config are recorded in the event log (P4).
 
-The details are in `docs/DESIGN.md`, "The Map and its API".
+The details are in `docs/DESIGN.md`, "The Map and its API" and "Observation".
 
 ---
 
@@ -429,16 +467,33 @@ system's `al_` ones among them) that already drive the same bulbs.
 - **Per-bulb detail** (dimmable, colour-temp) — deferred; a non-dimmable bulb is
   switching-only even in an adaptive room.
 - **Module-interface formality** — how far to formalise the module seams now vs a clean
-  internal boundary with adaptive as the only module until Presence Rules lands. So far two
+  internal boundary with adaptive as the only module until Presence Rules lands. So far the
   seams are code-level registries the composition root fills: `register_namespace`
-  (artefacts) and `register_bridge_brightness` (P2).
+  (artefacts) and `register_bridge_brightness` (P2), and the observer's `subscribe`,
+  `register_guard` and `register_section` (P4).
 - **Access to the HTTP API** (P3) — the API has no authentication of its own and listens on
   the container's port; it can write HA's Areas and deploy with an administrator's token.
   Cross-site requests from a browser are blocked (JSON bodies need CORS, which isn't
-  enabled), but anyone who can reach the port, or a DNS-rebinding page, can drive it. Until
-  this is settled, expose the port only to a trusted network (or put it behind HA ingress
-  or a reverse proxy with authentication); options are a Host allowlist, a shared token, or
-  running as an HA add-on behind ingress.
+  enabled), and since P4 the Host allowlist refuses a DNS-rebinding page, but anyone who
+  can reach the port can still drive it. Until this is settled, expose the port only to a
+  trusted network (or put it behind HA ingress or a reverse proxy with authentication); the
+  options left are a shared token or running as an HA add-on behind ingress.
+- **Room sensors** (P4) — the observer reads a room's lux and presence sensors from its
+  `adaptive_config`, because that is where the config shape puts them, so only adaptive
+  rooms record lux and occupancy. They are facts about the room rather than adaptive
+  settings; when a second module (Presence Rules) needs them, move them onto the room.
+- **Observing beside the live system** (P4) — until cutover `ha-adaptive-light` drives the
+  same bulbs. Its scheduled automations are recognised (their runs' contexts), but the late
+  steps of its long maintenance transitions carry no mark, and it raises only its own
+  guards, so they can be recorded as manual changes. If that history is to be kept past
+  cutover, the observer could take a list of the live system's guard booleans to honour
+  (the predecessor had `external_guards` for the same job); otherwise start the history
+  fresh at cutover.
+- **Power changes as observations** (P4) — reactive detection counts brightness changes only
+  (see `docs/DESIGN.md`, "Observation"); a power change, through the plane or out of band,
+  is not a reactive event. If the adaptive module needs to see a user turning a bulb off
+  (the predecessor suspended maintenance on it), the observer would grow a power
+  observation for it to subscribe to (P5).
 - **Hard-switch source picker** (P3) — the Map offers `state` (an entity picker) and `event`
   (an event-type field) as the primary paths and keeps `device` as an advanced, manual
   entry (device id and trigger copied from an HA automation), so device ids never travel to

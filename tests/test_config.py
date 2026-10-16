@@ -576,8 +576,20 @@ class ConnectionTest(unittest.TestCase):
         with self.env(LM_HA_BASE_URL="https://ha.example:8123", LM_HA_TOKEN="t"):
             conn = config.connection(committed_config())
         self.assertEqual(
-            conn, {"base_url": "https://ha.example:8123", "token": "t", "verify_ssl": True}
+            conn,
+            {
+                "base_url": "https://ha.example:8123",
+                "token": "t",
+                "verify_ssl": True,
+                "reconnect_backoff": (1, 2, 5, 10, 30, 60),
+            },
         )
+
+    def test_the_reconnect_ladder_comes_from_the_config(self):
+        doc = committed_config()
+        doc["homeassistant"]["reconnect_backoff_seconds"] = [0.5, 3]
+        with self.env(LM_HA_TOKEN="t"):
+            self.assertEqual(config.connection(config.loads(doc))["reconnect_backoff"], (0.5, 3))
 
     def test_falls_back_to_the_config_url(self):
         with self.env(LM_HA_BASE_URL="", LM_HA_TOKEN="t"):
@@ -589,6 +601,52 @@ class ConnectionTest(unittest.TestCase):
             problems_of(config.connection, config.blank())
         with self.env(LM_HA_BASE_URL="http://ha:8123"), self.assertRaises(HAError):
             config.connection(config.blank())
+
+
+class SystemTest(unittest.TestCase):
+    """The observer's settings (P4): optional, defaulted when read, never written in."""
+
+    def test_defaults_fill_what_the_config_leaves_out(self):
+        doc = committed_config()
+        doc["system"] = {"reactive_window_seconds": 30}
+        loaded = config.loads(doc)
+        self.assertEqual(loaded["system"], {"reactive_window_seconds": 30})
+        self.assertEqual(
+            config.system(loaded),
+            {
+                "heartbeat_interval_minutes": 10,
+                "reactive_window_seconds": 30,
+                "reactive_min_delta": 5,
+                "event_log_retention_days": 90,
+            },
+        )
+
+    def test_the_schema_checks_each_field(self):
+        for system in (
+            {"heartbeat_interval_minutes": 0},
+            {"heartbeat_interval_minutes": 61},
+            {"reactive_window_seconds": 5},
+            {"reactive_min_delta": 256},
+            {"event_log_retention_days": 0},
+            {"data_dir": ""},
+            # The predecessor's CSV toggle is gone: the archive is always written.
+            {"csv_enabled": False},
+        ):
+            with self.subTest(system):
+                doc = committed_config()
+                doc["system"] = system
+                problems_of(config.loads, doc)
+        doc = committed_config()
+        doc["homeassistant"]["reconnect_backoff_seconds"] = []
+        problems_of(config.loads, doc)
+
+    def test_the_data_dir_sits_beside_the_config_by_default(self):
+        path = Path("/data/config.json")
+        self.assertEqual(config.data_dir(config.blank(), path), Path("/data"))
+        doc = {**config.blank(), "system": {"data_dir": "observations"}}
+        self.assertEqual(config.data_dir(doc, path), Path("/data/observations"))
+        doc = {**config.blank(), "system": {"data_dir": "/srv/lm"}}
+        self.assertEqual(config.data_dir(doc, path), Path("/srv/lm"))
 
 
 if __name__ == "__main__":

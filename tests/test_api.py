@@ -52,7 +52,8 @@ class ApiCase(unittest.TestCase):
         return committed_config()
 
     def start(self, app):
-        client = TestClient(app)
+        # The Host allowlist answers localhost; TestClient's own "testserver" is refused.
+        client = TestClient(app, base_url="http://localhost")
         client.__enter__()
         self.addCleanup(client.__exit__, None, None, None)
         return client
@@ -221,7 +222,7 @@ class LifespanTest(unittest.TestCase):
             with (
                 mock.patch.dict(os.environ, env),
                 self.assertLogs("app.main", "WARNING") as logs,
-                TestClient(create_app(config_path=path)) as client,
+                TestClient(create_app(config_path=path), base_url="http://localhost") as client,
             ):
                 self.assertIn("not configured", logs.output[0])
                 self.assertEqual(client.get("/api/map").status_code, 200)
@@ -234,7 +235,7 @@ class LifespanTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             env = {"LM_HA_BASE_URL": "http://ha.local:8123", "LM_HA_TOKEN": "abc"}
             app = create_app(config_path=Path(directory) / "config.json")
-            with mock.patch.dict(os.environ, env), TestClient(app):
+            with mock.patch.dict(os.environ, env), TestClient(app, base_url="http://localhost"):
                 client = app.state.ha
                 self.assertIsInstance(client, HAClient)
                 self.assertEqual(client.base_url, "http://ha.local:8123")

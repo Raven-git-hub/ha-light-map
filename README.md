@@ -17,17 +17,18 @@ Light Map is a ground-up rebuild of `ha-adaptive-light`.
 
 ## Status
 
-**P3: the Map.** On top of P1's inventory (rooms from HA Areas, two-way sync) and P2's
-switching plane (a soft switch `input_boolean.lm_soft_<bulb>` and a soft→bulb bridge per
+**P4: the observation core.** On top of P1's inventory (rooms from HA Areas, two-way sync),
+P2's switching plane (a soft switch `input_boolean.lm_soft_<bulb>` and a soft→bulb bridge per
 bulb, a hard→soft automation per hard-switch binding, deployed in their own `lm_` lane and
-verified), the Map tab is the editor: rooms and bulbs, the adaptive flag, hard switches
-and switching groups, moving bulbs and creating or renaming rooms (written to HA's Areas),
-sync from HA with every change shown before it is saved, and deploy with a mandatory
-preview (the plan, a read-only report of what else in HA drives the same bulbs, and the
-coexistence note). Deploying never drives a bulb: each soft switch starts at its bulb's
-current state. Until cutover (P6) Light Map runs beside `ha-adaptive-light`; binding a hard
-switch makes its bulbs live, and the Map warns before saving one. The adaptive module and
-its views arrive in P5. See [docs/ROADMAP.md](docs/ROADMAP.md).
+verified) and P3's Map (the editor and the deploy surface, with every HA write previewed
+first), Light Map now watches the house: a heartbeat per room with a reading per bulb on a
+fixed cadence, reactive detection of manual brightness changes (the plane's own changes are
+never counted), and an event log, all archived to CSV with SQLite as a rebuildable query
+layer. The **Log** tab shows the event log. Deploying never drives a bulb: each soft switch
+starts at its bulb's current state. Until cutover (P6) Light Map runs beside
+`ha-adaptive-light`; binding a hard switch makes its bulbs live, and the Map warns before
+saving one. The adaptive module and its views arrive in P5. See
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 To see what Light Map makes of your Home Assistant (read-only):
 
@@ -53,9 +54,20 @@ container, point `LM_CONFIG_PATH` somewhere writable:
 LM_CONFIG_PATH=data/config.json uvicorn app.main:app --port 8099
 ```
 
+Observations, the event log and the query database live in the config's directory (on the
+volume in the container), or `system.data_dir` if the config sets one.
+
+Light Map answers only requests addressed to `localhost` or `127.0.0.1` unless you list the
+names you reach it by in `LM_ALLOWED_HOSTS` (comma-separated, e.g.
+`LM_ALLOWED_HOSTS=lightmap.lan,192.168.1.20`); anything else gets a 400. That stops a
+DNS-rebinding web page from driving the API through your browser. Behind a reverse proxy,
+list the name the proxy sends upstream (often the container's name, e.g. `light-map`),
+unless it passes the original Host on. IPv6 literals can't be listed: browse by name or
+IPv4 address.
+
 The API has no authentication of its own and can write to Home Assistant with your token:
 expose port 8099 only to a trusted network (see "Open decisions" in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)). The Host allowlist is not authentication.
 
 ## Docs
 

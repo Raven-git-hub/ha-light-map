@@ -41,9 +41,11 @@ hard-won, so preserve them.
 - **Scene automations carry `conditions: []`.** They are fired via `automation.trigger`
   (default `skip_condition: true`); a condition placed there would be silently ignored.
 - **Reactive detection ignores the system's own changes.** A brightness change counts as a
-  user intervention only when it carries no `context.parent_id` and no guard is raised.
-  Switch-driven and bridge-driven changes carry a `parent_id`, so toggling power is never
-  learned as a brightness preference.
+  user intervention only when it carries no `context.parent_id`, wasn't made under an
+  automation run's own context, and no guard is raised. Switch-driven and bridge-driven
+  changes carry a `parent_id`, so toggling power is never learned as a brightness
+  preference. An automation fired by time or the sun carries no `parent_id` (HA starts it
+  with a fresh context), which is why the observer also watches `automation_triggered`.
 - **Observation is per bulb, long format**, pooled per learning unit at analysis time, so
   learning units can be redrawn without losing history.
 - **HA Areas are the source of truth for room membership.** The config holds a committed
@@ -86,11 +88,16 @@ Presence Rules can be added without touching the trunk:
   entity), `lm_bridge_<bulb_id>`, `lm_hard_<hard_switch_id>` for the switching plane; the
   adaptive module keeps `al_scene_`, `al_maint_`, `al_active_`, `al_hold_`,
   `sensor.al_almanac_`, `al_watchdog_`.
-- Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`, and `LM_CONFIG_PATH`
-  (where the committed config lives; default `/data/config.json`).
+- Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`, `LM_CONFIG_PATH`
+  (where the committed config lives; default `/data/config.json`), and `LM_ALLOWED_HOSTS`
+  (the Host names the API answers besides `localhost` and `127.0.0.1`).
 - HTTP: everything under `/api/` in `app/main.py` (see "HTTP surface" in
   `docs/ARCHITECTURE.md`). An action that writes HA, or commits HA's state to the config,
   is a preview that returns a `fingerprint` and an apply that must carry it; keep it so.
+  Every request passes the Host allowlist first; tests address the app as `localhost`.
+- Observation: handlers run off the WebSocket read loop (a queue), so one may send HA a
+  command; a module observes only through `core.observe.Observer` (`subscribe`,
+  `register_guard`, `register_section`), never its own subscription.
 
 ## Stubs
 
@@ -108,8 +115,8 @@ Presence Rules can be added without touching the trunk:
 ```sh
 pip install -r requirements.txt
 python -m unittest                 # tests against fakes and fixtures; never a real HA
-                                   # (tests/test_ui.py drives the Map in headless Chromium
-                                   # when Node's Playwright is installed, else skips)
+                                   # (tests/test_ui.py drives the Map and the Log in headless
+                                   # Chromium when Node's Playwright is installed, else skips)
 python -c "import app.main"
 python -c "import json, jsonschema; jsonschema.Draft202012Validator.check_schema(json.load(open('schema/config.schema.json')))"
 python -c "import sqlite3; sqlite3.connect(':memory:').executescript(open('schema/storage.schema.sql').read())"
