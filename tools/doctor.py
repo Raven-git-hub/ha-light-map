@@ -9,7 +9,9 @@ LM_HA_TOKEN (or LM_HA_TOKEN_FILE):
 
 It checks REST and the WebSocket, reads the Area, entity, and device registries, and
 prints the rooms Light Map would build from them, with anything that needs attention.
-Given `--config`, it also shows what a sync would change in that committed snapshot.
+Given `--config`, it also shows what a sync would change in that committed snapshot, and
+what deploying its switching plane (the `lm_` lane) would do: a preview of the plan, or why
+the deploy would be refused.
 
 Strictly read-only: it never writes to HA, and never writes the config.
 """
@@ -27,7 +29,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core import config as config_mod  # noqa: E402
-from app.core import inventory  # noqa: E402
+from app.core import deploy, generate, inventory, switching  # noqa: E402
 from app.core.ha import HAAuthError, HAClient, HAError  # noqa: E402
 
 OK, WARN, FAIL = "  ok  ", " warn ", " FAIL "
@@ -104,6 +106,8 @@ async def _run(args: argparse.Namespace) -> int:
         snapshot = config_mod.reconcile_area_snapshot(base, areas, lights)
         _print_rooms(snapshot)
         _check_snapshot(report, committed, snapshot)
+        if committed is not None:
+            await _check_switching(report, ha, committed)
     return report.summary()
 
 
@@ -236,6 +240,39 @@ def _check_snapshot(
         )
     else:
         report.record(OK, "The committed snapshot matches HA")
+
+
+async def _check_switching(report: Report, ha: HAClient, committed: Mapping[str, Any]) -> None:
+    """Preview a deploy of the committed config's switching plane, without writing."""
+    try:
+        await deploy.check_references(ha, switching.references(committed))
+        deploy_plan = deploy.plan(
+            switching.PREFIX,
+            generate.generate(committed, switching.PREFIX),
+            await deploy.fetch_live(ha, switching.PREFIX),
+            mirrors=switching.bridge_mirrors(committed),
+        )
+    except deploy.DeployError as exc:
+        report.listing(FAIL, "A deploy of the switching plane would be refused", exc.problems)
+        return
+    except HAError as exc:
+        report.record(WARN, "Could not read the switching plane's lane (lm_)", str(exc))
+        return
+    preview = deploy.summarise(deploy_plan)
+    lines = [
+        f"{verb} {kind} {item_id}"
+        for label, verb in (("created", "create"), ("updated", "update"), ("removed", "remove"))
+        for kind, ids in preview[label].items()
+        for item_id in ids
+    ]
+    lines += [f"set {helper} to its bulb's current state first" for helper in preview["sync"]]
+    lines += preview["warnings"]
+    if lines:
+        report.listing(
+            OK, f"A deploy of the switching plane would make {len(lines)} changes", lines
+        )
+    else:
+        report.record(OK, "The switching plane in HA matches the committed config")
 
 
 if __name__ == "__main__":

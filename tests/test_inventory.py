@@ -198,6 +198,18 @@ class MoveBulbTest(unittest.IsolatedAsyncioTestCase):
         write = ha.calls.index(("set_entity_area", ("light.reading_lamp", "kitchen")))
         self.assertIn(("get_entity_registry_entry", ("light.reading_lamp",)), ha.calls[write + 1 :])
 
+    async def test_check_move_answers_in_advance_without_writing(self):
+        ha = FakeHA()
+        self.assertIsNone(await inventory.check_move(ha, "light.reading_lamp", "kitchen"))
+        self.assertIsNone(await inventory.check_move(ha, "light.porch", None))
+        for entity_id, area_id, fragment in (
+            ("light.reading_lamp", "attic", "no HA Area 'attic'"),
+            ("light.legacy_yaml", "kitchen", "no entity-registry entry"),
+            ("light.chandelier_1", None, "inherits Area 'living_room' from its device"),
+        ):
+            self.assertIn(fragment, await inventory.check_move(ha, entity_id, area_id))
+        self.assertEqual(ha.writes, [])
+
 
 class AreaWritesTest(unittest.IsolatedAsyncioTestCase):
     async def test_create_room_creates_an_area(self):

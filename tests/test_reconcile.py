@@ -202,7 +202,7 @@ class ReconcileTest(unittest.TestCase):
             room(self.reconcile(lights=lights), "kitchen")["bulbs"][0]["name"], "Strip lights"
         )
 
-    def test_a_new_bulb_id_avoids_the_soft_switch_namespace(self):
+    def test_a_new_bulb_id_avoids_bulb_and_group_ids(self):
         lights = [
             *LIGHTS,
             light("light.living_all", "kitchen"),

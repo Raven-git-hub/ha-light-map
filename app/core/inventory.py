@@ -180,9 +180,36 @@ async def move_bulb(ha: HAClient, entity_id: str, area_id: str | None) -> None:
 
     `area_id` None moves the bulb to Unassigned. Refused, without writing, when the light
     has no registry entry, the Area doesn't exist, or the bulb would stay in its device's
-    Area anyway. Verified by re-reading the registry; raises InventoryError if the bulb did
-    not end up where asked.
+    Area anyway (`check_move` says so in advance). Verified by re-reading the registry;
+    raises InventoryError if the bulb did not end up where asked.
     """
+    if await _preflight(ha, entity_id, area_id):
+        return
+    await ha.set_entity_area(entity_id, area_id)
+    # Verified by re-reading rather than trusting the write's echo.
+    after = await ha.get_entity_registry_entry(entity_id)
+    landed = await _area_of(ha, after) if after is not None else None
+    if landed != area_id:
+        raise InventoryError(
+            f"moving {entity_id} to {area_id or UNASSIGNED} did not land: HA has it in "
+            f"{landed or UNASSIGNED}"
+        )
+
+
+async def check_move(ha: HAClient, entity_id: str, area_id: str | None) -> str | None:
+    """Why `move_bulb` would refuse this move, or None if it would go ahead (or the bulb
+    is already there). Reads HA, writes nothing: lets a caller moving several bulbs
+    refuse the lot before writing any (see `core.deploy.deploy_areas`)."""
+    try:
+        await _preflight(ha, entity_id, area_id)
+    except InventoryError as exc:
+        return str(exc)
+    return None
+
+
+async def _preflight(ha: HAClient, entity_id: str, area_id: str | None) -> bool:
+    """Check a move before writing it: raise InventoryError if it must be refused, return
+    True if the bulb is already where it was asked to go."""
     if not entity_id.startswith("light."):
         raise InventoryError(f"{entity_id} is not a light")
     entry = await ha.get_entity_registry_entry(entity_id)
@@ -193,7 +220,7 @@ async def move_bulb(ha: HAClient, entity_id: str, area_id: str | None) -> None:
     if area_id is not None and area_id not in {a.get("area_id") for a in await ha.list_areas()}:
         raise InventoryError(f"there is no HA Area '{area_id}'")
     if await _area_of(ha, entry) == area_id:
-        return
+        return True
     if area_id is None and entry.get("device_id"):
         device_area = await _area_of(ha, {**entry, "area_id": None})
         if device_area is not None:
@@ -205,15 +232,7 @@ async def move_bulb(ha: HAClient, entity_id: str, area_id: str | None) -> None:
                 f"{entity_id} inherits Area '{device_area}' from its device; clear the "
                 "device's Area in HA to unassign it"
             )
-    await ha.set_entity_area(entity_id, area_id)
-    # Verified by re-reading rather than trusting the write's echo.
-    after = await ha.get_entity_registry_entry(entity_id)
-    landed = await _area_of(ha, after) if after is not None else None
-    if landed != area_id:
-        raise InventoryError(
-            f"moving {entity_id} to {area_id or UNASSIGNED} did not land: HA has it in "
-            f"{landed or UNASSIGNED}"
-        )
+    return False
 
 
 async def _area_of(ha: HAClient, entry: Mapping[str, Any]) -> str | None:

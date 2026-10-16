@@ -57,6 +57,27 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("bulb added: light.counter_lamp -> room 'kitchen'", out)
         self.assertIn("switching groups", out)
 
+    def test_previews_a_switching_plane_deploy_without_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config.save(path, committed_config())
+            ha = FakeHA()
+            code, out = self.run_doctor(ha, "--config", str(path))
+            self.assertEqual(ha.writes, [])
+            for expected in (
+                "A deploy of the switching plane would make 20 changes",
+                "create input_boolean lm_soft_porch",
+                "create automation lm_bridge_porch",
+                "create automation lm_hard_living_all_off",
+                "set input_boolean.lm_soft_porch to its bulb's current state first",
+            ):
+                self.assertIn(expected, out)
+            ha.states = [s for s in ha.states if s["entity_id"] != "switch.reading_relay"]
+            code, out = self.run_doctor(ha, "--config", str(path))
+        self.assertEqual(code, 1)
+        self.assertIn("A deploy of the switching plane would be refused", out)
+        self.assertIn("switch.reading_relay (hard switch 'reading_switch')", out)
+
     def test_warns_when_area_writes_will_be_refused(self):
         code, out = self.run_doctor(FakeHA(admin=False))
         self.assertEqual(code, 0)

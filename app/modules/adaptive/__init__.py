@@ -9,7 +9,8 @@ Through the four module seams:
    `sensor.al_almanac_`, `al_watchdog_`), reconciled in its own lane.
 3. Observation: per-bulb heartbeats and reactive events from `core.observe`.
 4. Actuation: commands soft switches for power and sets brightness guarded on soft-on. It
-   never powers a bulb on or off directly.
+   never powers a bulb on or off directly. Its bulbs come on at their learned target
+   because it supplies the core bridge's soft-on brightness (an almanac-reading template).
 
 A learning unit is a set of bulbs sharing one learned brightness target per section: a free
 partition of the room's adaptive bulbs, independent of switching groups. Its members keep

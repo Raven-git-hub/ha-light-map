@@ -59,9 +59,12 @@ can be on or off independently; maintenance only ever nudges the ones that are o
    keeps a committed snapshot of the resolved mapping so generation stays deterministic.
 2. **Adaptive is a per-room flag.** A checkbox beside each room name turns adaptive on for
    that room and reveals its Adaptive Config. Rooms left unchecked are switching-only.
-3. **Soft switches are generated.** Each bulb automatically gets an `input_boolean`. Group
-   soft switches are *not* auto-generated — the user adds them per room, picks member bulbs
-   and the physical switch, and can reopen to edit.
+3. **Soft switches are generated, per bulb only.** Each bulb automatically gets an
+   `input_boolean`. Switching groups (UI: "group soft switch") are *not* auto-generated —
+   the user adds them per room, picks member bulbs and the physical switch, and can reopen
+   to edit. A group mints no HA entity of its own (settled in P2): it is a named set of
+   member bulbs plus its hard-switch bindings, and a hard switch bound to it acts on every
+   member's soft switch.
 4. **The soft switch owns on/off; modules command the soft switch.** Adaptive stops toggling
    bulbs directly. At a crossover it sets each adaptive bulb's power intent on that bulb's
    soft switch (on for an auto/learned unit, off for an "off for this section" unit); the
@@ -87,9 +90,9 @@ Everything downstream is a pure function of the committed document.
   - `bulbs[]`: `{ id, name, entity_id (light.*), ha_match_key?, hard_switches[] }` — a
     soft-switch helper is implicit (generated) per bulb. `ha_match_key` is an opaque match
     key (see "Bulb identity").
-  - `switching_groups[]`: `{ id, name, members (bulb ids), hard_switches[] }` — a soft-switch
-    helper is implicit (generated) per group, modelled as an HA group of its members' soft
-    switches.
+  - `switching_groups[]`: `{ id, name, members (bulb ids), hard_switches[] }` — a named set
+    of member bulbs plus its hard-switch bindings. It has no soft switch of its own: a hard
+    switch bound to the group acts on each member's.
   - `adaptive_config` (required when `adaptive` is true, forbidden when false):
     `{ lux_sensors[], presence_sensors[], schedule_profile, learning_units[], scenes }`.
     `learning_units[]` = `{ id, name, members (bulb ids) }`; `scenes` is the per-section matrix
@@ -97,9 +100,11 @@ Everything downstream is a pure function of the committed document.
     margin, maintenance flag, transition, max step).
 
   `hard_switches[]` is the binding shape used inside `bulbs[]` and `switching_groups[]` — not a
-  key on the room. Shape: `{ id, name, source (entity_id or event/device ref), mode }`,
-  `mode` ∈ `toggle` | `follow` | `press`. A room-wide "all off" is a hard switch on a
-  switching group covering the room, not a room-level binding.
+  key on the room. Shape: `{ id, name, source, mode, turn? }`: `source` is a tagged union
+  (`state` / `event` / `device`), `mode` ∈ `toggle` | `follow` | `press`, and `turn` ∈ `on` |
+  `off` says what a `press` does (required for a press, forbidden otherwise). A room-wide
+  "all off" is a `press` with `turn: off` on a switching group covering the room, not a
+  room-level binding. See "Hard switches" below.
 - `unassigned[]`: bulbs whose light has no HA Area (the Map's "Unassigned" bucket), same shape
   as a room's bulbs. A bulb's `id` — which names its soft switch — and its hard switches stay
   with it as it moves between rooms and Unassigned.
@@ -112,20 +117,34 @@ than migrated; history starts fresh (as the n8n→container cutover did).
 ## Generated artefacts
 
 A parallel namespace to the adaptive `al_*` artefacts, deployed and reconciled the same way
-but in its own lane:
+but in its own lane (settled in P2):
 
-- `input_boolean.lm_soft_<id>` — one per bulb and per switching group.
-- A group's soft switch is a native HA group of its members' soft switches, so group state is
-  *derived* (on if any member is on) with no hand-written state logic.
-- `lm_hard_<id>` (hard→soft): each hard switch's trigger acts on its soft switch (toggle /
-  follow / press — and a one-way "all off" is a `press` that turns the group soft off rather
-  than toggling it).
-- `lm_bridge_<id>` (soft→bulb): soft on → turn the bulb(s) on and apply brightness; soft off
-  → turn off.
+- `input_boolean.lm_soft_<bulb_id>` — one per bulb, and only per bulb (including the bulbs
+  in Unassigned). Named `LM Soft <bulb_id>`: HA gives a helper created over the network the
+  id of its slugified name, with no way to ask for another, so the name is derived from the
+  bulb's id (already a slug), never from its display name.
+- **No group entity.** A switching group mints nothing in HA. A group of `input_boolean`s
+  can't be created over HA's network API (it would need a `configuration.yaml` edit, which
+  Light Map never makes), and without one there is no group state to keep in sync. A hard
+  switch bound to a group acts on every member's soft switch. (If a single group-state
+  entity is ever wanted for dashboards, it would be an HA light group of the member bulbs,
+  a future enhancement, not a soft switch.)
+- `lm_hard_<hard_switch_id>` (hard→soft): one automation per binding; its trigger comes
+  from the binding's source and its action from its mode (see "Hard switches").
+- `lm_bridge_<bulb_id>` (soft→bulb): soft on → turn the bulb on (at a module-supplied
+  brightness, or its last one); soft off → turn it off.
 - The adaptive almanac (`sensor.al_almanac_<room>`) is keyed by **learning-unit id**.
 
-No template engine; byte-deterministic output; no baked-in almanac state (the bridge reads
-the almanac at runtime for an adaptive bulb's brightness).
+Each automation's `alias` is its id, so its entity is `automation.<id>`, and its
+description names the bulb or group in words. The generator returns an HA package
+(`input_boolean:` object id → fields; `automation:` a list, bridges before hard switches),
+which `core.generate.to_yaml` serialises for review or export; deploy sends the same data
+over HA's APIs.
+
+No template engine; byte-deterministic output (bulbs, bindings, targets and user-supplied
+event data are sorted, so it doesn't depend on the order the config lists them in); no
+baked-in almanac state (an adaptive bulb's bridge reads the almanac at runtime, through the
+fragment the module supplies).
 
 ---
 
@@ -133,9 +152,36 @@ the almanac at runtime for an adaptive bulb's brightness).
 
 The bridge is the only thing that powers a bulb on or off. On `soft → on` it turns the bulb
 on; for an adaptive bulb it applies the current section's learned brightness (the bulb's
-learning-unit target), for a plain bulb a configured default (or last brightness). On
-`soft → off` it turns the bulb off. So flipping any hard switch brings an adaptive light up
-already-correct for the time of day.
+learning-unit target), for a plain bulb its last brightness. On `soft → off` it turns the
+bulb off. So flipping any hard switch brings an adaptive light up already-correct for the
+time of day.
+
+**The bridge is core; the brightness is module-contributed** (settled in P2). P2 builds the
+plain path only: soft on → `light.turn_on` with no data (the bulb's last brightness). A
+module supplies the brightness for the bulbs it owns through a seam in `core.switching`:
+it registers a provider (`register_bridge_brightness`), which for each bulb returns the
+`light.turn_on` data to apply on soft-on (`brightness`, `brightness_pct`, `transition`;
+values may be HA Jinja, kept inert) or None to leave the bulb on the plain path. The core
+generator embeds that fragment in the bulb's bridge, inside the soft-on branch, so:
+
+- the almanac read lives in an adaptive-contributed fragment, not in core;
+- it is guarded on soft-on by construction, and can't change the target or the power;
+- at most one module may claim a bulb;
+- the provider must not bake almanac values in (it emits a template that reads them at
+  runtime), and must render a valid value on every path, because an invalid one fails the
+  whole `light.turn_on` and the bulb would not come on.
+
+The fragment ships in the `lm` lane (it is part of the bridge), and only *reads* `al_`
+entities; the switching deployer still never writes one. The composition root registers
+the provider, as it registers the module's namespace (P5).
+
+**Firing only on a real flip.** The bridge triggers on its soft switch changing `off → on`
+or `on → off`, nothing else, so a soft restored at HA startup (no state → on), created,
+deleted, or going `unavailable` never drives the bulb. It runs in `restart` mode and
+branches on the soft's state when it runs, not on which trigger fired: a flip arriving
+mid-run replaces it, and the bulb always ends on the soft's latest state (`single` would
+drop the second flip and leave bulb and soft disagreeing; `parallel` could finish them out
+of order).
 
 Brightness rides alongside power, always guarded by "soft is on", so a brightness command can
 never power a bulb on:
@@ -196,9 +242,8 @@ destructive by surprise.
 - **A bulb is matched by its `ha_match_key`**, or by `entity_id` when it has none (see "Bulb
   identity" below). A moved bulb follows its Area with its id and hard switches; a light with
   no (known) Area goes to `unassigned`; a bulb whose light HA no longer has is dropped; a new
-  light becomes a new bulb (id from its object id, kept unique across the soft-switch
-  namespace and never one a bulb in the old snapshot used). Its name and entity_id follow
-  HA's.
+  light becomes a new bulb (id from its object id, unique among bulb and switching-group ids,
+  and never one a bulb in the old snapshot used). Its name and entity_id follow HA's.
 - **Switching-group and learning-unit members that leave the room are dropped**, and a group
   or unit left empty is dropped with it.
 - **HA light groups are not bulbs.** A `light.*` that lists member `entity_id`s (HA's group
@@ -270,13 +315,94 @@ purity that buys nothing here.
 
 ---
 
-## Hard-switch modes
+## Hard switches (settled in P2)
 
-Per binding: `toggle` (any state change flips the soft — decoupled relays, or dumb switches
-wired to a relay in detached mode), `press` (a stateless scene button/remote firing an event
-or device trigger acts on the soft — a one-way "all off" is a `press` that turns a group soft
-off), and `follow` (soft tracks the hard switch's on/off directly). A soft switch may carry
-several hard switches of mixed modes.
+Each binding becomes one `lm_hard_<id>` automation acting on its **targets**: a bulb
+binding's target is that bulb's soft switch; a group binding's targets are every member's.
+The **source** says what fires it, and the **mode** what it does:
+
+| `source.type` | what fires it |
+| --- | --- |
+| `state` (`entity_id`) | a stateful switch, binary_sensor, light, or `event.*` entity. `follow` acts on its `off→on` / `on→off` changes; `toggle` and `press` on every real change of its state (a latching switch's flip, an event entity's new timestamp), never on one to or from `unavailable` / `unknown` or on the entity appearing or disappearing, so a restart or an integration reload is never a press |
+| `event` (`event_type`, `event_data?`) | a stateless button firing an HA event; `event_data` matches a subset of the event's data |
+| `device` (`device_id`, `trigger`) | a device automation trigger (`trigger` holds `domain`, `type`, `subtype`, ...), only for a button that exposes no entity or event. The device id only *reads* a press: it appears in the trigger, never in a target — the one carved-out exception to "entity IDs only" |
+
+- `toggle` — state-aware across the targets: if any target is on, turn them all off, else
+  turn them all on. (Flipping each member instead would swap which lights of a half-lit
+  group are on.) This is an inert HA Jinja condition, `{{ is_state(a, 'on') or ... }}`.
+- `press` — set every target to `turn` (`on` or `off`) each time it fires. A one-way "all
+  off" is a press with `turn: off`; pressing it twice is harmless.
+- `follow` — the targets track the source's on/off. Needs a `state` source.
+
+Hard-switch automations run `queued`: each press applies in turn and sees the last one's
+result, so two quick presses of a toggle are two toggles. A soft switch may carry several
+hard switches of mixed modes.
+
+Some bindings would feed back on themselves, and the cross-check refuses them: a source in
+Light Map's own `lm_` namespace (bind the physical switch, or use a switching group); a
+`toggle` whose source is a bulb Light Map drives (its bridge's change would toggle it again,
+forever — `follow` and `press` set a state rather than flip one, so they settle); and an
+event source on the HA core events the plane's own work fires (`state_changed`,
+`call_service`, `automation_triggered`, `script_started`).
+
+A `toggle` on a state source flips on every change, which is right for a latching wall
+switch, a relay in detached mode, or an `event.*` entity; a momentary contact (on while held,
+off on release) should be bound through its event or device trigger instead, or it toggles
+twice per press.
+
+Version 1 configs (P1) took the source as a bare entity_id and gave a press no direction;
+loading one migrates it to version 2: a string source becomes a `state` source, and a press
+becomes `turn: off` (the only press version 1 described).
+
+## Deploy (settled in P2)
+
+Each namespace is deployed in its own lane: `fetch_live` reads what HA holds under the
+prefix (UI-managed helpers over the WebSocket; automations found as `automation.*`
+entities by their `id` attribute, read through HA's config API), `plan` diffs it against
+the generated package, `apply` carries out the steps, and `verify` re-reads HA until the
+whole lane matches. A plan never creates, updates, or removes anything outside its lane,
+and it is a pure function, so it doubles as a preview. Ported from `ha-adaptive-light`'s
+deploy: helpers named so they slugify to the id the automations address (and refused
+before writing if they wouldn't), the created id checked (HA silently suffixes a taken id),
+automations written by id, orphans removed. New in Light Map: lanes, verification after
+every deploy, and the order below.
+
+The step order is what keeps a deploy from driving anything:
+
+1. Helpers are created and updated first, so no automation references a missing one.
+2. **Before a bridge first goes live, its soft switch is set to its bulb's current on/off.**
+   The bridge doesn't exist yet, so nothing follows the change; once it does, soft and bulb
+   already agree, and it fires only when something next flips the soft. An unavailable
+   bulb leaves its soft as it is (a new one starts off), reported as `unsynced`. This
+   applies whenever a bridge is created, not only on the first deploy, so a deploy
+   interrupted between creating a soft switch and its bridge still syncs it next time.
+3. Automations are written in the generator's order — bridges before hard switches — so no
+   hard switch goes live before the bridges of the bulbs it switches.
+4. Automations are removed before the helpers they reference. Removing a bulb from the
+   config removes its soft switch and bridge and leaves the bulb exactly as it is.
+
+No step calls a light service. Before writing, a switching-plane deploy validates the config
+and checks that every bulb and hard-switch source exists in HA (a missing bulb means the
+snapshot is stale: sync first); a device source's device must still be in the device
+registry. An automation id already defined in HA's YAML outside `automations.yaml` (which
+the config API can't edit) is refused rather than duplicated.
+
+`verify` checks the whole lane, not just the steps: every helper and automation holds what
+was generated, each helper's entity has the id the automations address (one renamed in HA
+is caught), each automation loaded (HA marks one it rejected `unavailable`), nothing
+removed is still there, and each synced soft switch holds its bulb's state. HA reloads a
+written automation in the background, so verification retries for a few seconds before
+reporting what still doesn't match. A failed or interrupted deploy is reconciled by the
+next one, which plans from whatever HA then holds.
+
+**Area writes** (`deploy_areas`) make HA's Areas match the committed room snapshot, through
+the inventory's own verified `move_bulb`. Every move is checked first (`inventory.check_move`
+answers what `move_bulb` would refuse) and if any would be refused — or the snapshot is too
+stale to write: a room whose Area HA no longer has, a bulb whose light it no longer has —
+nothing is written. It never creates, renames, or deletes an Area. It is a separate call
+from the switching deploy (which needs no Areas), and `plan_areas` previews it: because
+edits made from the Map reach HA first, a difference usually means HA moved on, and writing
+the snapshot back reverts that, so it should be reviewed before it is applied.
 
 ---
 
@@ -284,7 +410,8 @@ several hard switches of mixed modes.
 
 - **Bulb** — one `light.*` entity; the actuation atom.
 - **Switching group** (UI: "group soft switch") — a set of bulbs toggled together by a hard
-  switch. Keeps the word "group".
+  switch. Keeps the word "group". Despite the UI name it has no soft-switch entity: its hard
+  switches act on the members' soft switches.
 - **Learning unit** — a set of bulbs the adaptive learner pools into one brightness target.
   The almanac key.
 
@@ -305,3 +432,9 @@ the soft switch, like any other input to the switching plane.
   per-group CSV where a group maps cleanly to one bulb.
 - **Per-bulb detail** (dimmable, colour-temp) — deferred; a non-dimmable bulb is
   switching-only even in an adaptive room.
+- **Out-of-band power changes** — a bulb switched outside the plane (HA's UI, a vendor app,
+  voice, or the live `ha-adaptive-light` during the parallel build) leaves its soft switch
+  stale: the bridge only follows the soft, never the reverse. The next toggle may then
+  first "turn off" a bulb that is already off. Whether to reflect a bulb's power back into
+  its soft switch (and how, without that change re-triggering the bridge) is open; settle
+  it before cutover.

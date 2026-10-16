@@ -12,7 +12,7 @@ from unittest import mock
 from app.core import config
 from app.core.config import ConfigError
 from app.core.ha import HAError
-from tests.fakes import bulb, committed_config, without_keys
+from tests.fakes import bulb, committed_config, v1_config, without_keys
 
 
 def problems_of(call, *args) -> list[str]:
@@ -160,12 +160,12 @@ class CrossCheckTest(unittest.TestCase):
     def test_bulb_ids_are_global(self):
         doc = committed_config()
         doc["rooms"][1]["bulbs"].append(bulb("chandelier_1", entity_id="light.other"))
-        self.assert_flags(doc, "soft-switch id 'chandelier_1' is used more than once")
+        self.assert_flags(doc, "bulb or switching-group id 'chandelier_1' is used more than once")
 
-    def test_bulb_and_group_ids_share_the_soft_switch_namespace(self):
+    def test_bulb_and_group_ids_share_one_namespace(self):
         doc = committed_config()
         doc["unassigned"].append(bulb("living_all", entity_id="light.other"))
-        self.assert_flags(doc, "soft-switch id 'living_all'", "share one namespace")
+        self.assert_flags(doc, "switching-group id 'living_all'", "share one namespace")
 
     def test_an_entity_is_in_one_place(self):
         doc = committed_config()
@@ -182,7 +182,12 @@ class CrossCheckTest(unittest.TestCase):
     def test_hard_switch_ids_are_global(self):
         doc = committed_config()
         doc["rooms"][1]["bulbs"][0]["hard_switches"].append(
-            {"id": "reading_switch", "name": "Dup", "source": "switch.x", "mode": "toggle"}
+            {
+                "id": "reading_switch",
+                "name": "Dup",
+                "source": {"type": "state", "entity_id": "switch.x"},
+                "mode": "toggle",
+            }
         )
         self.assert_flags(doc, "hard-switch id 'reading_switch' is used more than once")
 
@@ -242,7 +247,8 @@ class MigrateAndDefaultsTest(unittest.TestCase):
         old = {"version": 0, "legacy_rooms": [], "schedule_profiles": [{"id": "default"}]}
         with mock.patch.dict(config._MIGRATIONS, {0: step}):
             migrated = config.migrate(old)
-        self.assertEqual(migrated["version"], 1)
+        # 0 -> 1 by the patched step, then on through the real ones.
+        self.assertEqual(migrated["version"], config.CURRENT_VERSION)
         self.assertEqual(migrated["rooms"], [])
         self.assertIn("legacy_rooms", old)
 
@@ -286,6 +292,165 @@ class MigrateAndDefaultsTest(unittest.TestCase):
         filled = config.apply_defaults({"version": 1, "rooms": "nope", "homeassistant": 3})
         self.assertEqual(filled["rooms"], "nope")
         self.assertTrue(problems_of(config.validate, filled))
+
+
+def bind(doc, **binding):
+    """The fixture with the reading lamp's hard switch replaced by `binding`."""
+    living(doc)["bulbs"][3]["hard_switches"] = [{"id": "hs", "name": "Wall switch", **binding}]
+    return doc
+
+
+def state(entity_id):
+    return {"type": "state", "entity_id": entity_id}
+
+
+class HardSwitchTest(unittest.TestCase):
+    """Version 2: the source is a tagged union and a press has a direction."""
+
+    def assert_rejected(self, doc, fragment):
+        problems = problems_of(config.validate, doc)
+        self.assertTrue(any(fragment in p for p in problems), f"{fragment!r} not in {problems}")
+
+    def test_a_version_1_config_migrates(self):
+        old = v1_config()
+        migrated = config.migrate(old)
+        self.assertEqual(migrated, committed_config())
+        self.assertEqual(old["version"], 1)
+        self.assertEqual(config.loads(v1_config()), config.loads(committed_config()))
+
+    def test_the_migration_converts_every_holder_and_leaves_the_rest_to_validation(self):
+        doc = v1_config()
+        doc["unassigned"][0]["hard_switches"] = [
+            {
+                "id": "porch_button",
+                "name": "Porch",
+                "source": "binary_sensor.porch",
+                "mode": "press",
+            }
+        ]
+        doc["rooms"][1]["bulbs"][0]["hard_switches"] = [
+            {"id": "strip", "name": "Strip", "source": {"device": "x"}, "mode": "toggle"}
+        ]
+        migrated = config.migrate(doc)
+        self.assertEqual(
+            migrated["unassigned"][0]["hard_switches"][0],
+            {
+                "id": "porch_button",
+                "name": "Porch",
+                "source": state("binary_sensor.porch"),
+                "mode": "press",
+                "turn": "off",
+            },
+        )
+        problems = problems_of(config.loads, doc)
+        self.assertTrue(any("rooms/1/bulbs/0/hard_switches/0/source" in p for p in problems))
+        self.assertEqual(config.migrate({"version": 1, "rooms": "nope"})["rooms"], "nope")
+
+    def test_all_three_sources(self):
+        for binding in (
+            {"source": state("binary_sensor.wall"), "mode": "follow"},
+            {"source": {"type": "event", "event_type": "hue_event"}, "mode": "toggle"},
+            {
+                "source": {
+                    "type": "event",
+                    "event_type": "zha_event",
+                    "event_data": {"command": "off"},
+                },
+                "mode": "press",
+                "turn": "off",
+            },
+            {
+                "source": {
+                    "type": "device",
+                    "device_id": "3f2a9c1e0b7d4e5f8a6b2c1d0e9f8a7b",
+                    "trigger": {
+                        "domain": "zha",
+                        "type": "remote_button_short_press",
+                        "subtype": "on",
+                    },
+                },
+                "mode": "press",
+                "turn": "on",
+            },
+        ):
+            with self.subTest(binding=binding):
+                doc = bind(committed_config(), **binding)
+                config.validate(doc)
+                config.cross_check(doc)
+
+    def test_rejects_malformed_sources(self):
+        for source, fragment in (
+            ("switch.wall", "source: 'switch.wall' is not of type 'object'"),
+            ({"type": "zigbee"}, "source/type"),
+            ({"type": "state"}, "'entity_id' is a required property"),
+            ({"type": "state", "entity_id": "3f2a9c1e0b7d4e5f"}, "source/entity_id"),
+            ({"type": "event", "event_type": "x", "entity_id": "a.b"}, "Additional properties"),
+            ({"type": "event", "event_type": "two words"}, "source/event_type"),
+            (
+                {"type": "device", "device_id": "d", "trigger": {"type": "x"}},
+                "'domain' is a required",
+            ),
+            (
+                {
+                    "type": "device",
+                    "device_id": "d",
+                    "trigger": {"domain": "z", "type": "x", "platform": "y"},
+                },
+                "source/trigger",
+            ),
+        ):
+            with self.subTest(source=source):
+                self.assert_rejected(
+                    bind(committed_config(), source=source, mode="toggle"), fragment
+                )
+
+    def test_follow_needs_a_state_source(self):
+        doc = bind(committed_config(), source={"type": "event", "event_type": "x"}, mode="follow")
+        self.assert_rejected(doc, "follow needs a state source")
+
+    def test_a_press_needs_a_direction_and_only_a_press_has_one(self):
+        self.assert_rejected(
+            bind(committed_config(), source=state("switch.wall"), mode="press"),
+            "'turn' is a required property",
+        )
+        self.assert_rejected(
+            bind(committed_config(), source=state("switch.wall"), mode="toggle", turn="off"),
+            "turn is only allowed when mode is press",
+        )
+        self.assert_rejected(
+            bind(committed_config(), source=state("switch.wall"), mode="press", turn="toggle"),
+            "hard_switches/0/turn",
+        )
+
+    def assert_loop(self, doc, fragment):
+        problems = problems_of(config.cross_check, doc)
+        self.assertTrue(any(fragment in p for p in problems), f"{fragment!r} not in {problems}")
+
+    def test_no_source_in_light_maps_own_lane(self):
+        doc = bind(committed_config(), source=state("input_boolean.lm_soft_porch"), mode="follow")
+        self.assert_loop(doc, "one of Light Map's own entities")
+
+    def test_a_toggle_cannot_be_driven_by_a_bulb_light_map_drives(self):
+        doc = bind(committed_config(), source=state("light.kitchen_strip"), mode="toggle")
+        self.assert_loop(doc, "each change would set off the next")
+        # follow and press settle: each sets a state rather than flipping one.
+        for mode, extra in (("follow", {}), ("press", {"turn": "off"})):
+            config.cross_check(
+                bind(committed_config(), source=state("light.kitchen_strip"), mode=mode, **extra)
+            )
+        # A light that isn't a bulb (say, a relay exposed as a light) is fine.
+        config.cross_check(
+            bind(committed_config(), source=state("light.wall_relay"), mode="toggle")
+        )
+
+    def test_no_event_source_on_the_core_events_the_plane_fires(self):
+        for event_type in config.CORE_EVENTS:
+            doc = bind(
+                committed_config(),
+                source={"type": "event", "event_type": event_type},
+                mode="toggle",
+            )
+            self.assert_loop(doc, f"event {event_type} fires for Light Map's own changes")
 
 
 class LoadSaveTest(unittest.TestCase):

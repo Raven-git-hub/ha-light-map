@@ -16,6 +16,10 @@ Hard rules:
 - Every brightness command is guarded on "soft is on", so it can never power a bulb on. A
   crossover that changes section while a light stays on pushes the new brightness to the
   bulb directly, because the soft switch did not change and the bridge won't re-fire.
+- The brightness a bulb comes on at is supplied to the core bridge as a fragment
+  (`core.switching.register_bridge_brightness`, registered by `app.main`): a template that
+  reads the unit's target from the almanac at runtime and renders a valid value on every
+  path. The bridge, its target, and its power stay core's.
 - Maintenance nudges only already-on bulbs, brightness only, never power. It iterates bulbs
   rather than one-entity groups.
 - Nothing from the almanac is hardcoded: automations read `sensor.al_almanac_<room>` at

@@ -1,4 +1,4 @@
-"""The P0 boundary: importing does no work, /healthz serves, and every module P1 leaves for
+"""The P0 boundary: importing does no work, /healthz serves, and every module P2 leaves for
 a later phase still raises NotImplementedError rather than passing silently."""
 
 import asyncio
@@ -15,27 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Later phases' modules: (module, callables and the arguments to call them with).
 STUBS = {
-    "app.core.switching": {
-        "soft_switches": ({},),
-        "hard_switch_automations": ({},),
-        "bridge_automations": ({},),
-        "generate": ({},),
-    },
     "app.core.observe": {"is_user_intervention": ({},), "Observer": (None, None, {})},
-    "app.core.generate": {
-        "register_namespace": ("lm", None),
-        "namespaces": (),
-        "generate": ({}, "lm"),
-        "to_yaml": ({},),
-    },
-    "app.core.deploy": {
-        "fetch_live": (None, "lm"),
-        "plan": ("lm", {}, {}),
-        "apply": (None, {}),
-        "verify": (None, {}),
-        "deploy": (None, {}, "lm"),
-        "deploy_areas": (None, {}),
-    },
     "app.core.store": {"Store": (Path("data"),)},
     "app.modules.adaptive.scheduler": {
         "compute_boundaries": ({}, None, {}),

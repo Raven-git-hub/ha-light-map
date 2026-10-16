@@ -17,10 +17,13 @@ Light Map is a ground-up rebuild of `ha-adaptive-light`.
 
 ## Status
 
-**P1: inventory and rooms-from-Areas.** The HA transport (REST + WebSocket + Area/entity
-registry), the config loader and validator, and rooms built from HA Areas with two-way sync.
-It reads Home Assistant and writes only Area assignments; nothing is generated or deployed
-yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+**P2: the switching plane.** On top of P1's inventory (rooms from HA Areas, two-way sync,
+the config loader), Light Map generates a soft switch (`input_boolean.lm_soft_<bulb>`) and a
+soft→bulb bridge per bulb, plus a hard→soft automation per hard-switch binding, and deploys
+them into Home Assistant in their own `lm_` lane: created, updated and removed, then
+verified by re-reading HA. Deploying never drives a bulb: each soft switch starts at its
+bulb's current state. There is no deploy button yet (the Map UI is P3). See
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 To see what Light Map makes of your Home Assistant (read-only):
 

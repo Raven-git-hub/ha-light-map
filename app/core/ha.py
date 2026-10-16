@@ -6,9 +6,12 @@ plumbing and a thin surface over HA's APIs.
 
 Two transports, used for different things:
 
-- REST for request/response work: reading states, calling services, pushing states.
+- REST for request/response work: reading states, calling services, pushing states, and
+  reading and writing automation configs (HA's config API for automations.yaml).
 - WebSocket for the registries (HA exposes Area and entity-registry reads and writes only
-  there) and, from P4, the live event stream.
+  there), the UI-managed helpers (`input_boolean/list`, `.../create`, ...: the frontend's
+  own commands, the only network API that creates a helper), and, from P4, the live event
+  stream.
 
 Hard rules:
 
@@ -16,8 +19,10 @@ Hard rules:
   timeout and leaves the event stream dead while the log still says "connected."
 - Entity IDs only, never device IDs. Device IDs are opaque, break on re-pairing, and can't
   be validated by an entity-existence check. The device registry is read only so the
-  inventory can resolve the Area an entity inherits from its device; device IDs never
-  leave that join.
+  inventory can resolve the Area an entity inherits from its device, and so deploy can
+  check that a hard switch's `device` source still exists; device IDs never leave those
+  reads. (The one place a device id reaches HA is inside a generated hard-switch trigger,
+  which only reads a button press; see `core.switching`.)
 - The HA token is never persisted in the config. At runtime it is read from LM_HA_TOKEN, or
   from the file named by LM_HA_TOKEN_FILE.
 - Area/entity-registry writes are a new write surface (the predecessor only created helpers
@@ -69,6 +74,10 @@ class HAError(RuntimeError):
 class HAAuthError(HAError):
     """Token rejected. Never retried: retrying a bad token just spams the log and delays
     the user discovering the real problem."""
+
+
+class HANotFoundError(HAError):
+    """A REST request answered 404: what it asked for doesn't exist."""
 
 
 class HACommandError(HAError):
@@ -342,7 +351,14 @@ class HAClient:
         if response.status_code in (401, 403):
             raise HAAuthError("Home Assistant rejected the access token")
         if response.status_code >= 400:
-            raise HAError(f"{method} {path} returned HTTP {response.status_code}")
+            # HA explains a refused write in the body (e.g. the automation config API's
+            # "Message malformed: ..."); without it a failed deploy says only "HTTP 400".
+            detail = _error_message(response)
+            error = HANotFoundError if response.status_code == 404 else HAError
+            raise error(
+                f"{method} {path} returned HTTP {response.status_code}"
+                + (f": {detail}" if detail else "")
+            )
         if not response.content:
             return None
         try:
@@ -438,5 +454,98 @@ class HAClient:
 
     async def list_device_registry(self) -> list[dict[str, Any]]:
         """Return the device registry. Read only to resolve the Area an entity inherits
-        from its device; device IDs must not travel beyond that join."""
+        from its device (and to check a hard switch's device source exists); device IDs
+        must not travel beyond those reads."""
         return await self.command({"type": "config/device_registry/list"})
+
+    # -- Helpers (WebSocket) and automations (REST): what deploy writes -----------------
+
+    async def list_helpers(self, domain: str) -> list[dict[str, Any]]:
+        """Return the UI-managed helpers of one domain (e.g. `input_boolean`), each its
+        stored item (`id`, `name`, ...). Helpers defined in YAML are not listed: they live
+        outside HA's storage collection and can't be edited over the network."""
+        return await self.command({"type": f"{_helper_domain(domain)}/list"})
+
+    async def create_helper(self, domain: str, data: Mapping[str, Any]) -> dict[str, Any]:
+        """Create a UI-managed helper and return its stored item.
+
+        There is no way to ask for an id: HA derives the item's `id`, and the entity's
+        object id, by slugifying `name`, and appends `_2`, `_3`, ... when that id is taken.
+        A caller that needs a particular entity_id must choose a name that slugifies to it
+        and check the `id` that comes back.
+        """
+        domain = _helper_domain(domain)
+        return await self.command({**_helper_fields(domain, data), "type": f"{domain}/create"})
+
+    async def update_helper(
+        self, domain: str, item_id: str, data: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Replace a UI-managed helper's fields (a field left out is cleared) and return
+        the stored item. Its id and entity_id don't change."""
+        domain = _helper_domain(domain)
+        return await self.command(
+            {**_helper_fields(domain, data), "type": f"{domain}/update", f"{domain}_id": item_id}
+        )
+
+    async def delete_helper(self, domain: str, item_id: str) -> None:
+        """Delete a UI-managed helper, and with it its entity."""
+        domain = _helper_domain(domain)
+        await self.command({"type": f"{domain}/delete", f"{domain}_id": item_id})
+
+    async def get_automation_config(self, automation_id: str) -> dict[str, Any] | None:
+        """Return an automation's stored config (from automations.yaml) by its `id`, or
+        None if HA's config API doesn't have it (no such id, or one defined elsewhere in
+        YAML, which the API can't edit)."""
+        try:
+            return await self.request("GET", _automation_path(automation_id))
+        except HANotFoundError:
+            return None
+
+    async def save_automation_config(self, automation_id: str, config: Mapping[str, Any]) -> None:
+        """Create or replace an automation in automations.yaml by its `id`.
+
+        HA validates the config first (HTTP 400 with the reason if it is malformed), then
+        writes it and reloads that automation in the background: the automation entity
+        can lag the reply by a moment, so a caller verifying the result should retry.
+        """
+        await self.request("POST", _automation_path(automation_id), json=dict(config))
+
+    async def delete_automation_config(self, automation_id: str) -> bool:
+        """Remove an automation from automations.yaml; False if it wasn't there. Like a
+        save, the entity goes away with a background reload."""
+        try:
+            await self.request("DELETE", _automation_path(automation_id))
+        except HANotFoundError:
+            return False
+        return True
+
+
+def _error_message(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text.strip()[:200]
+    if isinstance(body, dict) and isinstance(body.get("message"), str):
+        return body["message"]
+    return ""
+
+
+def _helper_domain(domain: str) -> str:
+    if not _SLUG.match(domain):
+        raise ValueError(f"not a helper domain: {domain!r}")
+    return domain
+
+
+def _helper_fields(domain: str, data: Mapping[str, Any]) -> dict[str, Any]:
+    # The command's own keys are the client's to set: a field named `type` or
+    # `<domain>_id` would silently turn the command into a different one.
+    reserved = {"type", "id", f"{domain}_id"} & set(data)
+    if reserved:
+        raise ValueError(f"helper fields may not include {sorted(reserved)}")
+    return dict(data)
+
+
+def _automation_path(automation_id: str) -> str:
+    if not _SLUG.match(automation_id):
+        raise ValueError(f"not an automation id: {automation_id!r}")
+    return f"/api/config/automation/config/{automation_id}"

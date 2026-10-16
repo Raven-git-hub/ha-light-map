@@ -70,6 +70,14 @@ Presence Rules can be added without touching the trunk:
 4. **Actuation vocabulary.** A module acts only by commanding soft switches (power) and
    setting bulb brightness guarded on soft-on — never by powering bulbs directly. This is
    the invariant that keeps the switching plane the single source of truth for power.
+   Part of this seam is the **bridge brightness**: the soft→bulb bridge is core, but a
+   module may supply, per bulb it owns, the `light.turn_on` data the bridge applies on
+   soft-on (`brightness`, `brightness_pct`, `transition`; HA Jinja allowed, kept inert).
+   It registers a provider with `core.switching.register_bridge_brightness`; the core
+   generator embeds the fragment in that bulb's `lm_bridge_` automation, inside the
+   soft-on branch, so it is guarded on soft-on by construction and can't retarget the
+   bridge or touch power. Adaptive's almanac read lives in that fragment (P5), not in core.
+   A bulb no module claims takes the plain path (its last brightness).
 
 ---
 
@@ -89,8 +97,9 @@ app/
     inventory.py     Discover every light.* entity; build rooms from HA Areas; manage
                      switching groups; keep the committed bulb→room snapshot in sync with HA
                      (read Areas to refresh, write back on edit).
-    switching.py     Generate the switching-plane artefacts: per-bulb/group soft-switch
-                     helpers, hard→soft automations, soft→bulb bridge automations.
+    switching.py     Generate the switching-plane artefacts: per-bulb soft-switch helpers,
+                     hard→soft automations, soft→bulb bridge automations; the
+                     bridge-brightness seam modules fill.
     observe.py       The live observer: per-bulb heartbeats, reactive (manual-change)
                      detection, the event log. A platform service modules subscribe to.
                      Readings are per bulb, long format.
@@ -161,9 +170,13 @@ ported from `ha-adaptive-light` and were hard-won — preserve them.
   Avoid dict/set ordering, timestamps, or other nondeterminism leaking into output.
 - **Entity IDs only, never device IDs.** Device IDs are opaque, break on re-pairing, and
   can't be validated by an entity-existence check. A bulb's `ha_match_key` (its HA
-  entity-registry entry id) is the one opaque HA id the config holds, and it is a match key
-  for the snapshot reconcile only: never addressed, validated against HA, or written into
-  generated artefacts. Anything that addresses a bulb uses its `entity_id`.
+  entity-registry entry id) is an opaque HA id the config holds as a match key for the
+  snapshot reconcile only: never addressed, validated against HA, or written into
+  generated artefacts. Anything that addresses a bulb uses its `entity_id`. **One carved-out
+  exception:** a hard switch's `device` source names a `device_id`, only to *read* a button
+  press from a device that exposes no entity or event to bind instead. That id appears
+  only in the trigger of its `lm_hard_` automation; it never addresses a light or targets
+  an action.
 - **The soft switch owns power.** The soft→bulb bridge is the only thing that powers a bulb
   on or off. Modules act only by commanding soft switches and setting brightness, and every
   brightness command is guarded on "soft is on" so it can never power a bulb on.
@@ -197,7 +210,7 @@ Everything downstream is a pure function of this committed document. Learned dat
 is not stored here; it lives in the almanac store. Detailed field semantics are in
 `docs/DESIGN.md` ("Data model").
 
-- `version` — schema version; the container migrates forward on load.
+- `version` — schema version (2 since P2); the container migrates forward on load.
 - `homeassistant` — `base_url`, `access_token` (redacted from exports; never persisted),
   `verify_ssl`; reconnect backoff arrives with the event subscription's reconnect loop (P4).
   At runtime the connection is read from the environment / secrets: `LM_HA_BASE_URL`,
@@ -209,12 +222,14 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
 - `rooms[]` — from HA Areas (every Area is a room, with or without lights), each:
   - `id` (slug), `name`, `ha_area_id`, `adaptive` (bool)
   - `bulbs[]`: `{ id (slug), name, entity_id (light.*), ha_match_key?, hard_switches[] }` —
-    a soft-switch helper is implicit (generated) per bulb. `ha_match_key` is the light's HA
-    entity-registry entry id: an opaque key the reconcile matches on, so a bulb survives its
-    entity_id being renamed in HA (see `docs/DESIGN.md`, "Bulb identity").
+    a soft-switch helper and a soft→bulb bridge are implicit (generated) per bulb.
+    `ha_match_key` is the light's HA entity-registry entry id: an opaque key the reconcile
+    matches on, so a bulb survives its entity_id being renamed in HA (see
+    `docs/DESIGN.md`, "Bulb identity").
   - `switching_groups[]`: `{ id (slug), name, members (bulb ids), hard_switches[] }` — a
-    soft-switch helper is implicit (generated) per group, modelled as an HA group of its
-    members' soft switches.
+    named set of member bulbs plus its hard-switch bindings. A group mints **no** soft
+    switch of its own: a hard switch bound to it acts on every member's per-bulb soft
+    switch.
   - `adaptive_config` — the per-module block, **required when `adaptive` is true** and
     forbidden when false: `{ lux_sensors[], presence_sensors[], schedule_profile,
     learning_units[], scenes }`, where `learning_units[]` = `{ id (slug), name,
@@ -222,10 +237,15 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
     section.
 
   `hard_switches[]` is the binding shape used **inside `bulbs[]` and `switching_groups[]`** —
-  it is not a key on the room itself: `{ id, name, source (entity_id or event/device ref),
-  mode }`, `mode` ∈ `toggle` | `follow` | `press`. A room-wide action (e.g. an "all off"
-  button) is a hard switch bound to a switching group that covers the room, not a room-level
-  binding.
+  it is not a key on the room itself: `{ id, name, source, mode, turn? }`, `mode` ∈
+  `toggle` | `follow` | `press`, and `turn` ∈ `on` | `off` (required for `press`, forbidden
+  otherwise). `source` is a tagged union: `{ type: "state", entity_id }` (a stateful
+  switch / binary_sensor / light / event entity), `{ type: "event", event_type,
+  event_data? }` (a stateless button firing an HA event), or `{ type: "device", device_id,
+  trigger }` (a device automation trigger, only for a button that exposes nothing else).
+  `follow` needs a `state` source. A room-wide action (e.g. an "all off" button) is a
+  `press` with `turn: off` bound to a switching group that covers the room, not a
+  room-level binding. Semantics are in `docs/DESIGN.md`, "Hard switches".
 - `unassigned[]` — the Unassigned bucket: bulbs (same shape as `rooms[].bulbs[]`) whose light
   has no HA Area. Kept in the snapshot so a bulb's id and hard switches survive while it has
   no room. Not a room: no switching groups, no module config.
@@ -234,12 +254,19 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
 - `learning` — adaptive analyser tuning.
 
 **Id scopes** follow the HA names the ids end up in. Room ids are global
-(`sensor.al_almanac_<room>`), and no two rooms share an HA Area. Bulb ids and switching-group
-ids share one global namespace, because both name a soft switch (`input_boolean.lm_soft_<id>`)
-— including the bulbs in `unassigned[]`. Hard-switch ids are global (`lm_hard_<id>`).
+(`sensor.al_almanac_<room>`), and no two rooms share an HA Area. Bulb ids are global, because
+each names a soft switch and a bridge (`input_boolean.lm_soft_<id>`, `lm_bridge_<id>`) —
+including the bulbs in `unassigned[]`. Switching-group ids share that one namespace: a
+group names no HA entity, but a hard switch binds to a bulb or a group, and keeping the two
+apart lets either be named by id alone. Hard-switch ids are global (`lm_hard_<id>`).
 Learning-unit ids are unique within their room. Schedule-profile ids are global. A bulb's
 `ha_match_key`, when present, is unique across all bulbs. The schema checks shape;
 `app/core/config.py` cross-checks these scopes and every reference.
+
+The cross-check also refuses a hard switch wired into a feedback loop: a source in Light
+Map's own `lm_` namespace, a `toggle` whose source is a bulb Light Map drives, or an event
+source on the HA core events the plane's own changes fire (`state_changed`, `call_service`,
+`automation_triggered`, `script_started`).
 
 As of P1 the core sections (`homeassistant`, `rooms[]`, `unassigned[]`) are validated in
 depth; `system`, `learning`, `schedule_profiles` and `adaptive_config` fill in with the
@@ -274,14 +301,22 @@ Tables (skeleton):
 ## Naming and namespaces
 
 - **Product / container:** Light Map. Repo `ha-light-map`.
-- **Switching plane:** `input_boolean.lm_soft_<id>` (per bulb and per group); automations
-  `lm_bridge_<id>` (soft→bulb) and `lm_hard_<id>` (hard→soft); a group's soft switch is an HA
-  group of its members' soft switches.
+- **Switching plane:** `input_boolean.lm_soft_<bulb_id>`, one per bulb and only per bulb;
+  automations `lm_bridge_<bulb_id>` (soft→bulb) and `lm_hard_<hard_switch_id>` (hard→soft).
+  A switching group has no HA entity: an HA group of `input_boolean`s can only be made in
+  `configuration.yaml`, which Light Map never edits, and with no group entity there is no
+  group state to keep in sync. A hard switch bound to a group acts on every member's soft
+  switch. (A single group-state entity for dashboards, if ever wanted, would be an HA light
+  group of the member bulbs — a future enhancement, not a soft switch.) The soft switch's
+  helper is named `LM Soft <bulb_id>`, because HA derives a network-created helper's id from
+  its slugified name.
 - **Adaptive module:** keeps the recognizable `al_` names (`al_scene_`, `al_maint_`,
   `al_active_`, `al_hold_`, `sensor.al_almanac_`, `al_watchdog_`), so the ported generator
   barely changes.
 - Deploy reconciles `lm_*`/`lm_soft_*` and `al_*` as **separate lanes** — the switching
-  deployer never touches `al_*`, and vice versa.
+  deployer never touches `al_*`, and vice versa. A prefix is reserved by registering its
+  generator (`core.generate.register_namespace`); a name belongs to the longest registered
+  prefix it starts with, so even an adaptive lane folded under `lm_al_` would stay its own.
 
 ---
 
@@ -328,7 +363,11 @@ Parallel build in this repo; the live `ha-adaptive-light` keeps running untouche
 P0–P4 touch only new HA artefacts (soft switches, bridge automations, Area assignments) and
 can coexist with the live adaptive system, as long as the new bridges stay unbound (no hard
 switches; bridge not yet authoritative) until cutover. That coexistence boundary is the main
-thing to get right during the parallel build.
+thing to get right during the parallel build. Deploying the plane never drives a bulb: each
+soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge
+fires only on its soft switch changing between `off` and `on`. Binding a hard switch in
+the config is the step that makes a bridge authoritative, so leave `hard_switches` empty
+(or bind only switches the live system doesn't use) until cutover.
 
 ---
 
@@ -342,7 +381,14 @@ thing to get right during the parallel build.
 - **Per-bulb detail** (dimmable, colour-temp) — deferred; a non-dimmable bulb is
   switching-only even in an adaptive room.
 - **Module-interface formality** — how far to formalise the module seams now vs a clean
-  internal boundary with adaptive as the only module until Presence Rules lands.
+  internal boundary with adaptive as the only module until Presence Rules lands. So far two
+  seams are code-level registries the composition root fills: `register_namespace`
+  (artefacts) and `register_bridge_brightness` (P2).
+- **Out-of-band power changes** — a bulb switched outside the plane (HA's UI, a vendor app,
+  voice, or the live `ha-adaptive-light` during the parallel build) leaves its soft switch
+  stale, so the next toggle may first "turn off" a bulb that is already off. Whether the
+  plane should reflect a bulb's power back into its soft switch, and how that would avoid
+  re-triggering the bridge, is open; settle it before cutover.
 
 ---
 

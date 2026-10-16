@@ -11,7 +11,12 @@ second module (Presence Rules) can be added without touching the trunk:
    events; it never scrapes HA itself.
 4. Actuation vocabulary. A module acts only by commanding soft switches (power) and setting
    bulb brightness guarded on soft-on, never by powering bulbs directly. This is the
-   invariant that keeps the switching plane the single source of truth for power.
+   invariant that keeps the switching plane the single source of truth for power. It
+   includes the bridge brightness: a module may supply the `light.turn_on` data the core
+   soft->bulb bridge applies on soft-on for its bulbs (`core.switching.
+   register_bridge_brightness`), which core embeds in the bridge's soft-on branch.
 
-Modules are wired into the core by the composition root, `app.main`.
+Modules are wired into the core by the composition root, `app.main`: it registers a
+module's namespace (`core.generate.register_namespace`) and, if it has one, its bridge
+brightness provider.
 """
