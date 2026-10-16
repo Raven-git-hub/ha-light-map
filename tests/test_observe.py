@@ -55,6 +55,13 @@ def event(old, new, *, parent_id=None, event_parent=None, entity="light.chandeli
 class InterventionTest(unittest.TestCase):
     def test_only_an_unparented_brightness_change_counts(self):
         self.assertTrue(is_user_intervention(event(128, 200), guarded=False))
+        # Made under an automation run's own context (one fired by time has no parent).
+        self.assertFalse(
+            is_user_intervention(event(128, 200), guarded=False, automation_runs={"c"})
+        )
+        self.assertTrue(
+            is_user_intervention(event(128, 200), guarded=False, automation_runs={"other"})
+        )
         for name, case, guarded in (
             ("the bridge or a switch caused it", event(128, 200, parent_id="auto"), False),
             ("the event's context says so", event(128, 200, event_parent="auto"), False),
@@ -479,6 +486,89 @@ class ReactiveTest(ObserverCase):
         await self.observer.stop()
         self.assertEqual(len(self.reactive()), 1)
 
+    async def test_a_time_triggered_automation_is_not_a_user(self):
+        # HA starts an automation fired by time, a time pattern or the sun with a fresh
+        # context and no parent_id; its light.turn_on would otherwise pass for a dimmer.
+        run, context = self.ha.automation_run("nightly_dim")
+        await self.ha.emit(run)
+        await self.manual("light.chandelier_1", 40, context_id=context)
+        await self.ha.emit(self.ha.change("light.reading_lamp", "on", brightness=90))  # power
+        await self.manual("light.reading_lamp", 30, context_id=context)
+        self.assertEqual(self.observer.status()["open_windows"], 0)
+        await self.manual("light.chandelier_1", 120, user_id="person")  # a person after it
+        await self.close_windows()
+        self.assertEqual(
+            [
+                (c["bulb_id"], c["brightness_before"], c["brightness_after"])
+                for c in self.changes()
+                if c["changed"]
+            ],
+            [("chandelier_1", 40, 120)],
+        )
+
+    async def test_the_users_change_is_recorded_not_what_followed_it(self):
+        await self.manual("light.chandelier_1", 60, user_id="person")
+        await self.manual("light.chandelier_2", 90)  # a dimmer: no user
+        # Before the window closes, a hard switch turns chandelier_1 off, an automation
+        # moves chandelier_2, and the reading lamp's power goes.
+        await self.ha.emit(self.ha.change("light.chandelier_1", "off", parent_id="hard"))
+        await self.manual("light.chandelier_2", 250, parent_id="automation")
+        await self.ha.emit(self.ha.change("light.reading_lamp", "unavailable"))
+        await self.close_windows()
+        rows = self.rows(
+            "SELECT bulb_id, is_on_after, brightness_after, changed, user_id FROM reactive_change "
+            "ORDER BY bulb_id"
+        )
+        self.assertEqual(
+            rows[:2],
+            [
+                {
+                    "bulb_id": "chandelier_1",
+                    "is_on_after": 1,
+                    "brightness_after": 60,
+                    "changed": 1,
+                    "user_id": "person",
+                },
+                {
+                    "bulb_id": "chandelier_2",
+                    "is_on_after": 1,
+                    "brightness_after": 90,
+                    "changed": 1,
+                    "user_id": None,
+                },
+            ],
+        )
+        # An untouched bulb is recorded as the close found it: context, never a change.
+        self.assertEqual(
+            rows[3],
+            {
+                "bulb_id": "reading_lamp",
+                "is_on_after": None,
+                "brightness_after": None,
+                "changed": 0,
+                "user_id": None,
+            },
+        )
+
+    async def test_a_change_survives_its_bulb_going_unavailable(self):
+        await self.manual("light.chandelier_1", 60)
+        await self.ha.emit(self.ha.change("light.chandelier_1", "unavailable"))
+        await self.close_windows()
+        self.assertEqual(
+            [(c["bulb_id"], c["brightness_after"]) for c in self.changes() if c["changed"]],
+            [("chandelier_1", 60)],
+        )
+
+    async def test_nothing_is_taken_once_stopping(self):
+        await self.manual("light.chandelier_1", 60)
+        stopping = asyncio.create_task(self.observer.stop())
+        await asyncio.sleep(0)  # stop() has begun: it waits on its tasks
+        self.assertFalse(stopping.done())
+        await self.manual("light.chandelier_2", 20)  # arrives while it stops
+        await stopping
+        self.assertEqual(self.observer.status()["open_windows"], 0)
+        self.assertEqual([c["bulb_id"] for c in self.changes() if c["changed"]], ["chandelier_1"])
+
     async def test_a_stale_snapshot_never_overwrites_a_newer_event(self):
         await self.manual("light.chandelier_1", 200)
         stale = copy.deepcopy(
@@ -603,15 +693,29 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
     async def test_events_over_the_websocket(self):
         await self.observer.start()
         await self.wait_for(lambda: self.observer.connected)
-        self.assertEqual([m["type"] for m in self.fake.received], ["subscribe_events"])
+        self.assertEqual(
+            [(m["type"], m["event_type"]) for m in self.fake.received],
+            [("subscribe_events", "automation_triggered"), ("subscribe_events", "state_changed")],
+        )
         await self.fake.fire(
             "state_changed",
             self.ha_states.change("light.chandelier_1", "on", brightness=60, parent_id="bridge"),
         )
+        # A time-triggered automation: no parent_id, but its run's context gives it away.
+        run, context = self.ha_states.automation_run("dim_at_ten")
+        await self.fake.fire("automation_triggered", run)
+        await self.fake.fire(
+            "state_changed",
+            self.ha_states.change("light.reading_lamp", "on", brightness=10, context_id=context),
+        )
+        await self.fake.fire(
+            "state_changed",
+            self.ha_states.change("light.reading_lamp", "on", brightness=40, context_id=context),
+        )
         await self.fake.fire(
             "state_changed", self.ha_states.change("light.chandelier_2", "on", brightness=60)
         )
-        await self.wait_for(lambda: self.observer.status()["events_seen"] == 2)
+        await self.wait_for(lambda: self.observer.status()["events_seen"] == 4)
         await self.observer.flush(everything=True)
         changed = self.store.query("SELECT bulb_id FROM reactive_change WHERE changed = 1")
         self.assertEqual(changed, [{"bulb_id": "chandelier_2"}])
@@ -622,7 +726,7 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
         await self.fake.fire(
             "state_changed", self.ha_states.change("light.chandelier_2", "on", brightness=200)
         )
-        await self.wait_for(lambda: self.observer.status()["events_seen"] == 3)
+        await self.wait_for(lambda: self.observer.status()["events_seen"] == 5)
         messages = [e["message"] for e in reversed(self.store.events(category="connection"))]
         self.assertEqual(
             messages,

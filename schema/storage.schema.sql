@@ -54,8 +54,11 @@ CREATE TABLE IF NOT EXISTS reactive_event (
 CREATE INDEX IF NOT EXISTS reactive_event_room_ts ON reactive_event (room_id, ts);
 
 -- Long format: one row per bulb of the room per reactive event. brightness_before/
--- brightness_after, not before/after: those are SQL keywords. No stored weight: weighting
--- is the analyser's, applied at analysis time (P5).
+-- brightness_after, not before/after: those are SQL keywords. For a bulb the user changed,
+-- after is where their last change left it; for the others, the room as the window closed.
+-- user_id is the HA user behind that last change (NULL for a device: a dimmer, a remote),
+-- so the analyser can tell a person from another system's API user. No stored weight:
+-- weighting is the analyser's, applied at analysis time (P5).
 CREATE TABLE IF NOT EXISTS reactive_change (
     id                  INTEGER PRIMARY KEY,
     reactive_event_id   INTEGER NOT NULL REFERENCES reactive_event (id),
@@ -65,6 +68,7 @@ CREATE TABLE IF NOT EXISTS reactive_change (
     brightness_before   INTEGER CHECK (brightness_before BETWEEN 0 AND 255),
     brightness_after    INTEGER CHECK (brightness_after BETWEEN 0 AND 255),
     changed             INTEGER NOT NULL CHECK (changed IN (0, 1)),
+    user_id             TEXT,
     UNIQUE (reactive_event_id, bulb_id)
 );
 
@@ -96,11 +100,13 @@ CREATE TABLE IF NOT EXISTS event_log (
 );
 CREATE INDEX IF NOT EXISTS event_log_ts ON event_log (ts);
 
--- Bookkeeping, not data: how many bytes of each archive file (its path under the archive
--- directory) this database holds. At startup a file whose size differs, or a file missing
--- on either side, means this layer has fallen out of step with the archive, and it is
--- rebuilt from it. Derived from the archive like everything else here.
+-- Bookkeeping, not data: each archive file (its path under the archive directory) as of
+-- the last write this database holds all of. At startup a file whose size or mtime differs,
+-- or a file missing on either side, means this layer has fallen out of step with the
+-- archive, and it is rebuilt from it. Derived from the archive like everything else here.
+-- (The schema's version, a checksum of this file, is in PRAGMA user_version.)
 CREATE TABLE IF NOT EXISTS archive_file (
-    path    TEXT    PRIMARY KEY,
-    size    INTEGER NOT NULL
+    path        TEXT    PRIMARY KEY,
+    size        INTEGER NOT NULL,
+    mtime_ns    INTEGER NOT NULL
 );

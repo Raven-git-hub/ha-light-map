@@ -192,9 +192,11 @@ ported from `ha-adaptive-light` and were hard-won — preserve them.
 - **Scene automations carry `conditions: []`.** They are fired via `automation.trigger`
   (default `skip_condition: true`); a condition placed there would be silently ignored.
 - **Reactive detection ignores the system's own changes.** A brightness change counts as a
-  user intervention only when it carries no `context.parent_id` and no guard is raised.
-  Switch-driven and bridge-driven changes carry a `parent_id`, so toggling power is never
-  learned as a brightness preference.
+  user intervention only when it carries no `context.parent_id`, wasn't made under an
+  automation run's own context, and no guard is raised. Switch-driven and bridge-driven
+  changes carry a `parent_id`, so toggling power is never learned as a brightness
+  preference. An automation fired by time or the sun carries no `parent_id` (HA starts it
+  with a fresh context), which is why the observer also watches `automation_triggered`.
 - **Observation is per bulb, long format**, pooled per learning unit at analysis time — so
   learning units can be redrawn without losing history.
 - **HA Areas are the source of truth for room membership.** The config holds a committed
@@ -311,10 +313,11 @@ Tables (`schema/storage.schema.sql`; `ts` is ISO-8601 UTC, booleans 0/1):
   `lux_after`, `occupancy`. Unique on (`room_id`, `ts`).
 - `reactive_change` — long format, one row per bulb of the room for each reactive event:
   `id`, `reactive_event_id` (fk), `bulb_id`, `is_on_before`, `is_on_after`,
-  `brightness_before`, `brightness_after` (not `before`/`after`: SQL keywords), `changed`
-  (the user changed this bulb by more than the min-delta). There is no stored weight:
-  weighting is the analyser's (P5), applied at analysis time, so retuning it reweights
-  history.
+  `brightness_before`, `brightness_after` (not `before`/`after`: SQL keywords; for a bulb
+  the user changed, after is where their last change left it), `changed` (the user changed
+  this bulb by more than the min-delta), `user_id` (the HA user behind that change; null
+  for a device). There is no stored weight: weighting is the analyser's (P5), applied at
+  analysis time, so retuning it reweights history.
 - `almanac` — insert-only learned snapshots: `id`, `ts`, `room_id`, `section`,
   `learning_unit_id`, `lux_target`, `lux_margin`, `maintenance_enabled`, `max_step_pct`,
   `trust_weight`, `valid_from`, `mode`.
@@ -324,10 +327,12 @@ Tables (`schema/storage.schema.sql`; `ts` is ISO-8601 UTC, booleans 0/1):
 Each table has a CSV stream under `<data_dir>/archive/<table>/<YYYY-MM>.csv` (by the row's
 UTC month) with the table's columns minus the surrogate ids; a child row carries its
 parent's natural key (`room_id`, `ts`) instead of its id, so the archive needs nothing from
-SQLite to be read back. Every write goes to the CSV first. The query layer
-(`<data_dir>/light_map.db`) records how much of each archive file it holds, and is rebuilt
-from the archive at startup when that doesn't match (deleted, behind after a failed write,
-or broken). Event-log retention prunes the query layer only; the archive keeps everything.
+SQLite to be read back. Every write goes to the CSV first, flushed to disk. The query
+layer (`<data_dir>/light_map.db`) records each archive file's size and mtime as of the last
+write it holds all of, and is rebuilt from the archive at startup when that doesn't match
+(deleted, behind after a failed write, an archive file edited), recreated when its schema
+version differs, and moved aside and rebuilt when it is broken. Event-log retention prunes
+the query layer only; the archive keeps everything.
 
 ---
 
@@ -477,6 +482,13 @@ system's `al_` ones among them) that already drive the same bulbs.
   `adaptive_config`, because that is where the config shape puts them, so only adaptive
   rooms record lux and occupancy. They are facts about the room rather than adaptive
   settings; when a second module (Presence Rules) needs them, move them onto the room.
+- **Observing beside the live system** (P4) — until cutover `ha-adaptive-light` drives the
+  same bulbs. Its scheduled automations are recognised (their runs' contexts), but the late
+  steps of its long maintenance transitions carry no mark, and it raises only its own
+  guards, so they can be recorded as manual changes. If that history is to be kept past
+  cutover, the observer could take a list of the live system's guard booleans to honour
+  (the predecessor had `external_guards` for the same job); otherwise start the history
+  fresh at cutover.
 - **Power changes as observations** (P4) — reactive detection counts brightness changes only
   (see `docs/DESIGN.md`, "Observation"); a power change, through the plane or out of band,
   is not a reactive event. If the adaptive module needs to see a user turning a bulb off

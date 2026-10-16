@@ -73,13 +73,12 @@ import hashlib
 import json
 import logging
 import os
-import sqlite3
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -93,7 +92,7 @@ from app.core.deploy import DeployError, StalePreview
 from app.core.ha import HAAuthError, HAClient, HAError
 from app.core.inventory import InventoryError, NotFound
 from app.core.observe import Observer
-from app.core.store import LEVELS, Store, StoreError
+from app.core.store import LEVELS, Store
 
 log = logging.getLogger(__name__)
 
@@ -529,8 +528,9 @@ def event_log(
     level: str = "info",
     category: str | None = None,
     room: str | None = None,
-    before: int | None = None,
-    limit: int = 200,
+    # Bounded so an id past SQLite's integers is a 422, not a 500.
+    before: int | None = Query(None, ge=1, le=2**63 - 1),
+    limit: int = Query(200, ge=1, le=1000),
 ) -> dict[str, Any]:
     """The event log, newest first: entries at `level` or above, optionally one
     `category` and one `room`, older than the entry `before` (paging), at most `limit`.
@@ -544,8 +544,6 @@ def event_log(
         )
     if level not in LEVELS:
         raise ApiError(422, "bad_request", f"level must be one of {', '.join(LEVELS)}")
-    if not 1 <= limit <= 1000:
-        raise ApiError(422, "bad_request", "limit must be between 1 and 1000")
     entries = data.events(
         level=level, category=category or None, room_id=room or None, before=before, limit=limit
     )
@@ -1139,8 +1137,9 @@ def create_app(
         try:
             data.open()
             app.state.data, app.state.data_error = data, None
-        except (OSError, StoreError, sqlite3.Error) as exc:
-            # Served anyway, without observation or the event log: the Map needs neither.
+        except Exception as exc:  # noqa: BLE001 - whatever it was, the Map still serves
+            # Served anyway, without observation or the event log: the Map needs neither,
+            # and a damaged archive must never be what keeps it from starting.
             app.state.data_error = f"{data.data_dir}: {exc}"
             log.warning("the store did not open, so nothing is observed: %s", exc)
             data = None

@@ -602,11 +602,13 @@ class FakeHA:
         *,
         parent_id: str | None = None,
         user_id: str | None = None,
+        context_id: str | None = None,
         **attributes: Any,
     ) -> dict[str, Any]:
         """Set an entity's state as HA would, and return the `state_changed` event HA sends
-        for it. `parent_id` marks a change an automation caused (the bridge, a hard
-        switch); a person at a dimmer has none."""
+        for it. `parent_id` marks a change an automation caused through its trigger (the
+        bridge, a hard switch); a person at a dimmer has none. `context_id` puts the change
+        under a given context, such as an automation run's (`automation_run`)."""
         index = next((i for i, s in enumerate(self.states) if s["entity_id"] == entity_id), None)
         old = copy.deepcopy(self.states[index]) if index is not None else None
         name = (old or {}).get("attributes", {}).get("friendly_name", entity_id)
@@ -614,7 +616,7 @@ class FakeHA:
         self.clock += timedelta(seconds=1)
         new["last_updated"] = self.clock.isoformat()
         new["context"] = {
-            "id": f"ctx{next(self._contexts)}",
+            "id": context_id or f"ctx{next(self._contexts)}",
             "parent_id": parent_id,
             "user_id": user_id,
         }
@@ -629,6 +631,18 @@ class FakeHA:
             "time_fired": new["last_updated"],
             "context": copy.deepcopy(new["context"]),
         }
+
+    def automation_run(self, automation_id: str) -> tuple[dict[str, Any], str]:
+        """The `automation_triggered` event HA fires when an automation with no triggering
+        context starts (time, time pattern, sun): a fresh context, no parent. Returns the
+        event and the run's context id, which its actions' changes carry."""
+        context_id = f"run{next(self._contexts)}"
+        event = {
+            "event_type": "automation_triggered",
+            "data": {"name": automation_id, "entity_id": f"automation.{automation_id}"},
+            "context": {"id": context_id, "parent_id": None, "user_id": None},
+        }
+        return event, context_id
 
     # The rest of the surface tools/doctor.py uses
     async def ping(self) -> str:

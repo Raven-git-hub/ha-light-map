@@ -114,9 +114,10 @@
           "maximum": 255
         },
         "event_log_retention_days": {
-          "description": "How long the event log stays in the query layer (the Log tab). The CSV archive keeps everything. Default 90.",
+          "description": "How long the event log stays in the query layer (the Log tab). The CSV archive keeps everything. Default 90; at most a century.",
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 36500
         },
         "data_dir": {
           "description": "Where the CSV archive and the SQLite query layer live. Default, and the base of a relative path: the directory holding the config. Read at startup.",

@@ -16,12 +16,18 @@ Layout under the data directory:
 - `light_map.db`: the SQLite query layer, which also records how many bytes of each
   archive file it holds (`archive_file`).
 
-Every write goes to the CSV first and then to SQLite, so a database failure never costs an
-observation: the store marks itself `stale`, and the next `open` rebuilds. `open` compares
-the archive with what the query layer says it holds and rebuilds from the archive when they
-differ (the database deleted, behind after a failed write or a crash between the two
-writes, or written by someone else); a database that doesn't open cleanly is moved aside
-and rebuilt, never deleted.
+Every write goes to the CSV first (flushed to disk) and then to SQLite, so a database
+failure never costs an observation. The query layer records the size and mtime of each
+archive file as of the last write it holds, and moves that record forward only from where
+it was: once any write misses the query layer, the record stays behind (and the store says
+it is `stale`), so the gap can't be covered over by the next successful write. `open`
+compares the record with the archive and rebuilds the query layer from it when they differ
+(the database deleted, behind after a failed write or a crash between the two writes, or
+an archive file edited). A database from another schema version is recreated; one that
+won't open or read cleanly is moved aside, never deleted, and rebuilt. A write to a CSV
+that fails is taken back to where the file was, and a file that doesn't end in a newline
+(cut short some other way) is never appended to, so a torn line can't swallow the rows
+after it. Re-ingest skips what it can't read (counted, logged) rather than failing.
 
 Methods are synchronous and guarded by one lock: the observer (on the event loop) and the
 HTTP layer (from its threadpool) share a store. A write is a few rows and takes
@@ -40,10 +46,15 @@ import csv
 import json
 import logging
 import math
+import os
+import re
 import sqlite3
 import threading
+import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -55,6 +66,9 @@ DB_NAME = "light_map.db"
 ARCHIVE_DIR = "archive"
 
 LEVELS = ("debug", "info", "warning", "error")
+
+# SQLite's INTEGER range: a bigger whole number would pass a check and fail at the insert.
+_INT64 = (-(2**63), 2**63 - 1)
 
 
 @dataclass(frozen=True)
@@ -106,6 +120,7 @@ _STREAMS: dict[str, tuple[_Column, ...]] = {
         "brightness_before:int",
         "brightness_after:int",
         "changed:bool!",
+        "user_id:text",
     ),
     "almanac": _columns(
         "ts:ts!",
@@ -175,7 +190,19 @@ def timestamp(value: datetime | str | None = None) -> str:
     if moment.tzinfo is None or moment.utcoffset() is None:
         # A naive time would be filed under whatever zone the container happens to run in.
         raise ValueError(f"a timestamp needs a timezone: {value!r}")
-    return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
+    try:
+        return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
+    except OverflowError:
+        raise ValueError(f"out of range: {value!r}") from None
+
+
+@lru_cache(maxsize=1)
+def _schema() -> tuple[str, int]:
+    """The DDL and its version: a checksum of the text, so any change to the schema makes
+    an existing query layer recreate itself instead of carrying on with old tables
+    (`CREATE TABLE IF NOT EXISTS` would keep them). Read on first use, not at import."""
+    ddl = SCHEMA_PATH.read_text(encoding="utf-8")
+    return ddl, zlib.crc32(ddl.encode("utf-8")) & 0x7FFFFFFF or 1
 
 
 class Store:
@@ -200,6 +227,7 @@ class Store:
         # True once a write reached the archive but not the query layer; the next `open`
         # rebuilds.
         self.stale = False
+        self.stale_reason: str | None = None
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
@@ -225,42 +253,59 @@ class Store:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 raise StoreError(f"cannot create {self.archive_dir}: {exc.strerror}") from exc
+            self.stale, self.stale_reason = False, None
             try:
-                self._connect()
-                reason = self._out_of_step()
-            except sqlite3.DatabaseError as exc:
-                # Nothing in it is irreplaceable, but keep it for whoever wants to look.
-                self._close_db()
-                aside = self._move_aside()
-                log.error("the query layer would not open (%s); moved it to %s", exc, aside)
-                reason = f"the database would not open ({exc}); the old one is {aside.name}"
                 try:
-                    self._connect()
-                except sqlite3.DatabaseError as again:
+                    reason = self._connect() or self._out_of_step()
+                    if reason:
+                        self._rebuild(reason)
+                except sqlite3.DatabaseError as exc:
+                    # Nothing in it is irreplaceable, but keep it for whoever wants to look.
                     self._close_db()
-                    raise StoreError(f"cannot open {self.db_path}: {again}") from again
-            self.stale = False
-        if reason:
-            counts = self.rebuild_from_csv()
-            rows = sum(n for table, n in counts.items() if table in _STREAMS)
-            log.warning("rebuilt the query layer from the archive (%s): %d rows", reason, rows)
-            self.log_event(
-                "warning",
-                "store",
-                f"Rebuilt the query layer from the archive: {reason}.",
-                detail=counts,
-            )
+                    aside = self._move_aside()
+                    log.error("the query layer is broken (%s); moved it to %s", exc, aside)
+                    self._connect()
+                    self._rebuild(f"the database was broken ({exc}); the old one is {aside.name}")
+            except Exception as exc:
+                self._close_db()
+                if isinstance(exc, StoreError):
+                    raise
+                raise StoreError(f"cannot open the store in {self.data_dir}: {exc}") from exc
 
-    def _connect(self) -> None:
-        try:
-            db = sqlite3.connect(self.db_path, check_same_thread=False)
-        except sqlite3.Error as exc:
-            raise sqlite3.DatabaseError(str(exc)) from exc
-        self._db = db
+    def _rebuild(self, reason: str) -> None:
+        counts = self.rebuild_from_csv()
+        rows = sum(n for table, n in counts.items() if table in _STREAMS)
+        log.warning("rebuilt the query layer from the archive (%s): %d rows", reason, rows)
+        self.log_event(
+            "warning",
+            "store",
+            f"Rebuilt the query layer from the archive: {reason}.",
+            detail=counts,
+        )
+
+    def _connect(self) -> str | None:
+        """Connect, recreating a query layer of another schema version; return why it was
+        recreated, or None."""
+        ddl, version = _schema()
+        reason = None
+        # Held by the store from the first moment, so a failure anywhere below (a broken
+        # file fails its first read) still has it closed by whoever handles the failure.
+        db = self._db = sqlite3.connect(self.db_path, check_same_thread=False)
+        found = db.execute("PRAGMA user_version").fetchone()[0]
+        tables = db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
+        if found != version and tables:
+            # Derived data in an old shape: drop it and rebuild in the current one.
+            self._close_db()
+            for suffix in ("", "-wal", "-shm"):
+                self.db_path.with_name(DB_NAME + suffix).unlink(missing_ok=True)
+            db = self._db = sqlite3.connect(self.db_path, check_same_thread=False)
+            reason = "the query layer's schema changed"
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys = ON")
         db.execute("PRAGMA journal_mode = WAL")
-        db.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        db.executescript(ddl)
+        db.execute(f"PRAGMA user_version = {version}")
+        return reason
 
     def _move_aside(self) -> Path:
         stamp = self._now().astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -275,9 +320,10 @@ class Store:
         """Why the query layer doesn't hold exactly the archive, or None if it does."""
         assert self._db is not None
         recorded = {
-            row["path"]: row["size"] for row in self._db.execute("SELECT * FROM archive_file")
+            row["path"]: (row["size"], row["mtime_ns"])
+            for row in self._db.execute("SELECT * FROM archive_file")
         }
-        actual = {path: path_.stat().st_size for path, path_ in self._archive_files()}
+        actual = {path: _signature(path_) for path, path_ in self._archive_files()}
         if recorded == actual:
             return None
         if not recorded:
@@ -285,7 +331,7 @@ class Store:
         missing = sorted(set(recorded) - set(actual))
         if missing:
             return f"archive files are gone: {', '.join(missing[:3])}"
-        return "the archive holds rows the query layer doesn't"
+        return "the archive holds rows the query layer doesn't, or was edited"
 
     def close(self) -> None:
         """Flush and close the archive and the query layer."""
@@ -328,8 +374,8 @@ class Store:
         rows = [self._row("almanac", snapshot) for snapshot in snapshots]
         with self._lock:
             db = self._conn()
-            files = self._archive("almanac", rows)
-            self._commit(lambda: self._insert_rows(db, "almanac", rows), files)
+            writes = self._archive("almanac", rows)
+            self._commit(lambda: self._insert_rows(db, "almanac", rows), writes)
 
     def log_event(
         self,
@@ -353,8 +399,8 @@ class Store:
         )
         with self._lock:
             db = self._conn()
-            files = self._archive("event_log", [row])
-            return self._commit(lambda: self._insert(db, "event_log", row), files)
+            writes = self._archive("event_log", [row])
+            return self._commit(lambda: self._insert(db, "event_log", row), writes)
 
     def _append(
         self, table: str, row: dict[str, Any], child_table: str, children: list[dict[str, Any]]
@@ -369,7 +415,8 @@ class Store:
                 )
             # Children first: a write cut short between the two files leaves children with
             # no parent, which a rebuild skips, never a parent silently missing its rows.
-            files = self._archive(child_table, children) + self._archive(table, [row])
+            writes = self._archive(child_table, children)
+            writes += self._archive(table, [row])
             _, fk = _PARENTS[child_table]
 
             def insert() -> int:
@@ -377,24 +424,28 @@ class Store:
                 self._insert_rows(db, child_table, children, {fk: parent_id})
                 return parent_id
 
-            return self._commit(insert, files)
+            return self._commit(insert, writes)
 
-    def _commit(self, write: Callable[[], Any], files: Iterable[Path]) -> Any:
-        """Run `write` and record the archive files' new sizes, in one transaction. The rows
-        are already archived, so a failure here costs nothing but the query layer's
-        currency: it is logged, and the next `open` rebuilds."""
+    def _commit(self, write: Callable[[], Any], writes: Iterable[tuple[Path, int]]) -> Any:
+        """Run `write` and move the archive files' records forward, in one transaction. The
+        rows are already archived, so a failure here costs nothing but the query layer's
+        currency: the record stays behind, and the next `open` rebuilds."""
         db = self._conn()
         try:
             with db:
                 result = write()
-                self._record_files(db, files)
+                self._record_writes(db, writes)
             return result
-        except sqlite3.Error:
-            self.stale = True
-            log.exception(
-                "a query-layer write failed; the archive has the row, and the next start rebuilds"
-            )
+        except sqlite3.Error as exc:
+            log.exception("a query-layer write failed; the archive has the row")
+            self._fall_behind(f"a write to the query layer failed ({exc})")
             return None
+
+    def _fall_behind(self, why: str) -> None:
+        if not self.stale:
+            log.warning("the query layer is behind the archive (%s); the next start rebuilds", why)
+        self.stale = True
+        self.stale_reason = self.stale_reason or why
 
     def _children(
         self, table: str, parent: Mapping[str, Any], items: Sequence[Mapping[str, Any]]
@@ -448,8 +499,9 @@ class Store:
 
     # -- The archive -------------------------------------------------------------------
 
-    def _archive(self, table: str, rows: Sequence[Mapping[str, Any]]) -> list[Path]:
-        """Append rows to their CSV streams; return the files written."""
+    def _archive(self, table: str, rows: Sequence[Mapping[str, Any]]) -> list[tuple[Path, int]]:
+        """Append rows to their CSV streams, on disk before this returns; return each file
+        written with its size before the write."""
         by_month: dict[str, list[Mapping[str, Any]]] = {}
         for row in rows:
             by_month.setdefault(row["ts"][:7], []).append(row)
@@ -457,13 +509,27 @@ class Store:
         written = []
         for month, month_rows in by_month.items():
             path = self._file(table, month, header)
-            new = not path.exists() or path.stat().st_size == 0
-            with path.open("a", newline="", encoding="utf-8") as handle:
-                writer = csv.writer(handle)
-                if new:
-                    writer.writerow(header)
-                writer.writerows([[_to_csv(row[name]) for name in header] for row in month_rows])
-            written.append(path)
+            before = path.stat().st_size if path.exists() else 0
+            try:
+                with path.open("a", newline="", encoding="utf-8") as handle:
+                    writer = csv.writer(handle)
+                    if before == 0:
+                        writer.writerow(header)
+                    writer.writerows(
+                        [[_to_csv(row[name]) for name in header] for row in month_rows]
+                    )
+                    handle.flush()
+                    # On disk before SQLite commits: otherwise a power cut could leave the
+                    # query layer holding rows its source of truth lost.
+                    os.fsync(handle.fileno())
+            except BaseException:
+                # A write cut short (a full disk) leaves a partial line the next append would
+                # run into: take it back, and look for the file afresh next time.
+                self._files.pop((table, month), None)
+                with suppress(OSError):
+                    os.truncate(path, before)
+                raise
+            written.append((path, before))
         return written
 
     def _file(self, table: str, month: str, header: list[str]) -> Path:
@@ -475,14 +541,16 @@ class Store:
         n = 0
         while True:
             path = directory / (f"{month}.csv" if n == 0 else f"{month}.{n}.csv")
-            if not path.exists() or path.stat().st_size == 0:
+            if not path.exists() or path.stat().st_size == 0 or _appendable(path, header):
                 break
-            with path.open(newline="", encoding="utf-8") as handle:
-                if next(csv.reader(handle), None) == header:
-                    break
             n += 1
         if n:
-            log.warning("columns changed for %s %s; appending to %s", table, month, path.name)
+            log.warning(
+                "%s %s: the file has other columns, or ends in a torn line; appending to %s",
+                table,
+                month,
+                path.name,
+            )
         self._files[(table, month)] = path
         return path
 
@@ -495,13 +563,26 @@ class Store:
                 for path in sorted(directory.glob("*.csv"), key=_file_order):
                     yield f"{table}/{path.name}", path
 
-    def _record_files(self, db: sqlite3.Connection, files: Iterable[Path]) -> None:
+    def _record_writes(self, db: sqlite3.Connection, writes: Iterable[tuple[Path, int]]) -> None:
+        """Move each written file's record forward, but only from where this write began.
+        If the record is somewhere else, the file holds something the query layer never
+        took (a write that failed here, or a crash between the two): the record must stay
+        behind, or this write's new size would cover the gap and no start would rebuild."""
+        for path, before in writes:
+            name = path.relative_to(self.archive_dir).as_posix()
+            held = db.execute("SELECT size FROM archive_file WHERE path = ?", (name,)).fetchone()
+            if self.stale or (held["size"] if held else 0) != before:
+                self._fall_behind(f"{name} holds rows the query layer doesn't")
+                continue
+            db.execute(
+                "INSERT OR REPLACE INTO archive_file (path, size, mtime_ns) VALUES (?, ?, ?)",
+                (name, *_signature(path)),
+            )
+
+    def _record_all(self, db: sqlite3.Connection, files: Iterable[Path]) -> None:
         db.executemany(
-            "INSERT OR REPLACE INTO archive_file (path, size) VALUES (?, ?)",
-            [
-                (path.relative_to(self.archive_dir).as_posix(), path.stat().st_size)
-                for path in set(files)
-            ],
+            "INSERT OR REPLACE INTO archive_file (path, size, mtime_ns) VALUES (?, ?, ?)",
+            [(path.relative_to(self.archive_dir).as_posix(), *_signature(path)) for path in files],
         )
 
     # -- Re-ingest ---------------------------------------------------------------------
@@ -530,12 +611,12 @@ class Store:
                     for row in self._read(path, table, counts):
                         try:
                             self._ingest(db, table, row, keys, counts, cutoff)
-                        except sqlite3.IntegrityError as exc:
+                        except (sqlite3.IntegrityError, OverflowError) as exc:
                             counts["skipped"] += 1
                             log.warning("skipping a %s row from %s: %s", table, path, exc)
-                self._record_files(db, files)
+                self._record_all(db, files)
             self._files.clear()
-            self.stale = False
+            self.stale, self.stale_reason = False, None
             return counts
 
     def _ingest(
@@ -581,26 +662,66 @@ class Store:
 
     def _read(self, path: Path, table: str, counts: dict[str, int]) -> Iterator[dict[str, Any]]:
         """The rows of one archive file, decoded by the file's own header: a column it lacks
-        is empty, one the stream no longer has is ignored."""
+        is empty, one the stream no longer has is ignored.
+
+        Whatever it can't read is skipped and counted, never raised: one bad line (a hand
+        edit, a file re-saved by a spreadsheet) must not stop the rebuild, and with it the
+        app's start. A byte that isn't UTF-8 becomes U+FFFD; a BOM is dropped; a line the
+        CSV reader can't parse at all ends the file there. Every row the store writes ends
+        in a newline, so a last row without one was cut short (a crash mid-write) and is
+        dropped: the reader would take `12` torn from `128` as a whole value.
+        """
         columns = _STREAMS[table]
-        with path.open(newline="", encoding="utf-8") as handle:
+        torn = path.stat().st_size > 0 and not _ends_a_line(path)
+        held: tuple[int, dict[str, Any]] | None = None
+        with path.open(newline="", encoding="utf-8-sig", errors="replace") as handle:
             reader = csv.DictReader(handle)
-            for line, raw in enumerate(reader, start=2):
+            while True:
                 try:
-                    # Checked exactly as a write is, so a line edited by hand into something
-                    # the database would refuse is skipped here, not left to abort the
-                    # whole rebuild on a constraint.
-                    yield _check_row(
-                        table, {c.name: _from_csv(c, raw.get(c.name)) for c in columns}
-                    )
-                except ValueError as exc:
+                    raw = next(reader)
+                except StopIteration:
+                    break
+                except csv.Error as exc:
                     counts["skipped"] += 1
-                    log.warning("skipping %s line %d: %s", path, line, exc)
+                    log.warning("stopped reading %s at line %d: %s", path, reader.line_num, exc)
+                    held = None
+                    break
+                if held is not None:
+                    yield from self._decode(path, table, columns, *held, counts)
+                held = (reader.line_num, raw)
+        if held is not None:
+            if torn:
+                counts["skipped"] += 1
+                log.warning("skipping %s line %d: cut short", path, held[0])
+            else:
+                yield from self._decode(path, table, columns, *held, counts)
+
+    @staticmethod
+    def _decode(
+        path: Path,
+        table: str,
+        columns: tuple[_Column, ...],
+        line: int,
+        raw: Mapping[str, Any],
+        counts: dict[str, int],
+    ) -> Iterator[dict[str, Any]]:
+        try:
+            # Checked exactly as a write is, so a line edited by hand into something the
+            # database would refuse is skipped here, not left to abort the whole rebuild
+            # on a constraint.
+            yield _check_row(table, {c.name: _from_csv(c, raw.get(c.name)) for c in columns})
+        except ValueError as exc:
+            counts["skipped"] += 1
+            log.warning("skipping %s line %d: %s", path, line, exc)
 
     # -- Reading -----------------------------------------------------------------------
 
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
-        """Run a read-only query against the SQLite layer."""
+        """Run a read-only query (one SELECT, or WITH ... SELECT) against the SQLite layer."""
+        if not re.match(r"\s*(select|with)\b", sql, re.IGNORECASE):
+            # Not even a PRAGMA: query_only lets some through (foreign_keys, journal_mode),
+            # and they would stay set on the store's one connection.
+            raise ValueError("query runs SELECT statements only")
         with self._lock:
             db = self._conn()
             # query_only refuses any write in the statement, so a caller can't put state
@@ -609,6 +730,8 @@ class Store:
             try:
                 return [dict(row) for row in db.execute(sql, params).fetchall()]
             finally:
+                if db.in_transaction:
+                    db.rollback()  # a refused write leaves its implicit BEGIN open
                 db.execute("PRAGMA query_only = OFF")
 
     def events(
@@ -644,7 +767,10 @@ class Store:
             f"SELECT * FROM event_log {where} ORDER BY id DESC LIMIT ?", [*params, int(limit)]
         )
         for row in rows:
-            row["detail"] = json.loads(row["detail"]) if row["detail"] else None
+            try:
+                row["detail"] = json.loads(row["detail"]) if row["detail"] else None
+            except ValueError:
+                pass  # shown as the text it is; the store only writes JSON
         return rows
 
     def event_facets(self) -> dict[str, list[str]]:
@@ -673,6 +799,7 @@ class Store:
             "reactive_events": reactive["n"],
             "last_reactive_event": reactive["last"],
             "stale": self.stale,
+            "stale_reason": self.stale_reason,
         }
 
     # -- Retention ---------------------------------------------------------------------
@@ -691,7 +818,10 @@ class Store:
     def _retention_cutoff(self) -> str | None:
         if not self.retention_days:
             return None
-        return timestamp(self._now() - timedelta(days=self.retention_days))
+        try:
+            return timestamp(self._now() - timedelta(days=self.retention_days))
+        except (OverflowError, ValueError):
+            return None  # further back than dates go: keep everything
 
 
 # -- Values ----------------------------------------------------------------------------
@@ -746,20 +876,41 @@ def _normalise(column: _Column, value: Any) -> Any:
     if kind == "int":
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"must be a whole number, not {value!r}")
+        if not _INT64[0] <= value <= _INT64[1]:
+            raise ValueError(f"{value} is out of range")
         return _in_range(column.name, value)
     if kind == "real":
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-        ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"must be a number, not {value!r}")
-        return _in_range(column.name, float(value))
+        try:
+            number = float(value)
+        except OverflowError:
+            raise ValueError(f"{value} is out of range") from None
+        if not math.isfinite(number):
+            raise ValueError(f"must be a finite number, not {value!r}")
+        return _in_range(column.name, number)
     if kind == "json":
         if isinstance(value, str):
-            return value or None
-        return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+            try:
+                value = json.loads(value)
+            except ValueError:
+                raise ValueError("not JSON") from None
+        # Canonical, and strict JSON (no NaN), so whatever reads it back can parse it.
+        return json.dumps(
+            _finite(value), sort_keys=True, ensure_ascii=False, default=str, allow_nan=False
+        )
     raise AssertionError(kind)
+
+
+def _finite(value: Any) -> Any:
+    """`value` with every non-finite float (NaN, infinity) as None, all the way down."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(v) for v in value]
+    return value
 
 
 def _in_range(name: str, value: float) -> Any:
@@ -785,6 +936,30 @@ def _from_csv(column: _Column, text: str | None) -> Any:
     if column.kind == "real":
         return float(text)
     return text
+
+
+def _signature(path: Path) -> tuple[int, int]:
+    """What says an archive file changed: its size, and its mtime for an edit that keeps
+    the size."""
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
+
+
+def _ends_a_line(path: Path) -> bool:
+    with path.open("rb") as handle:
+        handle.seek(-1, os.SEEK_END)
+        return handle.read(1) == b"\n"
+
+
+def _appendable(path: Path, header: list[str]) -> bool:
+    """Whether new rows can follow a file's last: same columns, and its last line ended."""
+    if not _ends_a_line(path):
+        return False
+    with path.open(newline="", encoding="utf-8-sig", errors="replace") as handle:
+        try:
+            return next(csv.reader(handle), None) == header
+        except csv.Error:
+            return False
 
 
 def _file_order(path: Path) -> tuple[str, int]:

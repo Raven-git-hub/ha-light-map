@@ -196,6 +196,8 @@ class FakeHAServer:
         self.connections = 0
         self.token = TOKEN
         self.refuse_subscribe = False
+        # Connections still to close right after the greeting, as HA does while restarting.
+        self.close_after_greeting = 0
         self.event_behind_result = None
         # Open connections: websocket -> {subscription id: event type}.
         self.open: dict = {}
@@ -249,6 +251,10 @@ class FakeHAServer:
     async def handler(self, ws):
         self.connections += 1
         await ws.send(json.dumps({"type": "auth_required", "ha_version": "2026.10.0"}))
+        if self.close_after_greeting:
+            self.close_after_greeting -= 1
+            await ws.close()
+            return
         auth = json.loads(await ws.recv())
         if auth != {"type": "auth", "access_token": self.token}:
             await ws.send(json.dumps({"type": "auth_invalid", "message": "Invalid access token"}))
@@ -541,6 +547,37 @@ class SubscriptionTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.seen.next_state(), "connected")
         await self.fake.fire("state_changed", EVENT)
         self.assertEqual(await self.seen.next_event(), EVENT)
+
+    async def test_a_socket_closed_mid_handshake_is_retried(self):
+        # The ladder retries anything but a rejected token: one that died on a close it
+        # didn't expect would leave the stream dead while HA came back.
+        client = self.client()
+        await self.subscribed(client)
+        self.fake.close_after_greeting = 3
+        with self.assertLogs("app.core.ha", "WARNING") as logs:
+            await self.fake.hang_up()
+            self.assertEqual(await self.seen.next_state(), "disconnected")
+            self.assertEqual(await self.seen.next_state(), "connected")
+        self.assertIn("closed during authentication", "\n".join(logs.output))
+        self.assertEqual(self.fake.connections, 5)
+        await self.fake.fire("state_changed", EVENT)
+        self.assertEqual(await self.seen.next_event(), EVENT)
+
+    async def test_only_a_subscribed_connection_is_announced(self):
+        client = self.client()
+        client.add_connection_listener(self.seen.listener)
+        await client.list_areas()  # the Map's commands open the socket first
+        await self.fake.hang_up()
+        await asyncio.sleep(0.05)
+        self.assertTrue(self.seen.states.empty())  # nothing listened on it
+        await client.list_areas()
+        await client.subscribe_events("state_changed", self.seen.handler)
+        self.assertEqual(await self.seen.next_state(), "connected")  # on the open socket
+        self.assertEqual(self.fake.connections, 2)
+        await client.unsubscribe_events("state_changed", self.seen.handler)
+        await self.fake.hang_up()
+        await asyncio.sleep(0.05)
+        self.assertTrue(self.seen.states.empty())
 
     async def test_a_rejected_token_stops_the_ladder(self):
         client = self.client()

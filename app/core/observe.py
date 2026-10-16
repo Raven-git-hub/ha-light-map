@@ -2,9 +2,10 @@
 the event log. A platform service modules subscribe to. Readings are per bulb, long format.
 
 The observer watches the bulbs of every room that has any, and those rooms' lux and
-presence sensors, through one `state_changed` subscription (`HAClient.subscribe_events`,
-kept alive across drops by the client's reconnect ladder). It keeps a mirror of the states
-it watches, refreshed from HA's states at every (re)connect and every tick, and:
+presence sensors, through HA's `state_changed` events, and the starts of automation runs
+through `automation_triggered` (`HAClient.subscribe_events`, kept alive across drops by
+the client's reconnect ladder). It keeps a mirror of the states it watches, refreshed from
+HA's states at every (re)connect and every tick, and:
 
 - every `system.heartbeat_interval_minutes` (aligned to the clock), records per room one
   heartbeat (lux, occupancy, the section a module reports) plus one reading per bulb;
@@ -24,10 +25,12 @@ occupancy (an open decision in docs/ARCHITECTURE.md).
 Hard rules:
 
 - Reactive detection ignores the system's own changes. A brightness change counts as a user
-  intervention only when it carries no `context.parent_id` and no guard is raised.
-  Switch-driven and bridge-driven changes carry a `parent_id`, so toggling power is never
-  learned as a brightness preference. A manual dimmer change on the bulb has no `parent_id`
-  and is still learned.
+  intervention only when it carries no `context.parent_id`, wasn't made under an automation
+  run's own context, and no guard is raised. Switch-driven and bridge-driven changes carry
+  a `parent_id`, so toggling power is never learned as a brightness preference. An
+  automation fired by time or the sun carries none (HA starts it with a fresh context), so
+  the observer also watches `automation_triggered`, which HA fires under each run's
+  context. A manual dimmer change on the bulb has neither and is still learned.
 - Observation is per bulb, long format. Pooling into learning units happens at analysis
   time, never here, so learning units can be redrawn without losing history.
 - Modules consume observation by subscribing here; they never scrape HA themselves.
@@ -41,7 +44,8 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -63,20 +67,32 @@ SectionProvider = Callable[[str], str | None]
 # transitions run up to 30 s; a guard up for longer than this is more likely stuck.
 GUARD_WAIT_SECONDS = 90.0
 
+# How long, and how many, automation runs are remembered: a run's changes carry its context
+# for as long as it runs (a `delay` included), and a busy house starts thousands a day.
+RUN_MEMORY_SECONDS = 6 * 3600
+RUN_MEMORY_LIMIT = 20_000
+
 # (is_on, brightness): is_on is None when HA has no usable state for the bulb.
 Reading = tuple[bool | None, int | None]
 
 _LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING}
 
 
-def is_user_intervention(event: Mapping[str, Any], *, guarded: bool) -> bool:
-    """Return True only for a brightness change with no `context.parent_id` while no guard
-    is raised.
+def is_user_intervention(
+    event: Mapping[str, Any], *, guarded: bool, automation_runs: Collection[str] = ()
+) -> bool:
+    """Return True only for a brightness change with no `context.parent_id`, not made under
+    one of `automation_runs` (the context ids of automation runs), while no guard is raised.
 
     A brightness change is a light that was on and is still on, at a different brightness.
     A power change (off->on, on->off) is never one: through the switching plane it carries
     a `parent_id` (the bridge and the hard switches are automations), and out of band it is
     a power decision, not a brightness preference.
+
+    `parent_id` alone isn't enough: HA gives an automation fired by a state or an event the
+    trigger's context as its parent, but one fired by time, a time pattern or the sun runs
+    under a fresh context with no parent, so its `light.turn_on` looks exactly like a hand
+    on a dimmer. Its run's context id is what gives it away.
     """
     if guarded:
         return False
@@ -89,9 +105,11 @@ def is_user_intervention(event: Mapping[str, Any], *, guarded: bool) -> bool:
     before, after = _brightness(old), _brightness(new)
     if before is None or after is None or before == after:
         return False
-    # HA threads a parent_id through every change an automation or script causes, and the
-    # event carries the same context as its new state; either one marks it as ours.
-    return not (_parent_id(new) or _parent_id(event))
+    # A change an automation or script caused through a trigger carries a parent_id, and
+    # the event carries the same context as its new state; either one marks it.
+    if _parent_id(new) or _parent_id(event):
+        return False
+    return _context_id(new) not in automation_runs and _context_id(event) not in automation_runs
 
 
 @dataclass(frozen=True)
@@ -114,7 +132,11 @@ class _Window:
     lux_before: float | None
     entities: dict[str, str]  # bulb id -> entity id
     before: dict[str, Reading]
-    touched: set[str] = field(default_factory=set)
+    # Each bulb the user changed: where their last change left it, and who made it (an HA
+    # user id; None for a device). Not re-read at the close: by then the plane, or an
+    # automation, may have moved it, and that is not the user's choice.
+    after: dict[str, Reading] = field(default_factory=dict)
+    users: dict[str, str | None] = field(default_factory=dict)
     timer: asyncio.Task[None] | None = None
 
     @property
@@ -156,6 +178,7 @@ class Observer:
         self._watched: set[str] = set()
         self._states: dict[str, Mapping[str, Any]] = {}  # the mirror
         self._windows: dict[str, _Window] = {}
+        self._runs: OrderedDict[str, float] = OrderedDict()  # automation run context -> when
         self._guard_signal = asyncio.Event()
         self._refreshing: asyncio.Future[None] | None = None
         self._task: asyncio.Task[None] | None = None
@@ -217,21 +240,30 @@ class Observer:
 
     async def stop(self) -> None:
         """Stop observing and flush anything pending to the store."""
+        # No more events first: one let in while the windows flush would open a window
+        # that outlives the store.
         self._stopping = True
-        tasks = [t for t in (self._task, *self._background) if t is not None]
+        tasks = [t for t in (self._task, self._refreshing, *self._background) if t is not None]
         self._task = None
         for task in tasks:
             task.cancel()
+        if tasks:
+            await asyncio.wait(tasks)
         for task in tasks:
-            with suppress(asyncio.CancelledError):
-                await task
+            if not task.cancelled() and task.exception() is not None:
+                log.error("an observer task had failed: %r", task.exception())
         await self.flush(everything=True)
         if self._subscribed:
             self._subscribed = False
-            with suppress(HAError):
-                await self.ha.unsubscribe_events("state_changed", self._on_event)
+            for event_type, handler in self._subscriptions():
+                # Best effort, and brief: the client is about to close anyway.
+                with suppress(Exception):
+                    await asyncio.wait_for(self.ha.unsubscribe_events(event_type, handler), 2)
         self.ha.remove_connection_listener(self._on_connection)
         self.connected = False
+
+    def _subscriptions(self) -> list[tuple[str, Callable[[dict[str, Any]], Awaitable[None]]]]:
+        return [("automation_triggered", self._on_automation), ("state_changed", self._on_event)]
 
     def reload(self) -> bool:
         """Re-read the config now; False if it didn't load (the last good one stays)."""
@@ -319,8 +351,10 @@ class Observer:
             return
         self._subscribed = True  # registered for good: HA's client retries from here on
         try:
-            await self.ha.subscribe_events("state_changed", self._on_event)
-        except HAError as exc:
+            # Automation runs first, so a run is always known before the changes it makes.
+            for event_type, handler in self._subscriptions():
+                await self.ha.subscribe_events(event_type, handler)
+        except Exception as exc:  # noqa: BLE001 - whatever it was, the ladder retries
             # The ladder keeps trying, and says so when it gets through; a rejected token is
             # reported by the ladder's own "auth_failed".
             self._log(
@@ -379,24 +413,44 @@ class Observer:
                 "Fix LM_HA_TOKEN (or LM_HA_TOKEN_FILE) and restart Light Map.",
             )
 
+    async def _on_automation(self, event: dict[str, Any]) -> None:
+        """An automation started: remember its run's context, under which its actions run."""
+        context = _context_id(event)
+        if not context or self._stopping:
+            return
+        now = time.monotonic()
+        self._runs[context] = now
+        self._runs.move_to_end(context)
+        while self._runs and (
+            len(self._runs) > RUN_MEMORY_LIMIT
+            or now - next(iter(self._runs.values())) > RUN_MEMORY_SECONDS
+        ):
+            self._runs.popitem(last=False)
+
     async def _on_event(self, event: dict[str, Any]) -> None:
         """One `state_changed` from HA, in order."""
         data = event.get("data") or {}
         entity = data.get("entity_id")
-        if entity not in self._watched:
+        if entity not in self._watched or self._stopping:
             return
         self.events_seen += 1
         self.last_event_at = timestamp(self._now())
-        before = _reading(data.get("old_state"))
-        self._remember(entity, data.get("new_state"))
+        new = data.get("new_state")
+        self._remember(entity, new)
         if entity in self._guard_entities:
             self._signal_guards()
         where = self._bulbs.get(entity)
         if where is None:
             return
         room_id, bulb_id = where
-        if is_user_intervention(event, guarded=self.guarded(room_id)):
-            self._note_intervention(room_id, bulb_id, before)
+        if is_user_intervention(
+            event, guarded=self.guarded(room_id), automation_runs=self._runs
+        ):
+            context = new.get("context") if isinstance(new, Mapping) else None
+            user = context.get("user_id") if isinstance(context, Mapping) else None
+            self._note_intervention(
+                room_id, bulb_id, _reading(data.get("old_state")), _reading(new), user
+            )
 
     def _remember(self, entity: str, state: Any) -> None:
         """Keep `state` as the entity's in the mirror, unless the mirror holds a newer one.
@@ -557,7 +611,9 @@ class Observer:
 
     # -- Reactive detection ------------------------------------------------------------
 
-    def _note_intervention(self, room_id: str, bulb_id: str, before: Reading) -> None:
+    def _note_intervention(
+        self, room_id: str, bulb_id: str, before: Reading, after: Reading, user: str | None
+    ) -> None:
         window = self._windows.get(room_id)
         if window is None:
             room = self._rooms[room_id]
@@ -571,10 +627,11 @@ class Observer:
             )
             self._windows[room_id] = window
             window.timer = asyncio.create_task(self._close_later(room_id, window))
-        if bulb_id not in window.touched:
+        if bulb_id not in window.after:
             # Where the user started from on this bulb: the change's own old state.
-            window.touched.add(bulb_id)
             window.before[bulb_id] = before
+        window.after[bulb_id] = after
+        window.users[bulb_id] = user
 
     async def _close_later(self, room_id: str, window: _Window) -> None:
         await asyncio.sleep(window.seconds)
@@ -599,7 +656,9 @@ class Observer:
         changes = []
         for bulb_id in sorted(entities):
             start = window.before.get(bulb_id, (None, None))
-            end = self._reading(entities[bulb_id])
+            touched = bulb_id in window.after
+            # A bulb the user didn't touch is recorded as the close finds it, for context.
+            end = window.after[bulb_id] if touched else self._reading(entities[bulb_id])
             changes.append(
                 {
                     "bulb_id": bulb_id,
@@ -607,7 +666,8 @@ class Observer:
                     "is_on_after": end[0],
                     "brightness_before": start[1],
                     "brightness_after": end[1],
-                    "changed": bulb_id in window.touched and _moved(start, end, min_delta),
+                    "changed": touched and _moved(start, end, min_delta),
+                    "user_id": window.users.get(bulb_id),
                 }
             )
         changed = [c["bulb_id"] for c in changes if c["changed"]]
@@ -784,6 +844,11 @@ def _brightness(state: Mapping[str, Any]) -> int | None:
 def _parent_id(item: Mapping[str, Any]) -> Any:
     context = item.get("context")
     return context.get("parent_id") if isinstance(context, Mapping) else None
+
+
+def _context_id(item: Mapping[str, Any]) -> Any:
+    context = item.get("context")
+    return context.get("id") if isinstance(context, Mapping) else None
 
 
 def _updated(state: Mapping[str, Any]) -> datetime:

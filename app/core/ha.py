@@ -208,10 +208,8 @@ class HAClient:
         every registered event type not yet subscribed on this connection. A no-op when
         connected and subscribed."""
         async with self._connect_lock:
-            opened = False
             if not self.connected:
                 await self._open()
-                opened = True
             try:
                 await self._subscribe_registered()
             except HAError:
@@ -220,9 +218,11 @@ class HAClient:
                 # "connected". Close it, so the next attempt subscribes everything afresh.
                 await self._close_socket()
                 raise
-            if opened:
-                # Announced only once subscribed, and inside the lock, so a drop is never
-                # reported for a connection that was never announced, nor slips in between.
+            if self._handlers and not self._announced:
+                # Announced once subscribed (including on a connection the Map's commands
+                # had already opened), and inside the lock, so a drop is never reported for
+                # a connection that was never announced, nor slips in between. A connection
+                # that only carries commands is never announced: nothing listens on it.
                 self._announced = True
                 self._notify("connected", self.ha_version)
 
@@ -244,6 +244,15 @@ class HAClient:
             raise HAError(f"cannot open the WebSocket at {self._ws_url}: {exc}") from exc
         try:
             await self._authenticate(ws)
+        except HAError:
+            await ws.close()
+            raise
+        except (OSError, WebSocketException) as exc:
+            # HA closing or resetting the socket mid-handshake (it does while restarting)
+            # must reach the caller as HAError: anything else would kill the reconnect
+            # ladder, which retries only what it recognises.
+            await ws.close()
+            raise HAError(f"the WebSocket closed during authentication: {exc}") from exc
         except BaseException:
             await ws.close()
             raise
@@ -367,9 +376,7 @@ class HAClient:
             self._listeners.clear()
             for task in (self._ladder, self._dispatcher):
                 if task is not None and task is not asyncio.current_task():
-                    task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await task
+                    await _reap(task)
             self._ladder = self._dispatcher = None
             self._queue = None
             await self._close_socket()
@@ -387,9 +394,7 @@ class HAClient:
         if ws is not None:
             await ws.close()
         if reader is not None:
-            reader.cancel()
-            with suppress(asyncio.CancelledError):
-                await reader
+            await _reap(reader)
 
     async def command(self, message: dict[str, Any], *, timeout: float | None = None) -> Any:
         """Send a WebSocket command and wait for its result.
@@ -467,9 +472,9 @@ class HAClient:
                     await self._send({"type": "unsubscribe_events", "subscription": subscription})
         if not self._handlers and self._ladder is not None:
             ladder, self._ladder = self._ladder, None
-            ladder.cancel()
-            with suppress(asyncio.CancelledError):
-                await ladder
+            await _reap(ladder)
+            # Nothing listens any more: a later drop is nobody's news.
+            self._announced = False
 
     def add_connection_listener(self, listener: ConnectionListener) -> None:
         """Tell `listener` when the subscribed connection opens ("connected"), drops
@@ -505,7 +510,9 @@ class HAClient:
                 log.error("Home Assistant rejected the token; not reconnecting: %s", exc)
                 self._notify("auth_failed", str(exc))
                 return
-            except HAError as exc:
+            except Exception as exc:  # noqa: BLE001 - the ladder must outlive any one failure
+                # Anything but a rejected token is retried: a ladder that died on an error it
+                # didn't expect would leave the stream dead while everything looks connected.
                 attempt += 1
                 log.warning(
                     "cannot reach Home Assistant (%s); retrying in %ss",
@@ -514,7 +521,7 @@ class HAClient:
                 )
 
     def _notify(self, state: str, detail: str | None) -> None:
-        if self._listeners:
+        if self._listeners and self._handlers:
             self._enqueue(("connection", state, detail))
 
     def _enqueue(self, item: tuple[str, str, Any]) -> None:
@@ -748,6 +755,15 @@ class HAClient:
             return False
         await self.request("DELETE", _automation_path(automation_id))
         return True
+
+
+async def _reap(task: asyncio.Task[Any]) -> None:
+    """Cancel a task of this client's and wait for it to end, without re-raising what it
+    died of (logged instead) or swallowing a cancellation of the caller itself."""
+    task.cancel()
+    await asyncio.wait([task])
+    if not task.cancelled() and task.exception() is not None:
+        log.error("a WebSocket task had failed: %r", task.exception())
 
 
 def _error_message(response: httpx.Response) -> str:

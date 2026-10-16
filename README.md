@@ -60,7 +60,10 @@ volume in the container), or `system.data_dir` if the config sets one.
 Light Map answers only requests addressed to `localhost` or `127.0.0.1` unless you list the
 names you reach it by in `LM_ALLOWED_HOSTS` (comma-separated, e.g.
 `LM_ALLOWED_HOSTS=lightmap.lan,192.168.1.20`); anything else gets a 400. That stops a
-DNS-rebinding web page from driving the API through your browser.
+DNS-rebinding web page from driving the API through your browser. Behind a reverse proxy,
+list the name the proxy sends upstream (often the container's name, e.g. `light-map`),
+unless it passes the original Host on. IPv6 literals can't be listed: browse by name or
+IPv4 address.
 
 The API has no authentication of its own and can write to Home Assistant with your token:
 expose port 8099 only to a trusted network (see "Open decisions" in

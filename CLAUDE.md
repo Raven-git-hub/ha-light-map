@@ -41,9 +41,11 @@ hard-won, so preserve them.
 - **Scene automations carry `conditions: []`.** They are fired via `automation.trigger`
   (default `skip_condition: true`); a condition placed there would be silently ignored.
 - **Reactive detection ignores the system's own changes.** A brightness change counts as a
-  user intervention only when it carries no `context.parent_id` and no guard is raised.
-  Switch-driven and bridge-driven changes carry a `parent_id`, so toggling power is never
-  learned as a brightness preference.
+  user intervention only when it carries no `context.parent_id`, wasn't made under an
+  automation run's own context, and no guard is raised. Switch-driven and bridge-driven
+  changes carry a `parent_id`, so toggling power is never learned as a brightness
+  preference. An automation fired by time or the sun carries no `parent_id` (HA starts it
+  with a fresh context), which is why the observer also watches `automation_triggered`.
 - **Observation is per bulb, long format**, pooled per learning unit at analysis time, so
   learning units can be redrawn without losing history.
 - **HA Areas are the source of truth for room membership.** The config holds a committed

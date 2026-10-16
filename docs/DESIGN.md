@@ -564,7 +564,8 @@ reading per bulb (long format) from a fresh read of HA's states:
   `lux` is 0, the floor, which the analyser keeps out of lux targets (P5). Null when no
   sensor is configured or available; `lux_sensors` counts the sensors the value came from.
 - `occupancy` is 1 if any presence sensor is on, 0 if none is, and null when none is
-  configured or available. Recorded, not interpreted: what a room with no sensor means for
+  configured or available. Presence sensors are read as binary sensors (`on` is
+  occupied); a `person` or `device_tracker` reports `home`, which reads as not occupied. Recorded, not interpreted: what a room with no sensor means for
   learning (the predecessor treated it as always occupied) is the analyser's call.
 - `section` is whatever the module with sections reports for the room (adaptive's
   scheduler, P5), null until then. It is recorded at observation time, never inferred later
@@ -579,29 +580,44 @@ Rooms without bulbs aren't observed. A room's lux and presence sensors are read 
 `docs/ARCHITECTURE.md`).
 
 **Reactive detection.** A user intervention is a brightness change: a bulb that was on and
-is still on, at a different brightness, carrying no `context.parent_id`, while no guard on
-its room is raised (`is_user_intervention`). HA threads a `parent_id` through every change
-an automation or script causes, so everything the plane does is excluded (a hard switch,
-the bridge and the brightness it applies on soft-on, and later a module's crossover or
-maintenance), while a dimmer at the wall or a slider in HA's UI has none and counts. A power
-change is never a brightness preference: through the plane it carries a `parent_id`, and
-out of band it is a power decision (see "Out-of-band power changes").
+is still on, at a different brightness, carrying no `context.parent_id`, not made under an
+automation run's own context, while no guard on its room is raised
+(`is_user_intervention`). An automation fired by a state change or an event gets the
+trigger's context as its parent, so everything the plane does carries a `parent_id` (a
+hard switch, the bridge and the brightness it applies on soft-on), as does an automation
+fired with `automation.trigger`. An automation fired by time, a time pattern or the sun
+doesn't: HA starts it with a fresh context, so its `light.turn_on` looks exactly like a
+hand on a dimmer. HA does fire `automation_triggered` under that run's context, so the
+observer subscribes to it too and remembers each run's context id (for six hours, the
+newest 20,000), and a change made under one is never counted. A dimmer at the wall or a
+slider in HA's UI has neither and counts. A power change is never a brightness preference:
+through the plane it carries a `parent_id`, and out of band it is a power decision (see
+"Out-of-band power changes").
 
-The guard is there for a gap in `parent_id`: HA keeps a service call's context on an
+The guard is there for a gap no context closes: HA keeps a service call's context on an
 entity's state writes for only five seconds. A transition longer than that reports its
-later steps under a fresh context with no `parent_id`, so a module driving a long
-transition must raise its guard for the whole of it, or its own ramp is learned as the
-user's.
+later steps under a fresh context with neither mark, so a module driving a long transition
+must raise its guard for the whole of it, or its own ramp is learned as the user's. Until
+cutover the live `ha-adaptive-light` drives the same bulbs, raising only its own guards,
+which Light Map doesn't watch: the late steps of its maintenance transitions can be
+recorded as manual changes. Two other cases look like a dimmer and can't be told apart
+from one: a bulb power-cycled at a plain wall switch that comes back at its power-on
+brightness without HA ever marking it unavailable, and another system driving lights
+through HA's API under its own HA user (recorded, so the analyser can set it aside).
 
 Interventions are consolidated per room. The first opens a window of
-`system.reactive_window_seconds`; when it closes, one reactive event records the room as
-the user left it: every bulb before (its state when the window opened, or just before the
-user's first change to it) and after, the lux before and after, and occupancy. A bulb is
-`changed` when the user touched it and it ended more than `system.reactive_min_delta` from
-where it started (or in a different power state); a window where none did is dropped as
-rounding noise or transition echo. Someone adjusting three bulbs over a few seconds is one
-intervention, not a dozen. Occupancy is recorded but never filters a reactive event: a hand
-on a dimmer is proof of presence. Stopping the observer closes any open window first.
+`system.reactive_window_seconds`; when it closes, one reactive event records the room:
+every bulb before (its state when the window opened, or just before the user's first
+change to it) and after, the lux before and after, and occupancy. For a bulb the user
+changed, after is where their last change left it, with the HA user who made it (none for
+a device); it is not re-read at the close, because by then the plane or an automation may
+have moved the bulb, and that is not the user's choice. The other bulbs are recorded as the
+close finds them, for context. A bulb is `changed` when the user touched it and it ended
+more than `system.reactive_min_delta` from where it started; a window where none did is
+dropped as rounding noise or transition echo. Someone adjusting three bulbs over a few
+seconds is one intervention, not a dozen. Occupancy is recorded but never filters a
+reactive event: a hand on a dimmer is proof of presence. Stopping the observer stops taking
+events, then closes any open window.
 
 **Fan-out.** Each heartbeat and reactive event is written to the store first, then handed to
 every handler registered with `subscribe` (`{"kind": "heartbeat" | "reactive", ...}`). A
@@ -614,17 +630,30 @@ the Map (sync, deploy, Area writes, moves, room and config edits). Entries are a
 CSV like any observation; `system.event_log_retention_days` prunes the query layer, and the
 archive keeps everything.
 
-**Storage.** `core.store` writes each row to its CSV stream first, then to SQLite: a
-database failure never costs an observation, and the query layer can always be rebuilt from
-the archive (`rebuild_from_csv`). Each stream mirrors its table column for column, minus
-the surrogate ids: a reading names its heartbeat by (`room_id`, `ts`), so the archive reads
-back on its own. A heartbeat's readings are written before the heartbeat, so a write cut
-short leaves readings with no heartbeat, which a rebuild skips, never a heartbeat silently
-missing its readings. The query layer records the size of each archive file it holds; at
-startup a mismatch (a deleted or broken database, or one left behind by a failed write)
-triggers a rebuild, and a broken database is moved aside, never deleted. A file whose
-header doesn't match the current columns is never appended to (writing moves on to a
-numbered successor), and re-ingest reads each file by its own header.
+**Storage.** `core.store` writes each row to its CSV stream first, flushed to disk, then to
+SQLite: a database failure never costs an observation, and the query layer can always be
+rebuilt from the archive (`rebuild_from_csv`). Each stream mirrors its table column for
+column, minus the surrogate ids: a reading names its heartbeat by (`room_id`, `ts`), so the
+archive reads back on its own. A heartbeat's readings are written before the heartbeat, so
+a write cut short leaves readings with no heartbeat, which a rebuild skips, never a
+heartbeat silently missing its readings.
+
+The query layer records each archive file's size and mtime as of the last write it holds
+all of, and moves that record forward only from where it was. Once a write reaches the
+archive but not the database, the record stays behind for good (the store reports itself
+`stale`), so the next successful write can't cover the gap, and the next start rebuilds.
+At startup any mismatch (a deleted database, one left behind, an archive file edited)
+triggers a rebuild; a database from another schema version (a checksum of the DDL) is
+recreated; one that won't open or read cleanly is moved aside, never deleted, and rebuilt.
+
+The archive is guarded against torn writes. A write that fails is truncated back to where
+the file was; a file that doesn't end in a newline (cut short some other way) is never
+appended to, writing moving on to a numbered successor, as it does for a file whose header
+doesn't match the current columns; and re-ingest drops a last line without its newline,
+since the CSV reader would take `12` torn from `128` as a whole value. Re-ingest reads each
+file by its own header and skips what it can't read (a byte that isn't UTF-8, a value out
+of range, a line a spreadsheet mangled), counting and logging it, so a damaged archive
+never stops a start: with no store at all, the Map still serves.
 
 ---
 

@@ -4,6 +4,7 @@ exactly), validate-then-write, the recoveries (a failed database write, a delete
 database, a write cut short), re-ingest of older or hand-edited files, and the event log."""
 
 import csv
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -241,9 +242,16 @@ class WriteTest(StoreCase):
         for sql in (
             "DELETE FROM bulb_reading",
             "INSERT INTO event_log VALUES (9, '', '', '', '', '', '')",
+            "PRAGMA foreign_keys = OFF",  # query_only would let this one through
         ):
-            with self.subTest(sql), self.assertRaises(sqlite3.OperationalError):
+            with self.subTest(sql), self.assertRaises(ValueError):
                 self.store.query(sql)
+        # A statement that starts like a read but writes is refused by SQLite itself, and
+        # leaves no transaction open behind it.
+        with self.assertRaises(sqlite3.OperationalError):
+            self.store.query("WITH x AS (SELECT 1) DELETE FROM bulb_reading")
+        self.assertFalse(self.store._db.in_transaction)
+        self.assertEqual(self.store.query("SELECT 1 AS one"), [{"one": 1}])
         self.assertEqual(len(self.store.query("SELECT * FROM bulb_reading")), 3)
         self.store.log_event("info", "observer", "still writable")  # the store's own writes
 
@@ -370,7 +378,7 @@ class RebuildTest(StoreCase):
             store = self.reopen()
         with self.assertLogs("app.core.store", "WARNING") as logs:
             store.append_heartbeat(HEARTBEAT, [])
-        self.assertIn("columns changed", logs.output[0])
+        self.assertIn("the file has other columns", logs.output[0])
         self.assertEqual(old.read_text().count("\n"), 2)  # untouched
         self.assertTrue((old.parent / "2026-10.1.csv").exists())
         store.rebuild_from_csv()
@@ -440,6 +448,142 @@ class EventLogTest(StoreCase):
         # A rebuild leaves out what retention would have pruned.
         self.store.rebuild_from_csv()
         self.assertEqual(self.messages(), ["token rejected", "skipped"])
+
+
+class RecoveryTest(StoreCase):
+    """What the independent review found: gaps the next write could hide, archive damage
+    that must not stop a start, and the query layer's own breakage."""
+
+    def heartbeat(self, minute, room="living_room"):
+        return {"ts": f"2026-10-16T12:{minute:02d}:00+00:00", "room_id": room}
+
+    def test_a_failed_write_is_not_covered_by_the_next_one(self):
+        self.store.append_heartbeat(self.heartbeat(0), READINGS)
+        with (
+            mock.patch.object(Store, "_insert", side_effect=sqlite3.OperationalError("disk I/O")),
+            self.assertLogs("app.core.store", "WARNING"),
+        ):
+            self.store.append_heartbeat(self.heartbeat(10), READINGS)
+        # The next write to the same files succeeds; the record must not jump the gap.
+        self.store.append_heartbeat(self.heartbeat(20), READINGS)
+        self.assertTrue(self.store.stale)
+        self.assertIn("a write to the query layer failed", self.store.summary()["stale_reason"])
+        with self.assertLogs("app.core.store", "WARNING"):
+            store = self.reopen()
+        self.assertEqual(len(store.query("SELECT * FROM heartbeat")), 3)
+        self.assertEqual(len(store.query("SELECT * FROM bulb_reading")), 9)
+
+    def test_a_failed_csv_write_is_taken_back(self):
+        self.store.log_event("info", "observer", "first")
+        path = self.data / "archive" / "event_log" / "2026-10.csv"
+        size = path.stat().st_size
+        with mock.patch("app.core.store.os.fsync", side_effect=OSError(28, "No space left")):
+            with self.assertRaises(OSError):
+                self.store.log_event("info", "observer", "second, " * 50)
+        self.assertEqual(path.stat().st_size, size)
+        self.store.log_event("info", "observer", "third")
+        self.assertEqual([r["message"] for r in self.archive("event_log")], ["first", "third"])
+        self.assertFalse(self.store.stale)
+
+    def test_a_torn_last_line_is_never_appended_to(self):
+        self.store.log_event("info", "observer", "first")
+        path = self.data / "archive" / "event_log" / "2026-10.csv"
+        with path.open("a") as handle:  # a crash mid-line, inside a quoted field
+            handle.write('2026-10-16T12:00:01.000000+00:00,info,observer,,"cut, off')
+        reading = self.data / "archive" / "bulb_reading" / "2026-10.csv"
+        self.store.append_heartbeat(HEARTBEAT, READINGS)
+        with reading.open("a") as handle:  # and one torn inside a number: 128 -> 12
+            handle.write("2026-10-16T12:00:00.000000+00:00,living_room,reading_lamp,1,12")
+        with self.assertLogs("app.core.store", "WARNING"):
+            store = self.reopen()
+            store.log_event("info", "observer", "after")
+        self.assertTrue((path.parent / "2026-10.1.csv").exists())
+        with self.assertLogs("app.core.store", "WARNING"):
+            store.rebuild_from_csv()
+        messages = [r["message"] for r in store.query("SELECT message FROM event_log ORDER BY id")]
+        self.assertEqual(messages[0], "first")
+        self.assertIn("after", messages)
+        self.assertNotIn("cut, off", " ".join(messages))
+        bulbs = [r["bulb_id"] for r in store.query("SELECT bulb_id FROM bulb_reading")]
+        self.assertNotIn("reading_lamp", bulbs)
+
+    def test_archive_damage_never_stops_a_start(self):
+        self.fill()
+        directory = self.data / "archive" / "heartbeat"
+        (directory / "2026-09.csv").write_bytes(
+            b"ts,room_id,lux_sensors\n"
+            b"2026-09-30T12:00:00+00:00,caf\xe9,1\n"  # cp1252, not UTF-8: kept, decoded
+            b"2026-09-30T12:01:00+00:00,a,99999999999999999999999999\n"  # past 64 bits
+            b"0001-01-01T00:00:00+01:00,a,1\n"  # before the first UTC instant
+        )
+        (directory / "2026-08.csv").write_text('ts,room_id\n"2026-08-01T00:00:00+00:00,a\n')
+        self.store.close()
+        (self.data / "light_map.db").unlink()
+        with self.assertLogs("app.core.store", "WARNING"):
+            store = self.reopen()
+        rooms = [r["room_id"] for r in store.query("SELECT room_id FROM heartbeat ORDER BY ts")]
+        self.assertEqual(rooms, ["caf\ufffd", "living_room", "kitchen"])
+
+    def test_a_spreadsheet_bom_is_read(self):
+        directory = self.data / "archive" / "heartbeat"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "2026-09.csv").write_text(
+            "\ufeffts,room_id,lux\n2026-09-30T12:00:00+00:00,living_room,5.0\n", "utf-8"
+        )
+        with self.assertLogs("app.core.store", "WARNING"):
+            store = self.reopen()
+        self.assertEqual(store.query("SELECT lux FROM heartbeat"), [{"lux": 5.0}])
+
+    def test_an_edit_that_keeps_the_size_is_noticed(self):
+        self.store.append_heartbeat({"ts": "2026-10-16T12:00:00+00:00", "room_id": "bedroom_1"}, [])
+        self.store.close()
+        path = self.data / "archive" / "heartbeat" / "2026-10.csv"
+        stat = path.stat()
+        path.write_text(path.read_text().replace("bedroom_1", "bedroom_2"))
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        with self.assertLogs("app.core.store", "WARNING"):
+            store = self.reopen()
+        self.assertEqual(store.query("SELECT room_id FROM heartbeat"), [{"room_id": "bedroom_2"}])
+
+    def test_another_schema_version_is_recreated(self):
+        self.fill()
+        self.store._db.execute("PRAGMA user_version = 7")
+        self.store._db.execute("ALTER TABLE almanac RENAME COLUMN mode TO old_mode")
+        with self.assertLogs("app.core.store", "WARNING") as logs:
+            store = self.reopen()
+        self.assertIn("schema changed", logs.output[0])
+        self.assertEqual(len(store.query("SELECT mode FROM almanac")), 1)
+
+    def test_a_rebuild_that_fails_leaves_the_store_closed(self):
+        self.fill()
+        self.store.close()
+        (self.data / "light_map.db").unlink()
+        with mock.patch.object(Store, "rebuild_from_csv", side_effect=RuntimeError("boom")):
+            store = Store(self.data, now=lambda: self.now)
+            with self.assertRaises(StoreError):
+                store.open()
+        self.assertFalse(store.is_open)
+
+    def test_detail_is_strict_json(self):
+        self.store.log_event("info", "observer", "nan", detail={"lux": float("nan"), "x": [1.5]})
+        self.assertEqual(self.store.events()[0]["detail"], {"lux": None, "x": [1.5]})
+        with self.assertRaises(ValueError):
+            self.store.log_event("info", "observer", "text", detail="{oops}")
+        path = self.data / "archive" / "event_log" / "2026-10.csv"
+        with path.open("a", newline="") as handle:
+            csv.writer(handle).writerow(
+                ["2026-10-16T13:00:00+00:00", "info", "x", "", "m", "{oops}"]
+            )
+        with self.assertLogs("app.core.store", "WARNING"):
+            counts = self.store.rebuild_from_csv()
+        self.assertEqual(counts["skipped"], 1)
+
+    def test_a_retention_past_the_calendar_keeps_everything(self):
+        self.store.log_event("info", "observer", "kept")
+        self.store.retention_days = 10**7
+        self.assertEqual(self.store.prune_event_log(), 0)
+        self.store.rebuild_from_csv()
+        self.assertEqual(len(self.store.events()), 1)
 
 
 class TimestampTest(unittest.TestCase):

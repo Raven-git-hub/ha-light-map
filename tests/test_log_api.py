@@ -180,7 +180,13 @@ class LogFilterTest(AppCase):
         self.assertEqual(first["levels"], ["debug", "info", "warning", "error"])
 
     def test_bad_requests(self):
-        for params in ({"level": "fatal"}, {"limit": 0}, {"limit": 5000}, {"before": "x"}):
+        for params in (
+            {"level": "fatal"},
+            {"limit": 0},
+            {"limit": 5000},
+            {"before": "x"},
+            {"before": 10**23},  # past SQLite's integers
+        ):
             with self.subTest(params):
                 response = self.client.get("/api/log", params=params)
                 self.assertEqual(response.status_code, 422, response.text)
@@ -195,6 +201,21 @@ class LogFilterTest(AppCase):
 
 
 class NoStoreTest(unittest.TestCase):
+    def test_a_damaged_archive_never_keeps_the_map_from_starting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config.save(path, committed_config())
+            torn = Path(directory) / "archive" / "event_log" / "2026-10.csv"
+            torn.parent.mkdir(parents=True)
+            torn.write_bytes(b"ts,level,category,room_id,message,detail\n\xff\xfe\x00junk\n")
+            app = create_app(ha=FakeHA(), config_path=path)
+            with (
+                self.assertLogs("app.core.store", "WARNING"),
+                TestClient(app, base_url="http://localhost") as client,
+            ):
+                self.assertEqual(client.get("/api/map").status_code, 200)
+                self.assertEqual(client.get("/api/log").status_code, 200)
+
     def test_a_data_dir_that_cannot_be_opened_leaves_the_map_working(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
