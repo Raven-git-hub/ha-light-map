@@ -86,11 +86,16 @@ Presence Rules can be added without touching the trunk:
   entity), `lm_bridge_<bulb_id>`, `lm_hard_<hard_switch_id>` for the switching plane; the
   adaptive module keeps `al_scene_`, `al_maint_`, `al_active_`, `al_hold_`,
   `sensor.al_almanac_`, `al_watchdog_`.
-- Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`, and `LM_CONFIG_PATH`
-  (where the committed config lives; default `/data/config.json`).
+- Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`, `LM_CONFIG_PATH`
+  (where the committed config lives; default `/data/config.json`), and `LM_ALLOWED_HOSTS`
+  (the Host names the API answers besides `localhost` and `127.0.0.1`).
 - HTTP: everything under `/api/` in `app/main.py` (see "HTTP surface" in
   `docs/ARCHITECTURE.md`). An action that writes HA, or commits HA's state to the config,
   is a preview that returns a `fingerprint` and an apply that must carry it; keep it so.
+  Every request passes the Host allowlist first; tests address the app as `localhost`.
+- Observation: handlers run off the WebSocket read loop (a queue), so one may send HA a
+  command; a module observes only through `core.observe.Observer` (`subscribe`,
+  `register_guard`, `register_section`), never its own subscription.
 
 ## Stubs
 

@@ -1,0 +1,139 @@
+/* The Log tab: the filters, the status line, and the event-log table. */
+
+.log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.log-toolbar .spacer {
+  flex: 1;
+}
+
+.log-filter {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.log-filter > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.log-filter select {
+  width: auto;
+  min-width: 11rem;
+}
+
+.log-status {
+  margin: 0 0 0.75rem;
+  font-size: 0.88rem;
+}
+
+.log-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.log-table thead th {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.log-table td {
+  padding: 0.4rem 0.75rem;
+  vertical-align: top;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.log-table tbody tr:first-child td {
+  border-top: none;
+}
+
+.log-table td.time {
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.log-table td.category,
+.log-table td.room {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.log-table td.message {
+  width: 100%;
+}
+
+.log-table tr.level-warning td {
+  background: var(--live-bg);
+}
+
+.log-table tr.level-error td {
+  background: var(--danger-bg);
+}
+
+.level {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.level.debug {
+  color: var(--muted);
+}
+
+.level.info {
+  color: var(--accent);
+}
+
+.level.warning {
+  color: var(--live);
+}
+
+.level.error {
+  color: var(--danger);
+}
+
+.log-table details {
+  margin-top: 0.25rem;
+}
+
+.log-table summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.log-table details pre {
+  margin: 0.35rem 0 0;
+  padding: 0.5rem 0.65rem;
+  max-height: 20rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+#log-older {
+  margin-top: 0.75rem;
+}

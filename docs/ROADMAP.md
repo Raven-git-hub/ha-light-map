@@ -5,9 +5,11 @@ truth; update both together.
 
 Parallel build in this repo: the live `ha-adaptive-light` keeps running untouched until P6.
 
-**Current phase: P3** (P0–P2 done: the scaffold, the inventory with stable bulb identity
-across HA entity renames, and the switching plane with its deploy; P3 builds the Map tab,
-its HTTP API, and the deploy-with-preview flow).
+**Current phase: P4** (P0–P3 done: the scaffold, the inventory with stable bulb identity
+across HA entity renames, the switching plane with its deploy, and the Map tab with its
+HTTP API and deploy-with-preview; P4 builds the observation core: the WebSocket observer,
+per-bulb heartbeats, reactive detection, the CSV + SQLite store, the event log and the Log
+tab, plus a Host-header allowlist on the API).
 
 ## Phases
 

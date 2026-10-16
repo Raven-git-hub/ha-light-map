@@ -61,7 +61,7 @@ from typing import Any
 
 import jsonschema
 
-from app.core.ha import token_from_env
+from app.core.ha import DEFAULT_RECONNECT_BACKOFF, token_from_env
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +69,16 @@ SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "config.schema.js
 
 CURRENT_VERSION = 2
 DEFAULT_PROFILE = "default"
+
+# The observer's settings (`system`), each optional. Tuning defaults, not structural ones,
+# so they are supplied when read (`system`) rather than written into the saved document:
+# a config keeps saying only what its owner chose.
+SYSTEM_DEFAULTS: dict[str, Any] = {
+    "heartbeat_interval_minutes": 10,
+    "reactive_window_seconds": 120,
+    "reactive_min_delta": 5,
+    "event_log_retention_days": 90,
+}
 
 # HA core events, which fire for the switching plane's own work rather than for a button:
 # every soft switch change is a state_changed (and state_reported) that starts with a
@@ -204,7 +214,34 @@ def connection(config: Mapping[str, Any]) -> dict[str, Any]:
         "base_url": base_url,
         "token": token_from_env(),
         "verify_ssl": bool(ha.get("verify_ssl", True)),
+        "reconnect_backoff": tuple(
+            ha.get("reconnect_backoff_seconds") or DEFAULT_RECONNECT_BACKOFF
+        ),
     }
+
+
+def system(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the observer's settings: the config's `system` over `SYSTEM_DEFAULTS`.
+
+    `data_dir` is left out; see `data_dir`.
+    """
+    settings = dict(SYSTEM_DEFAULTS)
+    settings.update(
+        {k: v for k, v in (config.get("system") or {}).items() if k in SYSTEM_DEFAULTS}
+    )
+    return settings
+
+
+def data_dir(config: Mapping[str, Any], config_path: Path) -> Path:
+    """Where the store keeps the CSV archive and the SQLite query layer: `system.data_dir`,
+    resolved against the config's own directory, or that directory itself.
+
+    Next to the config by default, so the container's one volume holds both, and running
+    outside it with `LM_CONFIG_PATH=data/config.json` keeps everything under `data/`.
+    """
+    base = Path(config_path).parent
+    configured = (config.get("system") or {}).get("data_dir")
+    return base / configured if configured else base
 
 
 def migrate(config: Mapping[str, Any]) -> dict[str, Any]:

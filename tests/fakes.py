@@ -17,11 +17,18 @@ FakeHA also keeps UI-managed helpers and automations.yaml, answers service calls
 helpers, and records every automation a state change would trigger (`fired`), matching
 state triggers the way HA does (`state_trigger_matches`), so a test can see whether a
 deploy would have driven a bulb.
+
+For the observer it speaks the event side too: `subscribe_events` (announcing "connected"
+to the connection listeners the first time), `change` to make a state change and get the
+`state_changed` event HA would send, `emit` to deliver one, and `announce` for a drop or a
+reconnect.
 """
 
 import copy
+import itertools
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 AREAS: list[dict[str, Any]] = [
@@ -361,6 +368,13 @@ class FakeHA:
         self.lingering: dict[str, int] = {}
         # (automation id, entity_id, old state, new state) for every trigger that matched.
         self.fired: list[tuple[str, str, Any, Any]] = []
+        # The event side: handlers per event type, connection listeners, and HA's clock for
+        # the states `change` writes.
+        self.subscribers: dict[str, list[Any]] = {}
+        self.listeners: list[Any] = []
+        self.announced = False
+        self.clock = datetime(2026, 10, 16, 11, 0, tzinfo=timezone.utc)
+        self._contexts = itertools.count(1)
 
     @property
     def writes(self) -> list[tuple[str, tuple[Any, ...]]]:
@@ -548,6 +562,73 @@ class FakeHA:
             return {**area, "name": name}
         area["name"] = name
         return copy.deepcopy(area)
+
+    # The event side (the observer's)
+    async def subscribe_events(self, event_type: str, handler: Any) -> None:
+        self._log("subscribe_events", event_type)
+        handlers = self.subscribers.setdefault(event_type, [])
+        if handler not in handlers:
+            handlers.append(handler)
+        if not self.announced:
+            self.announced = True
+            await self.announce("connected", self.ha_version)
+
+    async def unsubscribe_events(self, event_type: str, handler: Any) -> None:
+        self._log("unsubscribe_events", event_type)
+        handlers = self.subscribers.get(event_type, [])
+        if handler in handlers:
+            handlers.remove(handler)
+
+    def add_connection_listener(self, listener: Any) -> None:
+        if listener not in self.listeners:
+            self.listeners.append(listener)
+
+    def remove_connection_listener(self, listener: Any) -> None:
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    async def announce(self, state: str, detail: str | None = None) -> None:
+        for listener in list(self.listeners):
+            await listener(state, detail)
+
+    async def emit(self, event: dict[str, Any]) -> None:
+        for handler in list(self.subscribers.get(event["event_type"], [])):
+            await handler(copy.deepcopy(event))
+
+    def change(
+        self,
+        entity_id: str,
+        state: str,
+        *,
+        parent_id: str | None = None,
+        user_id: str | None = None,
+        **attributes: Any,
+    ) -> dict[str, Any]:
+        """Set an entity's state as HA would, and return the `state_changed` event HA sends
+        for it. `parent_id` marks a change an automation caused (the bridge, a hard
+        switch); a person at a dimmer has none."""
+        index = next((i for i, s in enumerate(self.states) if s["entity_id"] == entity_id), None)
+        old = copy.deepcopy(self.states[index]) if index is not None else None
+        name = (old or {}).get("attributes", {}).get("friendly_name", entity_id)
+        new = _state(entity_id, name, state, **attributes)
+        self.clock += timedelta(seconds=1)
+        new["last_updated"] = self.clock.isoformat()
+        new["context"] = {
+            "id": f"ctx{next(self._contexts)}",
+            "parent_id": parent_id,
+            "user_id": user_id,
+        }
+        if index is None:
+            self.states.append(new)
+        else:
+            self.states[index] = new
+        return {
+            "event_type": "state_changed",
+            "data": {"entity_id": entity_id, "old_state": old, "new_state": copy.deepcopy(new)},
+            "origin": "LOCAL",
+            "time_fired": new["last_updated"],
+            "context": copy.deepcopy(new["context"]),
+        }
 
     # The rest of the surface tools/doctor.py uses
     async def ping(self) -> str:

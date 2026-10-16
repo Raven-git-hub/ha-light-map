@@ -1,10 +1,9 @@
 // Light Map UI shell: the tab router, the API helper, and the DOM, notice and dialog helpers
 // every view shares. Vanilla JS, no build step.
 //
-// A view registers itself with LM.view(name, render): map.js is the Map tab (P3). Now,
-// Analysis and Almanac arrive with the adaptive module (P5), the adaptive room editor
-// (Config) with it, and the Log with the observation core (P4); until then each shows a
-// placeholder.
+// A view registers itself with LM.view(name, render): map.js is the Map tab (P3), log.js
+// the Log (P4). Now, Analysis and Almanac arrive with the adaptive module (P5), and the
+// adaptive room editor (Config) with it; until then each shows a placeholder.
 
 "use strict";
 
@@ -210,7 +209,6 @@ const LM = (() => {
       "Config",
       "The adaptive room editor arrives with the Adaptive Light module (P5). Rooms, bulbs, switching groups and hard switches are edited on the Map.",
     ],
-    log: ["Log", "The event log arrives with the observation core (P4)."],
   };
 
   function view(name, render) {

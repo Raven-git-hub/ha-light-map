@@ -240,9 +240,9 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
     });
 
     await step("the other tabs are placeholders", async () => {
-      await page.click('a[href="#log"]');
+      await page.click('a[href="#now"]');
       await page.waitForSelector(".placeholder");
-      assert.match(await page.textContent(".placeholder"), /P4/);
+      assert.match(await page.textContent(".placeholder"), /P5/);
       await page.click('a[href="#map"]');
       await page.waitForSelector("table.map-table");
     });
