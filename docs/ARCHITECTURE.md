@@ -127,9 +127,12 @@ schema/
   config.schema.json The config contract (see "Top-level config shape").
   storage.schema.sql SQLite DDL (see "Storage model").
 tools/
-  doctor.py          Probe a real HA instance; validate connectivity and entities.
+  doctor.py          Probe a real HA instance; validate connectivity and entities; print the
+                     rooms the inventory would build. Read-only.
   sweep.py           A year of section-boundary computations, checking for unexpected
                      collapses.
+tests/               Unit tests (stdlib unittest, `python -m unittest`) against fakes and
+                     fixtures; never a real HA.
 Dockerfile
 docker-compose.yml
 .env.example
@@ -193,12 +196,14 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
 
 - `version` — schema version; the container migrates forward on load.
 - `homeassistant` — `base_url`, `access_token` (redacted from exports; never persisted),
-  `verify_ssl`, reconnect backoff. At runtime the connection is read from the environment /
-  secrets: `LM_HA_BASE_URL`, `LM_HA_TOKEN` (or `LM_HA_TOKEN_FILE`). Whether `LM_HA_BASE_URL`
-  overrides `base_url` is decided in P1.
+  `verify_ssl`; reconnect backoff arrives with the event subscription's reconnect loop (P4).
+  At runtime the connection is read from the environment / secrets: `LM_HA_BASE_URL`,
+  `LM_HA_TOKEN` (or `LM_HA_TOKEN_FILE`). `LM_HA_BASE_URL`, when set, overrides `base_url`
+  (settled in P1): the environment belongs to the deployment, the config to the house. The
+  token comes only from the environment; one found in the config file is ignored.
 - `system` — observation cadence, reactive window/min-delta, data dir, CSV toggle, event-log
   retention.
-- `rooms[]` — from HA Areas, each:
+- `rooms[]` — from HA Areas (every Area is a room, with or without lights), each:
   - `id` (slug), `name`, `ha_area_id`, `adaptive` (bool)
   - `bulbs[]`: `{ id (slug), name, entity_id (light.*), hard_switches[] }` — a soft-switch
     helper is implicit (generated) per bulb.
@@ -216,12 +221,23 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
   mode }`, `mode` ∈ `toggle` | `follow` | `press`. A room-wide action (e.g. an "all off"
   button) is a hard switch bound to a switching group that covers the room, not a room-level
   binding.
+- `unassigned[]` — the Unassigned bucket: bulbs (same shape as `rooms[].bulbs[]`) whose light
+  has no HA Area. Kept in the snapshot so a bulb's id and hard switches survive while it has
+  no room. Not a room: no switching groups, no module config.
 - `schedule_profiles[]` — reusable time-section schedules (adaptive module). A profile with
   id `default` must always exist.
 - `learning` — adaptive analyser tuning.
 
-For P0 the schema need only establish this top-level structure with obvious field types and
-valid JSON Schema (draft 2020-12); deep per-field validation comes with the config loader.
+**Id scopes** follow the HA names the ids end up in. Room ids are global
+(`sensor.al_almanac_<room>`), and no two rooms share an HA Area. Bulb ids and switching-group
+ids share one global namespace, because both name a soft switch (`input_boolean.lm_soft_<id>`)
+— including the bulbs in `unassigned[]`. Hard-switch ids are global (`lm_hard_<id>`).
+Learning-unit ids are unique within their room. Schedule-profile ids are global. The schema
+checks shape; `app/core/config.py` cross-checks these scopes and every reference.
+
+As of P1 the core sections (`homeassistant`, `rooms[]`, `unassigned[]`) are validated in
+depth; `system`, `learning`, `schedule_profiles` and `adaptive_config` fill in with the
+observer (P4) and the adaptive module (P5).
 
 ---
 

@@ -99,6 +99,9 @@ Everything downstream is a pure function of the committed document.
   key on the room. Shape: `{ id, name, source (entity_id or event/device ref), mode }`,
   `mode` ∈ `toggle` | `follow` | `press`. A room-wide "all off" is a hard switch on a
   switching group covering the room, not a room-level binding.
+- `unassigned[]`: bulbs whose light has no HA Area (the Map's "Unassigned" bucket), same shape
+  as a room's bulbs. A bulb is identified by its `entity_id`; its `id` — which names its soft
+  switch — and its hard switches stay with it as it moves between rooms and Unassigned.
 
 The existing single room from `ha-adaptive-light` is re-expressed against this shape rather
 than migrated; history starts fresh (as the n8n→container cutover did).
@@ -176,6 +179,46 @@ Writing the Area/entity registry (reassigning a bulb's Area; creating/renaming a
 **new write surface** — the predecessor only created helpers/automations and pushed almanac
 states. It gets the same care as helper deploy: verified after the fact, reconcilable, never
 destructive by surprise.
+
+### How the snapshot follows HA (settled in P1)
+
+- **A bulb's Area is its effective Area**, resolved the way HA resolves it: the entity's own
+  Area, else its device's. Most lights carry no Area of their own and inherit their device's,
+  so reading the entity registry alone would put nearly every bulb in Unassigned. The device
+  registry is read only for this join; device IDs never reach the config.
+- **Every Area is a room**, with or without lights, so a room created from the Map appears
+  before anything is moved into it.
+- **A room is matched to its Area by `ha_area_id`** and keeps its id and everything user-set
+  (switching groups, `adaptive`, `adaptive_config`) while the Area exists; its name follows the
+  Area's. A new Area becomes a new, non-adaptive room (id from the Area id). A room whose Area
+  is gone from HA is dropped.
+- **A bulb is matched by `entity_id`.** A moved bulb follows its Area with its id and hard
+  switches; a light with no (known) Area goes to `unassigned`; a light HA no longer has is
+  dropped; a new light becomes a new bulb (id from its object id, kept unique across the soft-
+  switch namespace). Its name follows HA's friendly name.
+- **Switching-group and learning-unit members that leave the room are dropped**, and a group
+  or unit left empty is dropped with it.
+- **HA light groups are not bulbs.** A `light.*` that lists member `entity_id`s (HA's group
+  platform) or is a Hue room/zone is skipped: driving it as well as its members would command
+  the same lights twice. The doctor lists them.
+- The reconcile is a pure function of (config, Areas, lights), independent of the order HA
+  lists them in, and idempotent. It is a *proposal*: `snapshot_changes` lists every room and
+  bulb it adds, removes, renames or moves and every member it drops, and nothing is written
+  until the result is saved (validate-then-write). That review step is what keeps a sync from
+  being destructive by surprise.
+
+The writes from the Map change HA first; a sync then brings the snapshot up to date:
+
+- **Move a bulb** sets the entity's own Area. It is refused, before writing, for a light with
+  no registry entry (a YAML light without a `unique_id`, which HA can't give an Area), for an
+  Area that doesn't exist, and for unassigning a bulb whose device has an Area — clearing the
+  entity's Area would leave it in the device's, and unassigning the device would move its other
+  entities too, which is the user's call in HA. After writing it re-reads the registry and
+  fails loudly if the bulb isn't where it was asked to go.
+- **Create / rename a room** creates / renames the HA Area (its id, and so the room's, never
+  changes). A name HA would reject as a duplicate is refused up front; the result is re-read
+  and checked.
+- All three need an administrator's token; the doctor warns when the token isn't one.
 
 ---
 

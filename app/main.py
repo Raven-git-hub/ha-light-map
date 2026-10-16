@@ -6,8 +6,9 @@ nothing here may contact Home Assistant or do work at import time.
 Core never imports a module: modules are attached here, through the four seams described
 in `app.modules`, so a module can be replaced or added without touching the trunk.
 
-P0 wires nothing yet. The app serves GET /healthz and the static UI shell; core services
-and the Adaptive Light module are attached in later phases.
+Nothing is wired yet. The app serves GET /healthz and the static UI shell; the inventory
+(P1) gets its HTTP surface with the Map UI (P3), and the other core services and the
+Adaptive Light module are attached in later phases.
 """
 
 from pathlib import Path

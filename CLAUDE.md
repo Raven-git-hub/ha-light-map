@@ -91,6 +91,7 @@ Presence Rules can be added without touching the trunk:
 
 ```sh
 pip install -r requirements.txt
+python -m unittest                 # tests against fakes and fixtures; never a real HA
 python -c "import app.main"
 python -c "import json, jsonschema; jsonschema.Draft202012Validator.check_schema(json.load(open('schema/config.schema.json')))"
 python -c "import sqlite3; sqlite3.connect(':memory:').executescript(open('schema/storage.schema.sql').read())"

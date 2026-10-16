@@ -17,9 +17,17 @@ Light Map is a ground-up rebuild of `ha-adaptive-light`.
 
 ## Status
 
-**P0: scaffold.** Repository structure, stub modules, the config-schema skeleton, and the
-container. There is no behaviour yet, and nothing talks to Home Assistant. See
-[docs/ROADMAP.md](docs/ROADMAP.md).
+**P1: inventory and rooms-from-Areas.** The HA transport (REST + WebSocket + Area/entity
+registry), the config loader and validator, and rooms built from HA Areas with two-way sync.
+It reads Home Assistant and writes only Area assignments; nothing is generated or deployed
+yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+
+To see what Light Map makes of your Home Assistant (read-only):
+
+```sh
+export LM_HA_BASE_URL=http://homeassistant.local:8123 LM_HA_TOKEN=...
+python tools/doctor.py                      # add --config path/to/config.json to compare
+```
 
 ## Run
 
