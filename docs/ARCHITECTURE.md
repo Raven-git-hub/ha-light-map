@@ -143,9 +143,9 @@ tools/
   sweep.py           A year of section-boundary computations, checking for unexpected
                      collapses.
 tests/               Unit tests (stdlib unittest, `python -m unittest`) against fakes and
-                     fixtures; never a real HA. `test_ui.py` also drives the Map in headless
-                     Chromium (`tests/ui/map_ui.cjs`, Node's Playwright) where that is
-                     installed, and is skipped where it isn't.
+                     fixtures; never a real HA. `test_ui.py` also drives the Map and the Log
+                     in headless Chromium (`tests/ui/map_ui.cjs`, `log_ui.cjs`, Node's
+                     Playwright) where that is installed, and is skipped where it isn't.
 Dockerfile
 docker-compose.yml
 .env.example
