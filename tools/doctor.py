@@ -19,7 +19,7 @@ Strictly read-only: it never writes to HA, and never writes the config.
 import argparse
 import asyncio
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -102,7 +102,12 @@ async def _run(args: argparse.Namespace) -> int:
             report.record(FAIL, "Could not read the Area, entity, and device registries", str(exc))
             return report.summary()
         report.record(OK, "Read the Area, entity, and device registries")
-        _inspect(report, areas, lights)
+        ignored = (
+            {bulb["entity_id"] for _, bulb in inventory.ignored_bulbs(committed)}
+            if committed is not None
+            else set()
+        )
+        _inspect(report, areas, lights, ignored)
         snapshot = config_mod.reconcile_area_snapshot(base, areas, lights)
         _print_rooms(snapshot)
         _check_snapshot(report, committed, snapshot)
@@ -152,8 +157,14 @@ async def _probe(ha: HAClient, report: Report) -> bool:
 
 
 def _inspect(
-    report: Report, areas: Sequence[Mapping[str, Any]], lights: Sequence[Mapping[str, Any]]
+    report: Report,
+    areas: Sequence[Mapping[str, Any]],
+    lights: Sequence[Mapping[str, Any]],
+    ignored: Collection[str] = (),
 ) -> None:
+    """`ignored`: the entity_ids of the lights the committed config ignores, which are
+    listed once and left out of the warnings below: an indicator LED that is often
+    unavailable, or has no Area, is nothing to fix."""
     known_areas = {a.get("area_id") for a in areas}
     bulbs = [light for light in lights if not light["is_group"]]
     groups = [light for light in lights if light["is_group"]]
@@ -165,6 +176,15 @@ def _inspect(
 
     def names(items: Sequence[Mapping[str, Any]]) -> list[str]:
         return [f"{light['entity_id']}  ({light['name']})" for light in items]
+
+    set_aside = [b for b in bulbs if b["entity_id"] in ignored]
+    if set_aside:
+        report.listing(
+            OK,
+            f"{len(set_aside)} lights are ignored in the committed config",
+            ["No soft switch or bridge, and not checked further:", *names(set_aside)],
+        )
+        bulbs = [b for b in bulbs if b["entity_id"] not in ignored]
 
     if groups:
         report.listing(

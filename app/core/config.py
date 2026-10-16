@@ -466,8 +466,11 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
 def _hard_switch_loops(rooms: list[dict[str, Any]], unassigned: list[dict[str, Any]]) -> list[str]:
     """Hard switches whose own action would trigger them again."""
     bulbs = [b for room in rooms for b in _dicts(room.get("bulbs", []))] + unassigned
-    # An ignored bulb has no bridge, so nothing Light Map does changes it.
-    driven = {b.get("entity_id") for b in bulbs if not is_ignored(b)}
+    # Ignored bulbs count too, though nothing drives them while they are ignored: a toggle
+    # on one would loop the moment it was un-ignored (refused then, naming another bulb's
+    # switch), or a sync gave its light to a new bulb; and a status LED worth ignoring may
+    # mirror a load Light Map does drive. The source picker doesn't offer them anyway.
+    driven = {b.get("entity_id") for b in bulbs}
     bindings = [h for b in bulbs for h in _dicts(b.get("hard_switches", []))]
     for room in rooms:
         for group in _dicts(room.get("switching_groups", [])):

@@ -328,14 +328,23 @@ def _check_base(seen: str | None, current: str, what: str) -> None:
 # The `version` the Map shows for each editable thing, which an edit sends back as `base`.
 
 
-def bulb_version(doc: Mapping[str, Any], bulb: Mapping[str, Any]) -> str:
-    """A bulb's hard switches, whether it is ignored, and what ignoring it would drop (its
-    memberships, and the groups and units that would go with it): so a confirmation to
-    ignore it covers exactly the list the Map showed."""
+def bulb_version(bulb: Mapping[str, Any]) -> str:
+    """A bulb's hard switches, and whether it is ignored (a popup for a bulb since set
+    aside is stale): what an edit of its hard switches is made against."""
+    return fingerprint(
+        {"hard_switches": bulb.get("hard_switches", []), "ignored": inventory.is_ignored(bulb)}
+    )
+
+
+def ignore_version(doc: Mapping[str, Any], bulb: Mapping[str, Any]) -> str:
+    """What ignoring a bulb (or un-ignoring it) is made against: its hard switches,
+    whether it is ignored, and what ignoring it would drop (its memberships, and any group
+    or unit that would go with it), so a confirmation covers exactly the list the Map
+    showed. Apart from `bulb_version`, so a group renamed in another tab doesn't make an
+    open hard-switch popup stale."""
     return fingerprint(
         {
-            "hard_switches": bulb.get("hard_switches", []),
-            "ignored": inventory.is_ignored(bulb),
+            "bulb": bulb_version(bulb),
             "drops": inventory.ignore_drops(doc, bulb["id"]),
         }
     )
@@ -393,7 +402,8 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
             "id": bulb_id,
             "name": bulb["name"],
             "entity_id": bulb["entity_id"],
-            "version": bulb_version(doc, bulb),
+            "version": bulb_version(bulb),
+            "ignore_version": ignore_version(doc, bulb),
             "ignore_drops": inventory.ignore_drops(doc, bulb_id),
             "soft": switching.soft_entity(bulb_id),
             "hard_switches": bulb.get("hard_switches", []),
@@ -414,7 +424,7 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
             "id": bulb["id"],
             "name": bulb["name"],
             "entity_id": bulb["entity_id"],
-            "version": bulb_version(doc, bulb),
+            "ignore_version": ignore_version(doc, bulb),
             "room_id": room["id"] if room else None,
             "room_name": room["name"] if room else inventory.UNASSIGNED,
         }
@@ -544,7 +554,7 @@ async def entities(request: Request) -> dict[str, Any]:
     """HA entities a hard switch can take as a state source, for the picker. `mapped`
     marks a bulb Light Map drives (a toggle may not take one: it would toggle itself).
     Ignored lights are left out, as everywhere the Map offers bulbs; one can still be
-    typed in."""
+    typed in, though not as a toggle's source (see `config._hard_switch_loops`)."""
     ha = _ha(request)
     doc = _store(request).read()
     mapped = set(switching.references(doc)["bulbs"])
@@ -806,7 +816,7 @@ async def set_bulb_hard_switches(
     async with _store(request).lock:
         doc = _store(request).read()
         room, bulb = inventory.find_bulb(doc, bulb_id)
-        _check_base(body.base, bulb_version(doc, bulb), f"{bulb['name']}'s hard switches")
+        _check_base(body.base, bulb_version(bulb), f"{bulb['name']}'s hard switches")
         proposed = inventory.set_hard_switches(doc, bulb_id, body.hard_switches)
         return _commit(
             request,
@@ -825,19 +835,23 @@ async def set_ignored(request: Request, bulb_id: str, body: IgnoredFlag) -> dict
 
     Ignoring one with hard switches or memberships drops them, so it is refused (409
     `confirm_required`, with what would be dropped) unless `confirm_drops`; the `base`
-    check makes that confirmation cover exactly what the Map listed. Pure config: the
-    deploy preview then shows the soft switch and bridge it removes.
+    (the bulb's `ignore_version`) makes that confirmation cover exactly what the Map
+    listed. Pure config: the deploy preview then shows the soft switch and bridge it
+    removes.
     """
     async with _store(request).lock:
         doc = _store(request).read()
         room, bulb = inventory.find_bulb(doc, bulb_id)
-        _check_base(body.base, bulb_version(doc, bulb), bulb["name"])
         if inventory.is_ignored(bulb) == body.ignored:
+            # Before the base check, which writes nothing either: a second click, or a
+            # second tab asking for the same thing, is told it's done, not that the Map
+            # is stale.
             raise ApiError(
                 409,
                 "no_change",
                 f"{bulb['name']} is already {'ignored' if body.ignored else 'not ignored'}",
             )
+        _check_base(body.base, ignore_version(doc, bulb), bulb["name"])
         drops = inventory.ignore_drops(doc, bulb_id)
         if body.ignored and drops and not body.confirm_drops:
             raise ApiError(

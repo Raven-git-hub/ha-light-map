@@ -653,7 +653,12 @@ class Observer:
         if window.timer is not None and window.timer is not asyncio.current_task():
             window.timer.cancel()
         room = self._rooms.get(room_id)
-        entities = {**window.entities, **(dict(room.bulbs) if room else {})}
+        # A bulb no longer watched (ignored, or gone in a sync, since the window opened) is
+        # not read at the close: its mirror is gone, and reading it would record it as
+        # unavailable. It stays only if the user changed it while it was watched, as that
+        # change left it.
+        touched = {b: e for b, e in window.entities.items() if b in window.after}
+        entities = {**touched, **(dict(room.bulbs) if room else {})}
         min_delta = self._settings["reactive_min_delta"]
         changes = []
         for bulb_id in sorted(entities):

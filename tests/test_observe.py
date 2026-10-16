@@ -679,9 +679,30 @@ class IgnoredTest(ObserverCase):
         await self.manual("light.chandelier_2", 200)
         await self.close_windows()
         self.assertEqual(
-            [c["bulb_id"] for c in self.rows("SELECT bulb_id FROM reactive_change ORDER BY bulb_id")],
+            [c["bulb_id"] for c in self.rows("SELECT bulb_id FROM reactive_change ORDER BY 1")],
             ["chandelier_2", "chandelier_3", "reading_lamp"],
         )
+
+    async def test_a_bulb_ignored_while_a_window_is_open_isnt_read_at_the_close(self):
+        # On through the plane (a parent_id: not an intervention), then dimmed by hand.
+        lamp_on = self.ha.change("light.reading_lamp", "on", brightness=100, parent_id="p")
+        await self.ha.emit(lamp_on)
+        await self.manual("light.chandelier_2", 200)
+        await self.manual("light.reading_lamp", 60)  # touched while it was still watched
+        doc = inventory.set_ignored(self.config, "chandelier_3", True)
+        self.config = config.checked(inventory.set_ignored(doc, "reading_lamp", True))
+        self.observer.reload()
+        await self.close_windows()
+        self.assertEqual(
+            self.rows(
+                "SELECT bulb_id, brightness_after, changed FROM reactive_change ORDER BY bulb_id"
+            ),
+            [
+                {"bulb_id": "chandelier_2", "brightness_after": 200, "changed": 1},
+                # Kept: the user changed it while it was watched, and that is what's recorded.
+                {"bulb_id": "reading_lamp", "brightness_after": 60, "changed": 1},
+            ],
+        )  # chandelier_3, untouched and no longer watched, isn't recorded as unavailable
 
     async def test_un_ignored_it_is_watched_again(self):
         self.config = config.checked(inventory.set_ignored(self.config, "kitchen_strip", False))

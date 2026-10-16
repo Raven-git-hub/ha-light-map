@@ -124,6 +124,11 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
       await page.waitForSelector(popup, { state: "detached" });
       await page.waitForSelector('tbody[data-room="kitchen"] button.group[data-group="kitchen_all"]');
       assert.match(await page.textContent('button.group[data-group="kitchen_all"]'), /Kitchen strip/);
+      // As saved (a later step ignores its only member, which takes the group with it).
+      const saved = await page.evaluate(async () => (await (await fetch("/api/config")).json()).rooms);
+      assert.deepEqual(saved.find((r) => r.id === "kitchen").switching_groups, [
+        { id: "kitchen_all", name: "Kitchen all", members: ["kitchen_strip"], hard_switches: [] },
+      ]);
     });
 
     await step("a popup another tab made stale closes instead of reverting the other edit", async () => {
@@ -242,9 +247,18 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
     await step("ignoring a bulb that drops nothing is immediate", async () => {
       assert.match(await page.textContent(".ignored-section summary"), /Ignored \(0\)/);
       assert.equal(await page.getAttribute(".ignored-section", "open"), null); // collapsed
-      await page.click('tr[data-bulb="counter_lamp"] .ignore');
+      // A double click sends one request: no "changed since the Map showed it" beside it.
+      const errorNotices = async () => (await page.$$("#notices .notice.error")).length;
+      const errorsBefore = await errorNotices(); // an earlier step's stale edit is still shown
+      const requests = [];
+      const count = (request) => request.url().endsWith("/api/bulbs/counter_lamp/ignored") && requests.push(request);
+      page.on("request", count);
+      await page.dblclick('tr[data-bulb="counter_lamp"] .ignore');
       await page.waitForSelector('tr[data-bulb="counter_lamp"]', { state: "detached" });
+      page.off("request", count);
+      assert.equal(requests.length, 1);
       assert.match(await page.textContent("#notices .notice.ok"), /Deploy to remove its soft switch and bridge/);
+      assert.equal(await errorNotices(), errorsBefore);
       assert.match(await page.textContent(".ignored-section summary"), /Ignored \(1\)/);
       assert.ok(await page.$('.ignored-section tr[data-ignored="counter_lamp"]'));
       assert.match(await page.textContent('tr[data-ignored="counter_lamp"] .ignored-room'), /Kitchen/);

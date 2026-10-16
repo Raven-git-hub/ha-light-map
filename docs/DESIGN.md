@@ -60,11 +60,11 @@ can be on or off independently; maintenance only ever nudges the ones that are o
 2. **Adaptive is a per-room flag.** A checkbox beside each room name turns adaptive on for
    that room and reveals its Adaptive Config. Rooms left unchecked are switching-only.
 3. **Soft switches are generated, per bulb only.** Each bulb automatically gets an
-   `input_boolean`. Switching groups (UI: "group soft switch") are *not* auto-generated —
-   the user adds them per room, picks member bulbs and the physical switch, and can reopen
-   to edit. A group mints no HA entity of its own (settled in P2): it is a named set of
-   member bulbs plus its hard-switch bindings, and a hard switch bound to it acts on every
-   member's soft switch.
+   `input_boolean`, unless the user ignores it (P4.1, "Ignored lights"). Switching groups
+   (UI: "group soft switch") are *not* auto-generated — the user adds them per room, picks
+   member bulbs and the physical switch, and can reopen to edit. A group mints no HA entity
+   of its own (settled in P2): it is a named set of member bulbs plus its hard-switch
+   bindings, and a hard switch bound to it acts on every member's soft switch.
 4. **The soft switch owns on/off; modules command the soft switch.** Adaptive stops toggling
    bulbs directly. At a crossover it sets each adaptive bulb's power intent on that bulb's
    soft switch (on for an auto/learned unit, off for an "off for this section" unit); the
@@ -121,9 +121,9 @@ A parallel namespace to the adaptive `al_*` artefacts, deployed and reconciled t
 but in its own lane (settled in P2):
 
 - `input_boolean.lm_soft_<bulb_id>` — one per bulb, and only per bulb (including the bulbs
-  in Unassigned, excluding the ignored ones). Named `LM Soft <bulb_id>`: HA gives a helper created over the network the
-  id of its slugified name, with no way to ask for another, so the name is derived from the
-  bulb's id (already a slug), never from its display name.
+  in Unassigned, excluding the ignored ones). Named `LM Soft <bulb_id>`: HA gives a helper
+  created over the network the id of its slugified name, with no way to ask for another, so
+  the name is derived from the bulb's id (already a slug), never from its display name.
 - **No group entity.** A switching group mints nothing in HA. A group of `input_boolean`s
   can't be created over HA's network API (it would need a `configuration.yaml` edit, which
   Light Map never makes), and without one there is no group state to keep in sync. A hard
@@ -309,9 +309,14 @@ bulb marked **ignored** (`ignored: true`) is set aside:
   its light to exist in HA; the Area writes never move it, and a Map move is refused; the
   observer doesn't watch it; it is no switching group's or learning unit's member and
   carries no hard switches (the cross-check refuses a config that says otherwise); the
-  hard-switch source picker and the group member picker don't offer it. Whatever
-  generates, deploys or observes reads the bulbs through `core.inventory.active_bulbs`, so
-  a module (adaptive, P5) never meets one.
+  hard-switch source picker and the group member picker don't offer it. Generation and
+  the observer read the bulbs through `core.inventory.active_bulbs`, and so does a module
+  (adaptive, P5), so it never meets one; the rest (the Area writes, the Map's view, the
+  cross-check) look at the flag themselves.
+- **A toggle still may not take it as its source.** Nothing drives an ignored light, but
+  a toggle on one would loop the moment it was un-ignored (or a sync gave its light to a
+  new bulb), and a status LED worth ignoring may mirror a load Light Map does drive. So
+  the feedback-loop check counts every bulb in the snapshot, ignored ones included.
 - **Ignoring drops what hangs off the bulb**: its hard switches, and its memberships (a
   switching group or learning unit left with no members is dropped with it, a group's hard
   switches too), since none of them means anything without a soft switch. When it would
@@ -430,13 +435,14 @@ The step order is what keeps a deploy from driving anything:
    as it is.
 
 No step calls a light service. Before writing, a switching-plane deploy validates the config
-and checks that every bulb and hard-switch source exists in HA (a missing bulb means the
-snapshot is stale: sync first); a device source's device must still be in the device
-registry. An automation id already defined in HA's YAML outside `automations.yaml` (which
-the config API can't edit) is refused rather than duplicated, and so (since P3) is a soft
-switch whose entity id HA already has as a helper the plane can't manage (a YAML
-`input_boolean`): created anyway, it would land under `<id>_2`, and the post-create check
-would stop the deploy only after leaving that stray behind.
+and checks that every bulb it generates for (every one not ignored) and every hard-switch
+source exists in HA (a missing bulb means the snapshot is stale: sync first); a device
+source's device must still be in the device registry. An automation id already defined in
+HA's YAML outside `automations.yaml` (which the config API can't edit) is refused rather
+than duplicated, and so (since P3) is a soft switch whose entity id HA already has as a
+helper the plane can't manage (a YAML `input_boolean`): created anyway, it would land under
+`<id>_2`, and the post-create check would stop the deploy only after leaving that stray
+behind.
 
 `verify` checks the whole lane, not just the steps: every helper and automation holds what
 was generated, each helper's entity has the id the automations address (one renamed in HA
@@ -543,20 +549,24 @@ HA write; if saving fails after it, the error says the HA change stands and a sy
 pick it up.
 
 **Edits carry the version they were made against.** The Map shows a `version` for each
-bulb (its hard switches, whether it is ignored, and what ignoring it would drop), each
-switching group, and each room's adaptive flag and config, and an edit sends it back as
-`base`; one made against an older version is refused (409
-`edit_stale`) and the popup closes onto the Map as it now is. Edits replace whole lists (a
-bulb's bindings, a group's members), so without this a popup left open in a second tab
-would silently undo the first tab's edit when saved, and an acknowledgement (going live)
-or confirmation (dropping an adaptive config) given for the view on screen would cover
-bindings or settings the user never saw.
+bulb's hard switches (and whether it is ignored), each switching group, and each room's
+adaptive flag and config, and an edit sends it back as `base`; one made against an older
+version is refused (409 `edit_stale`) and the popup closes onto the Map as it now is. Edits
+replace whole lists (a bulb's bindings, a group's members), so without this a popup left
+open in a second tab would silently undo the first tab's edit when saved, and an
+acknowledgement (going live) or confirmation (dropping an adaptive config) given for the
+view on screen would cover bindings or settings the user never saw.
 
-**Ignoring a bulb** (P4.1) is a config edit like these, against the bulb's `version`:
-`PUT /api/bulbs/{bulb}/ignored`. Ignoring takes effect in HA only on the next deploy,
+**Ignoring a bulb** (P4.1) is a config edit like these: `PUT /api/bulbs/{bulb}/ignored`,
+against the bulb's `ignore_version`, which also covers what ignoring it would drop (its
+memberships, and any group or unit that would go with it), so a confirmation can't drop
+something added since the Map showed the list. It is kept apart from the bulb's `version`,
+so renaming a group in another tab doesn't make an open hard-switch popup stale. A request
+for what is already so is answered `no_change` before the version is checked, so a second
+click isn't reported as a stale Map. Ignoring takes effect in HA only on the next deploy,
 whose preview lists the soft switch and bridge it removes. A bulb whose ignoring drops
-nothing (no hard switches, no memberships) is ignored at once, so setting a dozen
-indicator LEDs aside is a dozen clicks; otherwise the Map lists the drops and asks.
+nothing (no hard switches, no memberships) is ignored at once, so setting a dozen indicator
+LEDs aside is a dozen clicks; otherwise the Map lists the drops and asks.
 
 **The committed config** lives at `LM_CONFIG_PATH` and is read fresh for every request (it
 is small, and a hand edit is picked up at once), written only through `config.save`, one

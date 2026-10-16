@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.core import config, deploy
 from app.core.ha import HAClient, HAError
-from app.main import create_app
+from app.main import bulb_version, create_app
 from tests.fakes import FakeHA, committed_config
 
 BUTTON = {
@@ -79,11 +79,18 @@ class ApiCase(unittest.TestCase):
             for item in [*room["bulbs"], *room["groups"]]:
                 if item["id"] == item_id:
                     return item["version"]
-        bulbs = [*view["unassigned"]["bulbs"], *view["ignored"]]
-        return next((b["version"] for b in bulbs if b["id"] == item_id), None)
+        return next((b["version"] for b in view["unassigned"]["bulbs"] if b["id"] == item_id), None)
+
+    def ignore_version(self, bulb_id):
+        """The `ignore_version` the Map shows for a bulb, in its row or in the Ignored list:
+        what ignoring or un-ignoring it sends back as `base`."""
+        view = self.client.get("/api/map").json()
+        bulbs = [b for r in view["rooms"] for b in r["bulbs"]]
+        bulbs += [*view["unassigned"]["bulbs"], *view["ignored"]]
+        return next((b["ignore_version"] for b in bulbs if b["id"] == bulb_id), None)
 
     def ignore(self, bulb_id, ignored=True, **extra):
-        body = {"ignored": ignored, "base": self.version(bulb_id), **extra}
+        body = {"ignored": ignored, "base": self.ignore_version(bulb_id), **extra}
         return self.client.put(f"/api/bulbs/{bulb_id}/ignored", json=body)
 
     def adaptive(self, room_id, adaptive, **extra):
@@ -819,14 +826,13 @@ class IgnoreTest(ApiCase):
         self.assertEqual([b["id"] for b in view["unassigned"]["bulbs"]], ["porch"])
         self.assertEqual(view["ignored"], [])
         self.assertEqual(self.saved()["rooms"], committed_config()["rooms"])
-        messages = [
-            e["message"] for e in self.client.get("/api/log", params={"category": "map"}).json()["entries"]
-        ]
+        log = self.client.get("/api/log", params={"category": "map"}).json()
+        messages = [e["message"] for e in log["entries"]]
         self.assertTrue(messages[0].startswith("Un-ignored Porch (light.porch)"))
         self.assert_error(self.ignore("porch", False), 409, "no_change")
 
     def test_the_version_guard(self):
-        seen = self.version("porch")
+        seen = self.ignore_version("porch")
         # Another tab binds a hard switch to it: what ignoring would drop has changed.
         self.assertEqual(self.bind("porch", [BUTTON], acknowledge_live=True).status_code, 200)
         before = self.path.read_text()
@@ -841,7 +847,7 @@ class IgnoreTest(ApiCase):
         self.assert_unchanged(before)
         # And a membership added since moves the version too, so a confirmation can't drop
         # a group it never listed.
-        seen = self.version("kitchen_strip")
+        seen = self.ignore_version("kitchen_strip")
         group = {"name": "Kitchen all", "members": ["kitchen_strip"]}
         self.assertEqual(self.client.post("/api/rooms/kitchen/groups", json=group).status_code, 201)
         self.assert_error(
@@ -862,6 +868,39 @@ class IgnoreTest(ApiCase):
             "not_found",
         )
 
+    def test_a_second_request_for_the_same_thing_is_no_change_not_stale(self):
+        seen = self.ignore_version("porch")
+        body = {"ignored": True, "base": seen}
+        self.assertEqual(self.client.put("/api/bulbs/porch/ignored", json=body).status_code, 200)
+        before = self.path.read_text()
+        self.assert_error(self.client.put("/api/bulbs/porch/ignored", json=body), 409, "no_change")
+        self.assert_unchanged(before)
+
+    def test_a_group_edit_doesnt_make_a_hard_switch_popup_stale(self):
+        # The ignore version covers memberships; the hard-switch version doesn't, so a
+        # group renamed in another tab leaves an open popup for one of its bulbs current.
+        seen, ignore_seen = self.version("chandelier_1"), self.ignore_version("chandelier_1")
+        living_all = committed_config()["rooms"][0]["switching_groups"][0]
+        renamed = {**living_all, "name": "Every living room light"}
+        self.assertEqual(self.edit_group("living_room", "living_all", renamed).status_code, 200)
+        self.assertEqual(self.version("chandelier_1"), seen)
+        self.assertNotEqual(self.ignore_version("chandelier_1"), ignore_seen)
+        response = self.client.put(
+            "/api/bulbs/chandelier_1/hard_switches", json={"hard_switches": [], "base": seen}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_ignoring_makes_an_open_hard_switch_popup_stale(self):
+        seen = self.version("porch")
+        self.assertEqual(self.ignore("porch").status_code, 200)
+        self.assert_error(
+            self.client.put(
+                "/api/bulbs/porch/hard_switches", json={"hard_switches": [], "base": seen}
+            ),
+            409,
+            "edit_stale",
+        )
+
     def test_an_ignored_light_is_offered_by_no_picker(self):
         self.assertEqual(self.ignore("porch").status_code, 200)
         ids = [e["entity_id"] for e in self.client.get("/api/entities").json()["entities"]]
@@ -872,7 +911,18 @@ class IgnoreTest(ApiCase):
         self.assertEqual(self.ignore("porch").status_code, 200)
         self.assertEqual(self.ignore("kitchen_strip").status_code, 200)
         before = self.path.read_text()
-        body = self.assert_error(self.bind("porch", [BUTTON], acknowledge_live=True), 422, "invalid_config")
+        # The Map offers no hard-switch popup for an ignored bulb, and one opened before it
+        # was ignored is stale (below); a request made against its current version still
+        # meets the cross-check.
+        current = bulb_version(self.saved()["unassigned"][0])
+        body = self.assert_error(
+            self.client.put(
+                "/api/bulbs/porch/hard_switches",
+                json={"hard_switches": [BUTTON], "acknowledge_live": True, "base": current},
+            ),
+            422,
+            "invalid_config",
+        )
         self.assertIn("bulb 'porch' is ignored", body["problems"][0])
         body = self.assert_error(
             self.client.post(

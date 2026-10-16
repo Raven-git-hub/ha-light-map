@@ -274,7 +274,8 @@
           {
             class: "link ignore",
             title: "Not a room bulb (an indicator or gadget LED)? Set it aside: no soft switch or bridge",
-            onclick: () => ignoreBulb(bulb).catch(fail),
+            "aria-label": `Ignore ${bulb.name}`,
+            onclick: (event) => ignoreBulb(bulb, event.currentTarget).catch(fail),
           },
           "Ignore",
         ),
@@ -378,7 +379,8 @@
                       {
                         class: "link unignore",
                         title: "Bring it back: a soft switch and bridge on the next deploy",
-                        onclick: () => unignoreBulb(entry).catch(fail),
+                        "aria-label": `Un-ignore ${entry.name}`,
+                        onclick: (event) => unignoreBulb(entry, event.currentTarget).catch(fail),
                       },
                       "Un-ignore",
                     ),
@@ -395,7 +397,7 @@
     return section;
   }
 
-  async function ignoreBulb(bulb) {
+  async function ignoreBulb(bulb, button) {
     // Nothing to lose: ignore at once, so setting a dozen indicator LEDs aside is a dozen
     // clicks. Anything it would drop is listed first, and the server insists on that too.
     const drops = bulb.ignore_drops;
@@ -411,32 +413,52 @@
       );
       if (!sure) return;
     }
-    await setIgnored(bulb, true, drops.length > 0);
-    notify(
-      `Ignored ${bulb.name}. Deploy to remove its soft switch and bridge from Home Assistant (the light itself is left as it is).`,
-      { kind: "ok", timeout: 8000 },
-    );
+    if (await setIgnored(bulb, true, drops.length > 0, button)) {
+      notify(
+        `Ignored ${bulb.name}. Deploy to remove its soft switch and bridge from Home Assistant (the light itself is left as it is).`,
+        { kind: "ok", timeout: 8000 },
+      );
+    }
   }
 
-  async function unignoreBulb(entry) {
-    await setIgnored(entry, false, false);
-    notify(`${entry.name} is back in ${entry.room_name}. Deploy to give it a soft switch and bridge.`, {
-      kind: "ok",
-      timeout: 8000,
-    });
+  async function unignoreBulb(entry, button) {
+    if (await setIgnored(entry, false, false, button)) {
+      notify(`${entry.name} is back in ${entry.room_name}. Deploy to give it a soft switch and bridge.`, {
+        kind: "ok",
+        timeout: 8000,
+      });
+    }
   }
 
-  // `base` is the version the Map showed, which covers what ignoring would drop: a
-  // confirmation given for the list on screen can't drop something added since.
-  async function setIgnored(bulb, ignored, confirmDrops) {
+  // True once saved. `base` is the bulb's ignore_version, which covers what ignoring would
+  // drop: a confirmation given for the list on screen can't drop something added since.
+  // The button stays disabled while the request runs, so a double click sends one request
+  // (the second, made against the version the first replaced, would read as stale).
+  async function setIgnored(bulb, ignored, confirmDrops, button) {
+    button.disabled = true;
     try {
-      await api("PUT", `/api/bulbs/${bulb.id}/ignored`, { ignored, confirm_drops: confirmDrops, base: bulb.version });
+      await api("PUT", `/api/bulbs/${bulb.id}/ignored`, {
+        ignored,
+        confirm_drops: confirmDrops,
+        base: bulb.ignore_version,
+      });
     } catch (err) {
-      // Changed since the Map showed it (another tab, a sync): show the Map as it is now.
-      if (err.error === "edit_stale") await reload();
+      button.disabled = false;
+      if (err.error === "no_change") {
+        await reload(); // already so (another tab did it): nothing went wrong
+        return false;
+      }
+      if (err.error === "edit_stale") {
+        // Changed since the Map showed it (another tab, a sync). Expected, so not fail():
+        // nothing to log. Show the Map as it is now.
+        notify(err.message, { kind: "error" });
+        await reload();
+        return false;
+      }
       throw err;
     }
     await reload();
+    return true;
   }
 
   function liveTitle(bulb) {
@@ -469,8 +491,9 @@
     }
   }
 
+  // Ignored lights count, as on the server: a toggle on one would loop once it was un-ignored.
   function mappedBulb(entityId) {
-    const all = [...state.map.rooms.flatMap((r) => r.bulbs), ...state.map.unassigned.bulbs];
+    const all = [...state.map.rooms.flatMap((r) => r.bulbs), ...state.map.unassigned.bulbs, ...state.map.ignored];
     return all.some((b) => b.entity_id === entityId);
   }
 

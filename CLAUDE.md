@@ -77,9 +77,10 @@ Presence Rules can be added without touching the trunk:
    bridge applies on soft-on for its bulbs (`core.switching.register_bridge_brightness`);
    core embeds it in the soft-on branch and owns the target and the power.
 
-A module reads a room's bulbs through `core.inventory.active_bulbs`, never `room["bulbs"]`
-directly: an ignored bulb (an indicator or gadget LED the user set aside, P4.1) stays in the
-snapshot but gets no soft switch, no bridge, no observation, and no module's attention.
+A module reads bulbs through `core.inventory.active_bulbs` (every bulb that isn't ignored,
+with its room), never `room["bulbs"]` directly: an ignored bulb (an indicator or gadget LED
+the user set aside, P4.1) stays in the snapshot but gets no soft switch, no bridge, no
+observation, and no module's attention.
 
 `app/core` never imports from `app/modules`. Modules are wired in by the composition root,
 `app/main.py`.
@@ -88,10 +89,10 @@ snapshot but gets no soft switch, no bridge, no observation, and no module's att
 
 - Module names and paths follow "Repository layout" in `docs/ARCHITECTURE.md` exactly.
   Later phases fill stubs in place; don't rename or move them.
-- HA names: `input_boolean.lm_soft_<bulb_id>` (per bulb only; a switching group has no HA
-  entity), `lm_bridge_<bulb_id>`, `lm_hard_<hard_switch_id>` for the switching plane; the
-  adaptive module keeps `al_scene_`, `al_maint_`, `al_active_`, `al_hold_`,
-  `sensor.al_almanac_`, `al_watchdog_`.
+- HA names: `input_boolean.lm_soft_<bulb_id>` (per bulb only, none for an ignored bulb; a
+  switching group has no HA entity), `lm_bridge_<bulb_id>`, `lm_hard_<hard_switch_id>` for
+  the switching plane; the adaptive module keeps `al_scene_`, `al_maint_`, `al_active_`,
+  `al_hold_`, `sensor.al_almanac_`, `al_watchdog_`.
 - Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`, `LM_CONFIG_PATH`
   (where the committed config lives; default `/data/config.json`), and `LM_ALLOWED_HOSTS`
   (the Host names the API answers besides `localhost` and `127.0.0.1`).

@@ -35,10 +35,10 @@ observer, and the modules): every bulb that isn't ignored. Discovery still finds
 light, and nothing here ever decides on its own that a light is to be ignored.
 
 The rest of the Map's edits are pure config edits (`set_adaptive`, `set_hard_switches`,
-`set_ignored`, the switching-group edits): HA is not touched, and the result is checked
-when it is saved (validate-then-write). `live_bulbs` and `going_live` say which bulbs a hard switch makes
-live: during the parallel build (P0-P4) binding one is the step that makes a bridge
-authoritative beside the live ha-adaptive-light, so the Map warns before saving one.
+`set_ignored`, the switching-group edits): HA is not touched, and the result is checked when
+it is saved (validate-then-write). `live_bulbs` and `going_live` say which bulbs a hard
+switch makes live: during the parallel build (P0-P4) binding one is the step that makes a
+bridge authoritative beside the live ha-adaptive-light, so the Map warns before saving one.
 
 Hard rules:
 

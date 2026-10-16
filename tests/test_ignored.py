@@ -131,24 +131,30 @@ class CrossCheckTest(unittest.TestCase):
             ],
         )
 
-    def test_a_toggle_may_take_an_ignored_light_as_its_source(self):
-        # Light Map doesn't drive an ignored light, so its changes can't loop back.
+    def test_a_toggle_may_not_take_an_ignored_light_as_its_source(self):
+        # Nothing drives an ignored light, but allowed, the toggle would loop the moment
+        # the porch was un-ignored (refused then, naming another bulb's switch), or a sync
+        # gave light.porch to a new bulb (a proposal that couldn't be saved).
         doc = ignoring("porch")
-        doc = inventory.set_hard_switches(
-            doc,
-            "kitchen_strip",
-            [
-                {
-                    "name": "Porch light as a switch",
-                    "source": {"type": "state", "entity_id": "light.porch"},
-                    "mode": "toggle",
-                }
-            ],
-        )
-        config.cross_check(doc)
-        # Un-ignored, the porch is driven again, and the same toggle is a loop.
-        problems = problems_of(config.checked, inventory.set_ignored(doc, "porch", False))
+        toggle = {
+            "name": "Porch light as a switch",
+            "source": {"type": "state", "entity_id": "light.porch"},
+            "mode": "toggle",
+        }
+        doc = inventory.set_hard_switches(doc, "kitchen_strip", [toggle])
+        problems = problems_of(config.checked, doc)
         self.assertTrue(any("a bulb Light Map drives" in p for p in problems), problems)
+        # Follow and press set a state rather than flip one, so they settle: still allowed.
+        follow = {**toggle, "mode": "follow"}
+        config.checked(inventory.set_hard_switches(ignoring("porch"), "kitchen_strip", [follow]))
+
+    def test_a_sync_that_hands_an_ignored_lights_entity_id_to_a_new_bulb_still_saves(self):
+        doc = ignoring("porch")
+        lights = [
+            {**x, "ha_match_key": "reg_repaired"} if x["entity_id"] == "light.porch" else x
+            for x in LIGHTS
+        ]
+        config.checked(config.reconcile_area_snapshot(doc, AREAS, lights))
 
     def test_an_ignored_bulb_keeps_its_id(self):
         doc = ignoring("porch")
@@ -489,8 +495,9 @@ class ReconcileTest(unittest.TestCase):
         self.assertTrue(bulb_of(moved, "chandelier_3")["ignored"])
 
     def test_the_reconcile_prunes_an_ignored_member(self):
-        # A hand edit that ignores a member without pruning: the reconcile tidies it, so a
-        # sync's proposal is always a config that saves.
+        # The reconcile, as a function, prunes an ignored member like a departed one. (A
+        # config that has one doesn't load, so this is only ever the function on its own:
+        # it doesn't lean on its input having been pruned.)
         doc = committed_config()
         bulb_of(doc, "kitchen_strip")["ignored"] = True
         kitchen = doc["rooms"][1]

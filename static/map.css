@@ -126,16 +126,16 @@ tbody.room:first-of-type .room-row > * {
   opacity: 1;
 }
 
+/* Muted at full opacity: anything fainter falls below a readable contrast. */
 .bulb-cell .ignore {
   margin-left: 0.2rem;
   font-size: 0.85rem;
   color: var(--muted);
-  opacity: 0.6;
 }
 
 .bulb-row:hover .ignore,
 .bulb-cell .ignore:focus-visible {
-  opacity: 1;
+  color: var(--accent);
 }
 
 /* -- Ignored lights (P4.1) ------------------------------------------------------------ */
