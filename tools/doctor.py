@@ -212,12 +212,18 @@ def _print_rooms(snapshot: Mapping[str, Any]) -> None:
         adaptive = ", adaptive" if room["adaptive"] else ""
         print(f"  {room['name']}  [room {room['id']}, Area {room['ha_area_id']}{adaptive}{extra}]")
         for bulb in room["bulbs"]:
-            print(f"      {bulb['id']:<28} {bulb['entity_id']:<36} {bulb['name']}")
+            print(_bulb_line(bulb))
     if snapshot["unassigned"]:
         print(f"  {inventory.UNASSIGNED}")
         for bulb in snapshot["unassigned"]:
-            print(f"      {bulb['id']:<28} {bulb['entity_id']:<36} {bulb['name']}")
+            print(_bulb_line(bulb))
     print()
+
+
+def _bulb_line(bulb: Mapping[str, Any]) -> str:
+    # An ignored bulb is in the snapshot but gets no soft switch or bridge.
+    aside = "  (ignored)" if inventory.is_ignored(bulb) else ""
+    return f"      {bulb['id']:<28} {bulb['entity_id']:<36} {bulb['name']}{aside}"
 
 
 def _check_snapshot(

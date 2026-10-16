@@ -25,7 +25,8 @@ deleted or (re)created helper never does.
 
 Area writes (`deploy_areas`) are separate: they make HA's Areas match the committed room
 snapshot, through `core.inventory`'s own verified moves, and are refused before anything
-is written when the snapshot is too stale to apply.
+is written when the snapshot is too stale to apply. An ignored bulb's light is never
+moved: Light Map has set it aside, so whatever Area HA gives it stands.
 
 `crossover` is the read-only report a deploy preview shows beside the plan: what else in
 HA already drives the bulbs Light Map is about to bridge (foreign automations, scripts,
@@ -689,6 +690,9 @@ def plan_areas(
     to}`, `to` None for Unassigned) and `problems` (a snapshot too stale to write: a room
     whose Area HA no longer has, a bulb whose light it no longer has). Pure.
 
+    Ignored bulbs are left out: their lights are not Light Map's to move, and one HA has
+    moved, or no longer has, doesn't hold up the rest.
+
     `areas` is HA's Area registry; `lights` is what `inventory.discover_lights` returns.
     """
     known = {a.get("area_id") for a in areas}
@@ -697,6 +701,8 @@ def plan_areas(
     problems: list[str] = []
 
     def place(bulb: Mapping[str, Any], area_id: str | None) -> None:
+        if inventory.is_ignored(bulb):
+            return
         light = by_entity.get(bulb["entity_id"])
         if light is None:
             problems.append(

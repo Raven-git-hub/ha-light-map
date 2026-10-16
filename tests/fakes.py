@@ -141,7 +141,8 @@ def bulb(
     key: Any = _REGISTERED,
     **extra: Any,
 ) -> dict[str, Any]:
-    """A snapshot bulb, keyed by the fixture registry id unless `key` says otherwise."""
+    """A snapshot bulb, keyed by the fixture registry id unless `key` says otherwise, and not
+    ignored unless `ignored=True` is passed."""
     entity_id = entity_id or f"light.{bulb_id}"
     result: dict[str, Any] = {
         "id": bulb_id,
@@ -151,7 +152,7 @@ def bulb(
     key = registry_id(entity_id) if key is _REGISTERED else key
     if key:
         result["ha_match_key"] = key
-    return {**result, "hard_switches": [], **extra}
+    return {**result, "ignored": False, "hard_switches": [], **extra}
 
 
 def without_keys(doc: dict[str, Any]) -> dict[str, Any]:
@@ -167,7 +168,7 @@ def committed_config() -> dict[str, Any]:
     """A valid committed config for the fixture house, as of some earlier sync. Its bulbs
     carry match keys; `without_keys` gives the P1-era equivalent."""
     return {
-        "version": 2,
+        "version": 3,
         "homeassistant": {"base_url": "http://ha.local:8123", "verify_ssl": True},
         "system": {},
         "rooms": [
@@ -247,10 +248,20 @@ def committed_config() -> dict[str, Any]:
     }
 
 
+def v2_config() -> dict[str, Any]:
+    """`committed_config` as P2-P4 (schema version 2) wrote it: bulbs with no `ignored`."""
+    doc = committed_config()
+    doc["version"] = 2
+    for holder in [*doc["rooms"], {"bulbs": doc["unassigned"]}]:
+        for item in holder["bulbs"]:
+            del item["ignored"]
+    return doc
+
+
 def v1_config() -> dict[str, Any]:
     """`committed_config` as P1 (schema version 1) wrote it: hard-switch sources as bare
-    entity_ids, and a press with no direction."""
-    doc = committed_config()
+    entity_ids, a press with no direction, and bulbs with no `ignored`."""
+    doc = v2_config()
     doc["version"] = 1
     living = doc["rooms"][0]
     living["bulbs"][3]["hard_switches"][0]["source"] = "switch.reading_relay"

@@ -25,6 +25,12 @@ Id scopes, which follow the HA names the ids end up in:
 - A bulb's `ha_match_key`, when it has one, is unique across all bulbs: one HA registry
   entry is one bulb.
 
+An ignored bulb (`ignored: true`, P4.1: a light that isn't a room bulb, such as an
+indicator LED) stays in the snapshot and keeps its id reserved, but is set aside from
+everything else: the cross-check refuses one that is a switching-group or learning-unit
+member or carries hard switches, since with no soft switch none of them would act on
+anything.
+
 Hard rules:
 
 - Config writes are validate-then-write, never the reverse.
@@ -46,6 +52,9 @@ Hard rules:
 - A hard switch can't be wired into a feedback loop: its source may not be one of Light
   Map's own entities, a `toggle` may not take a bulb Light Map drives as its source, and
   an event source may not listen to the HA core events the plane's own changes fire.
+- A light is never ignored unless the user said so: the reconcile makes every new bulb
+  `ignored: false` and carries the flag on a matched one, never guessing which lights are
+  indicator LEDs (a wrong guess would hide a real bulb).
 """
 
 import copy
@@ -67,7 +76,7 @@ log = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "config.schema.json"
 
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 DEFAULT_PROFILE = "default"
 
 # The observer's settings (`system`), each optional. Tuning defaults, not structural ones,
@@ -130,9 +139,24 @@ def _v1_to_v2(doc: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
+def _v2_to_v3(doc: dict[str, Any]) -> dict[str, Any]:
+    """P4.1 added `bulb.ignored`, which sets aside a light that isn't a room bulb.
+
+    Version 2 had no way to ignore a light, so every version-2 bulb is a bulb: `ignored`
+    false. The bump is what makes an older Light Map refuse a version-3 config outright
+    instead of loading it without knowing which lights to leave alone.
+    """
+    for bulb in _all_bulb_dicts(doc):
+        bulb.setdefault("ignored", False)
+    return doc
+
+
 # Each entry upgrades a document from version N to N + 1. The predecessor's config is
 # re-expressed by hand against this shape, not migrated (docs/DESIGN.md, "Data model").
-_MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {1: _v1_to_v2}
+_MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    1: _v1_to_v2,
+    2: _v2_to_v3,
+}
 
 
 class ConfigError(Exception):
@@ -285,6 +309,8 @@ def apply_defaults(config: Mapping[str, Any]) -> dict[str, Any]:
         room.setdefault("switching_groups", [])
         for holder in [*_dicts(room["bulbs"]), *_dicts(room["switching_groups"])]:
             holder.setdefault("hard_switches", [])
+        for bulb in _dicts(room["bulbs"]):
+            bulb.setdefault("ignored", False)
         adaptive_config = room.get("adaptive_config")
         if isinstance(adaptive_config, dict):
             adaptive_config.setdefault("lux_sensors", [])
@@ -293,6 +319,7 @@ def apply_defaults(config: Mapping[str, Any]) -> dict[str, Any]:
             adaptive_config.setdefault("learning_units", [])
     for bulb in _dicts(doc["unassigned"]):
         bulb.setdefault("hard_switches", [])
+        bulb.setdefault("ignored", False)
     return doc
 
 
@@ -370,6 +397,13 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
             entity_ids.append((bulb.get("entity_id"), where))
             if bulb.get("ha_match_key"):
                 match_keys.append((bulb["ha_match_key"], f"bulb '{bulb.get('id')}'"))
+            if is_ignored(bulb) and bulb.get("hard_switches"):
+                # A binding acts on the bulb's soft switch, which an ignored bulb doesn't
+                # have: its automation would target an entity that isn't there.
+                problems.append(
+                    f"bulb '{bulb.get('id')}' is ignored, so it has no soft switch for a hard "
+                    "switch to act on; remove its hard switches (or un-ignore it)"
+                )
             hard_ids += [
                 (h.get("id"), f"bulb '{bulb.get('id')}'")
                 for h in _dicts(bulb.get("hard_switches", []))
@@ -393,9 +427,13 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
     for room in rooms:
         where = f"room '{room.get('id')}'"
         bulb_ids = {b.get("id") for b in _dicts(room.get("bulbs", []))}
+        ignored = {b.get("id") for b in _dicts(room.get("bulbs", [])) if is_ignored(b)}
         for group in _dicts(room.get("switching_groups", [])):
             problems += _dangling(
                 f"{where} switching group '{group.get('id')}'", group, bulb_ids, bulb_home
+            )
+            problems += _ignored_members(
+                f"{where} switching group '{group.get('id')}'", group, ignored
             )
         adaptive_config = room.get("adaptive_config")
         if not isinstance(adaptive_config, dict):
@@ -412,6 +450,7 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
             problems += _dangling(
                 f"{where} learning unit '{unit.get('id')}'", unit, bulb_ids, bulb_home
             )
+            problems += _ignored_members(f"{where} learning unit '{unit.get('id')}'", unit, ignored)
             for member in unit.get("members", []):
                 # Learning units partition the room's bulbs: a bulb in two units would have
                 # two learned targets for the same section.
@@ -427,7 +466,8 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
 def _hard_switch_loops(rooms: list[dict[str, Any]], unassigned: list[dict[str, Any]]) -> list[str]:
     """Hard switches whose own action would trigger them again."""
     bulbs = [b for room in rooms for b in _dicts(room.get("bulbs", []))] + unassigned
-    driven = {b.get("entity_id") for b in bulbs}
+    # An ignored bulb has no bridge, so nothing Light Map does changes it.
+    driven = {b.get("entity_id") for b in bulbs if not is_ignored(b)}
     bindings = [h for b in bulbs for h in _dicts(b.get("hard_switches", []))]
     for room in rooms:
         for group in _dicts(room.get("switching_groups", [])):
@@ -456,6 +496,22 @@ def _hard_switch_loops(rooms: list[dict[str, Any]], unassigned: list[dict[str, A
                 "Light Map's own work; bind the button's own event, or use a state source"
             )
     return problems
+
+
+def _ignored_members(where: str, holder: Mapping[str, Any], ignored: set[Any]) -> list[str]:
+    # A member's role is its soft switch (a group's hard switches act on it) or its learned
+    # target (a unit's bulbs), and an ignored bulb has neither.
+    return [
+        f"{where}: member '{member}' is ignored; an ignored bulb is in no switching group or "
+        "learning unit"
+        for member in holder.get("members", [])
+        if member in ignored
+    ]
+
+
+def is_ignored(bulb: Mapping[str, Any]) -> bool:
+    """Whether a bulb is set aside (`ignored: true`): in the snapshot, out of the plane."""
+    return bulb.get("ignored") is True
 
 
 def _duplicates(label: str, values: Iterable[Any]) -> list[str]:
@@ -583,13 +639,15 @@ def reconcile_area_snapshot(
       room. A room whose Area is gone from HA is dropped.
     - A bulb is matched by its `ha_match_key` (HA's entity-registry entry id, which
       survives an entity_id rename), or by `entity_id` only when the bulb has no key. A
-      matched bulb keeps its id, hard switches, and memberships wherever it goes, and
-      takes its light's current entity_id and name (and key, if it had none yet). A moved
-      bulb follows its Area, a light with no (known) Area goes to `unassigned`, a bulb
-      whose light HA no longer has is dropped, and a new light becomes a new bulb, under
-      an id no bulb in the old snapshot used.
-    - Switching-group and learning-unit members that are no longer bulbs in the room are
-      dropped, and a group or unit left with no members is dropped with them.
+      matched bulb keeps its id, hard switches, memberships, and `ignored` flag wherever
+      it goes, and takes its light's current entity_id and name (and key, if it had none
+      yet). A moved bulb follows its Area, a light with no (known) Area goes to
+      `unassigned`, a bulb whose light HA no longer has is dropped, and a new light
+      becomes a new bulb, under an id no bulb in the old snapshot used, and not ignored:
+      ignoring is only ever the user's choice.
+    - Switching-group and learning-unit members that are no longer active (not ignored)
+      bulbs in the room are dropped, and a group or unit left with no members is dropped
+      with them.
     - HA light groups are not bulbs and are skipped: driving a group alongside its member
       bulbs would command the same lights twice.
 
@@ -682,6 +740,9 @@ def reconcile_area_snapshot(
             taken.add(bulb_id)
             bulb = {"id": bulb_id, "name": name, "entity_id": entity_id}
             bulb |= {"ha_match_key": key} if key else {}
+            # Never guessed: a light that looks like an indicator LED may be a real bulb,
+            # and ignoring it would hide it from the plane.
+            bulb["ignored"] = False
             bulb["hard_switches"] = []
         else:
             bulb["name"] = name
@@ -713,7 +774,7 @@ def reconcile_area_snapshot(
 
     for room in rooms:
         room["bulbs"] = place(_dicts(room.get("bulbs", [])), room["ha_area_id"])
-        _prune_members(room)
+        prune_members(room)
     doc["rooms"] = rooms
     doc["unassigned"] = place(old_unassigned, None)
     return doc
@@ -761,8 +822,14 @@ def new_id(text: str, taken: Iterable[Any], fallback: str) -> str:
     return _unique(_slugify(text, fallback), set(taken))
 
 
-def _prune_members(room: dict[str, Any]) -> None:
-    bulb_ids = {bulb["id"] for bulb in room["bulbs"]}
+def prune_members(room: dict[str, Any]) -> None:
+    """Drop the switching-group and learning-unit members that aren't active bulbs of the
+    room (gone from it, or ignored), and every group or unit that leaves empty, in place.
+
+    The reconcile runs it on every room; `core.inventory.set_ignored` on the room of a bulb
+    it ignores.
+    """
+    bulb_ids = {bulb["id"] for bulb in _dicts(room.get("bulbs", [])) if not is_ignored(bulb)}
 
     def keep(holders: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         kept = []
@@ -783,10 +850,11 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
     """Describe, one line each, how the room snapshot differs between two configs.
 
     This is what makes a reconcile reviewable before it is saved: rooms added, removed,
-    and renamed; bulbs added, removed, moved, renamed, and re-pointed at a renamed
-    entity_id; match keys recorded; switching groups and learning units dropped or losing
-    members. A bulb is followed by its id, which a reconcile keeps for a matched bulb and
-    never hands to a new one. Deterministic order.
+    and renamed; bulbs added, removed, moved, renamed, re-pointed at a renamed entity_id,
+    ignored, and un-ignored (a line about an ignored bulb says so); match keys recorded;
+    switching groups and learning units dropped or losing members. A bulb is followed by
+    its id, which a reconcile keeps for a matched bulb and never hands to a new one.
+    Deterministic order.
     """
     changes: list[str] = []
     rooms_before = {r.get("id"): r for r in _dicts(before.get("rooms", []))}
@@ -833,19 +901,32 @@ def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
     for bulb_id in sorted(bulbs_before.keys() - bulbs_after.keys(), key=by_entity(bulbs_before)):
         where, bulb = bulbs_before[bulb_id]
         changes.append(
-            f"bulb removed: {bulb.get('entity_id')} (was in {where})"
+            f"bulb removed: {bulb.get('entity_id')} (was in {where}"
+            + (", ignored)" if is_ignored(bulb) else ")")
             + _drops_hard_switches(bulb)
         )
     keys_recorded = 0
     for bulb_id in sorted(bulbs_before.keys() & bulbs_after.keys(), key=by_entity(bulbs_after)):
         (old_where, old), (new_where, new) = bulbs_before[bulb_id], bulbs_after[bulb_id]
         entity_id = new.get("entity_id")
+        # Said, so a reviewer can tell a change that touches nothing in the plane.
+        aside = " (ignored)" if is_ignored(old) and is_ignored(new) else ""
+        if is_ignored(old) != is_ignored(new):
+            changes.append(
+                f"bulb ignored: {entity_id}" + _drops_hard_switches(old)
+                if is_ignored(new)
+                else f"bulb un-ignored: {entity_id}"
+            )
         if old.get("entity_id") != entity_id:
-            changes.append(f"bulb entity_id changed: {old.get('entity_id')} -> {entity_id}")
+            changes.append(
+                f"bulb entity_id changed: {old.get('entity_id')} -> {entity_id}{aside}"
+            )
         if old_where != new_where:
-            changes.append(f"bulb moved: {entity_id}: {old_where} -> {new_where}")
+            changes.append(f"bulb moved: {entity_id}: {old_where} -> {new_where}{aside}")
         if old.get("name") != new.get("name"):
-            changes.append(f"bulb renamed: {entity_id}: {old.get('name')!r} -> {new.get('name')!r}")
+            changes.append(
+                f"bulb renamed: {entity_id}: {old.get('name')!r} -> {new.get('name')!r}{aside}"
+            )
         if old.get("ha_match_key") != new.get("ha_match_key"):
             if old.get("ha_match_key"):
                 changes.append(f"bulb match key changed: {entity_id}")
@@ -908,6 +989,12 @@ def _unique(base: str, taken: set[Any]) -> str:
     while f"{base}_{n}" in taken:
         n += 1
     return f"{base}_{n}"
+
+
+def _all_bulb_dicts(doc: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every bulb in a document that may not be validated yet: rooms' and Unassigned's."""
+    found = [b for room in _dicts(doc.get("rooms")) for b in _dicts(room.get("bulbs"))]
+    return found + list(_dicts(doc.get("unassigned")))
 
 
 def _copy(config: Mapping[str, Any]) -> dict[str, Any]:

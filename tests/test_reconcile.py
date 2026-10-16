@@ -90,6 +90,7 @@ class ReconcileTest(unittest.TestCase):
                         "name": "Desk",
                         "entity_id": "light.desk",
                         "ha_match_key": "reg_light_desk",
+                        "ignored": False,
                         "hard_switches": [],
                     }
                 ],
@@ -364,6 +365,7 @@ class StableIdentityTest(unittest.TestCase):
                 "name": "Reading lamp",
                 "entity_id": "light.reading_lamp",
                 "ha_match_key": "reg_replacement",
+                "ignored": False,
                 "hard_switches": [],
             },
         )

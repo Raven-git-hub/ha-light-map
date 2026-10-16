@@ -29,7 +29,8 @@ Every request first passes the Host allowlist (`LM_ALLOWED_HOSTS`, plus `localho
   switch can take as its source), `/api/log` (the event log, newest first, by minimum
   level, category and room).
 - Config edits, each validate-then-write: `PUT /api/rooms/{room}/adaptive`,
-  `PUT /api/bulbs/{bulb}/hard_switches`, `POST /api/rooms/{room}/groups`,
+  `PUT /api/bulbs/{bulb}/hard_switches`, `PUT /api/bulbs/{bulb}/ignored` (set a light that
+  isn't a room bulb aside, or bring it back; P4.1), `POST /api/rooms/{room}/groups`,
   `PUT|DELETE /api/rooms/{room}/groups/{group}`. Each edit of something that exists
   carries the `version` the Map showed for it as `base`, and is refused (409
   `edit_stale`) if it has changed since: a save from a stale tab never silently reverts
@@ -221,6 +222,12 @@ class AdaptiveFlag(BaseModel):
     base: str
 
 
+class IgnoredFlag(BaseModel):
+    ignored: bool
+    confirm_drops: bool = False
+    base: str
+
+
 class Move(BaseModel):
     room_id: str | None
 
@@ -321,8 +328,17 @@ def _check_base(seen: str | None, current: str, what: str) -> None:
 # The `version` the Map shows for each editable thing, which an edit sends back as `base`.
 
 
-def bulb_version(bulb: Mapping[str, Any]) -> str:
-    return fingerprint(bulb.get("hard_switches", []))
+def bulb_version(doc: Mapping[str, Any], bulb: Mapping[str, Any]) -> str:
+    """A bulb's hard switches, whether it is ignored, and what ignoring it would drop (its
+    memberships, and the groups and units that would go with it): so a confirmation to
+    ignore it covers exactly the list the Map showed."""
+    return fingerprint(
+        {
+            "hard_switches": bulb.get("hard_switches", []),
+            "ignored": inventory.is_ignored(bulb),
+            "drops": inventory.ignore_drops(doc, bulb["id"]),
+        }
+    )
 
 
 def group_version(group: Mapping[str, Any]) -> str:
@@ -341,18 +357,21 @@ def _commit(
     *,
     record: str,
     room_id: str | None = None,
+    detail: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate a config edit, refuse it while it makes a hard switch drive something new
-    unless that is acknowledged, then save it and note it (`record`) in the event log.
-    Returns what it made live."""
+    unless that is acknowledged, then save it and note it (`record`, with `detail`) in the
+    event log. Returns what it made live."""
     checked = config_mod.checked(after)
     live = inventory.going_live(before, checked)
     if live and not acknowledge:
         raise ApiError(409, "coexistence", COEXISTENCE_WARNING, going_live=live)
     _write(request, checked)
+    noted = dict(detail or {})
     if live:
         record += " It makes a hard switch drive something new (acknowledged)."
-    _record(request, "map", record, room_id=room_id, detail={"going_live": live} if live else None)
+        noted["going_live"] = live
+    _record(request, "map", record, room_id=room_id, detail=noted or None)
     return {"saved": True, "going_live": live}
 
 
@@ -361,8 +380,10 @@ def _commit(
 
 def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
     """The Map's view of the committed config: rooms by name, then Unassigned; each bulb
-    with its soft switch and whether it is live (a hard switch drives it, directly or
-    through a switching group); each room's groups."""
+    with its soft switch, whether it is live (a hard switch drives it, directly or through
+    a switching group), and what ignoring it would drop; each room's groups. The ignored
+    bulbs are listed apart (`ignored`, rooms in the same order, then Unassigned), and are
+    in no room's or Unassigned's `bulbs`: those are what the rows and the pickers offer."""
     live = inventory.live_bulbs(doc)
     targets = inventory.hard_switch_targets(doc)
 
@@ -372,7 +393,8 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
             "id": bulb_id,
             "name": bulb["name"],
             "entity_id": bulb["entity_id"],
-            "version": bulb_version(bulb),
+            "version": bulb_version(doc, bulb),
+            "ignore_drops": inventory.ignore_drops(doc, bulb_id),
             "soft": switching.soft_entity(bulb_id),
             "hard_switches": bulb.get("hard_switches", []),
             "groups": groups_of.get(bulb_id, []),
@@ -387,8 +409,23 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
             ],
         }
 
+    def ignored_view(room: Mapping[str, Any] | None, bulb: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "id": bulb["id"],
+            "name": bulb["name"],
+            "entity_id": bulb["entity_id"],
+            "version": bulb_version(doc, bulb),
+            "room_id": room["id"] if room else None,
+            "room_name": room["name"] if room else inventory.UNASSIGNED,
+        }
+
+    def active(bulbs: Any) -> list[Mapping[str, Any]]:
+        return [b for b in bulbs if not inventory.is_ignored(b)]
+
     rooms = []
+    ignored = []
     for room in sorted(doc.get("rooms", []), key=lambda r: (r["name"].casefold(), r["id"])):
+        ignored += [ignored_view(room, b) for b in room.get("bulbs", []) if inventory.is_ignored(b)]
         groups = room.get("switching_groups", [])
         groups_of: dict[str, list[str]] = {}
         for group in groups:
@@ -403,7 +440,8 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
                 "adaptive": room["adaptive"],
                 "adaptive_config": room.get("adaptive_config"),
                 "adaptive_drops": inventory.adaptive_config_content(room),
-                "bulbs": [bulb_view(b, groups_of) for b in room.get("bulbs", [])],
+                "bulbs": [bulb_view(b, groups_of) for b in active(room.get("bulbs", []))],
+                "ignored_count": len(room.get("bulbs", [])) - len(active(room.get("bulbs", []))),
                 "groups": [
                     {
                         "id": g["id"],
@@ -417,12 +455,16 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
                 ],
             }
         )
+    unassigned = doc.get("unassigned", [])
+    ignored += [ignored_view(None, b) for b in unassigned if inventory.is_ignored(b)]
     return {
         "rooms": rooms,
         "unassigned": {
             "name": inventory.UNASSIGNED,
-            "bulbs": [bulb_view(b, {}) for b in doc.get("unassigned", [])],
+            "bulbs": [bulb_view(b, {}) for b in active(unassigned)],
+            "ignored_count": len(unassigned) - len(active(unassigned)),
         },
+        "ignored": ignored,
         "live": {"bulbs": sorted(live), "hard_switches": len(targets)},
     }
 
@@ -500,15 +542,18 @@ def get_config(request: Request) -> dict[str, Any]:
 @router.get("/entities")
 async def entities(request: Request) -> dict[str, Any]:
     """HA entities a hard switch can take as a state source, for the picker. `mapped`
-    marks a bulb Light Map drives (a toggle may not take one: it would toggle itself)."""
+    marks a bulb Light Map drives (a toggle may not take one: it would toggle itself).
+    Ignored lights are left out, as everywhere the Map offers bulbs; one can still be
+    typed in."""
     ha = _ha(request)
     doc = _store(request).read()
     mapped = set(switching.references(doc)["bulbs"])
+    ignored = {bulb["entity_id"] for _, bulb in inventory.ignored_bulbs(doc)}
     found = []
     for state in await ha.get_states():
         entity_id = str(state.get("entity_id", ""))
         domain, _, object_id = entity_id.partition(".")
-        if domain not in SOURCE_DOMAINS or object_id.startswith("lm_"):
+        if domain not in SOURCE_DOMAINS or object_id.startswith("lm_") or entity_id in ignored:
             continue
         found.append(
             {
@@ -694,6 +739,15 @@ def _move_proposal(
     doc: Mapping[str, Any], bulb_id: str, room_id: str | None
 ) -> tuple[Mapping[str, Any], str | None, dict[str, Any]]:
     room, bulb = inventory.find_bulb(doc, bulb_id)
+    if inventory.is_ignored(bulb):
+        # Light Map has set the light aside, so it writes nothing about it to HA; its Area
+        # is HA's to keep, and a sync follows it.
+        raise ApiError(
+            409,
+            "ignored",
+            f"{bulb['name']} is ignored: Light Map doesn't move it. Un-ignore it first, or "
+            "move it in Home Assistant.",
+        )
     if (room["id"] if room else None) == room_id:
         raise ApiError(409, "no_change", f"bulb '{bulb_id}' is already there")
     area_id = None if room_id is None else _room(doc, room_id)["ha_area_id"]
@@ -752,7 +806,7 @@ async def set_bulb_hard_switches(
     async with _store(request).lock:
         doc = _store(request).read()
         room, bulb = inventory.find_bulb(doc, bulb_id)
-        _check_base(body.base, bulb_version(bulb), f"{bulb['name']}'s hard switches")
+        _check_base(body.base, bulb_version(doc, bulb), f"{bulb['name']}'s hard switches")
         proposed = inventory.set_hard_switches(doc, bulb_id, body.hard_switches)
         return _commit(
             request,
@@ -762,6 +816,53 @@ async def set_bulb_hard_switches(
             record=f"Saved {bulb['name']}'s hard switches ({len(body.hard_switches)}).",
             room_id=room["id"] if room else None,
         )
+
+
+@router.put("/bulbs/{bulb_id}/ignored")
+async def set_ignored(request: Request, bulb_id: str, body: IgnoredFlag) -> dict[str, Any]:
+    """Ignore a bulb (a light that isn't a room bulb, such as an indicator LED: from the
+    next deploy on it has no soft switch or bridge) or un-ignore it (it comes back bare).
+
+    Ignoring one with hard switches or memberships drops them, so it is refused (409
+    `confirm_required`, with what would be dropped) unless `confirm_drops`; the `base`
+    check makes that confirmation cover exactly what the Map listed. Pure config: the
+    deploy preview then shows the soft switch and bridge it removes.
+    """
+    async with _store(request).lock:
+        doc = _store(request).read()
+        room, bulb = inventory.find_bulb(doc, bulb_id)
+        _check_base(body.base, bulb_version(doc, bulb), bulb["name"])
+        if inventory.is_ignored(bulb) == body.ignored:
+            raise ApiError(
+                409,
+                "no_change",
+                f"{bulb['name']} is already {'ignored' if body.ignored else 'not ignored'}",
+            )
+        drops = inventory.ignore_drops(doc, bulb_id)
+        if body.ignored and drops and not body.confirm_drops:
+            raise ApiError(
+                409,
+                "confirm_required",
+                f"Ignoring {bulb['name']} drops {'; '.join(drops)}.",
+                drops=drops,
+            )
+        proposed = inventory.set_ignored(doc, bulb_id, body.ignored)
+        changes = config_mod.snapshot_changes(doc, proposed)
+        what = f"{bulb['name']} ({bulb['entity_id']})"
+        result = _commit(
+            request,
+            doc,
+            proposed,
+            False,  # un-ignoring brings a bulb back bare, so nothing is made live
+            record=(
+                f"Ignored {what}: the next deploy removes its soft switch and bridge."
+                if body.ignored
+                else f"Un-ignored {what}: the next deploy gives it a soft switch and bridge."
+            ),
+            room_id=room["id"] if room else None,
+            detail={"changes": changes},
+        )
+        return {**result, "ignored": body.ignored, "changes": changes}
 
 
 # -- Switching groups ------------------------------------------------------------------

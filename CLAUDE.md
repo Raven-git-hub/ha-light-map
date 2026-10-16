@@ -77,6 +77,10 @@ Presence Rules can be added without touching the trunk:
    bridge applies on soft-on for its bulbs (`core.switching.register_bridge_brightness`);
    core embeds it in the soft-on branch and owns the target and the power.
 
+A module reads a room's bulbs through `core.inventory.active_bulbs`, never `room["bulbs"]`
+directly: an ignored bulb (an indicator or gadget LED the user set aside, P4.1) stays in the
+snapshot but gets no soft switch, no bridge, no observation, and no module's attention.
+
 `app/core` never imports from `app/modules`. Modules are wired in by the composition root,
 `app/main.py`.
 

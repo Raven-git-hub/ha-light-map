@@ -87,9 +87,10 @@ A room is the single shared container. (Config shape summary in `docs/ARCHITECTU
 Everything downstream is a pure function of the committed document.
 
 - `rooms[]`: `{ id, name, ha_area_id, adaptive, bulbs[], switching_groups[], adaptive_config? }`
-  - `bulbs[]`: `{ id, name, entity_id (light.*), ha_match_key?, hard_switches[] }` — a
-    soft-switch helper is implicit (generated) per bulb. `ha_match_key` is an opaque match
-    key (see "Bulb identity").
+  - `bulbs[]`: `{ id, name, entity_id (light.*), ha_match_key?, ignored, hard_switches[] }`
+    — a soft-switch helper is implicit (generated) per bulb that isn't ignored.
+    `ha_match_key` is an opaque match key (see "Bulb identity"); `ignored` (default false)
+    sets a light that isn't a room bulb aside (see "Ignored lights").
   - `switching_groups[]`: `{ id, name, members (bulb ids), hard_switches[] }` — a named set
     of member bulbs plus its hard-switch bindings. It has no soft switch of its own: a hard
     switch bound to the group acts on each member's.
@@ -120,7 +121,7 @@ A parallel namespace to the adaptive `al_*` artefacts, deployed and reconciled t
 but in its own lane (settled in P2):
 
 - `input_boolean.lm_soft_<bulb_id>` — one per bulb, and only per bulb (including the bulbs
-  in Unassigned). Named `LM Soft <bulb_id>`: HA gives a helper created over the network the
+  in Unassigned, excluding the ignored ones). Named `LM Soft <bulb_id>`: HA gives a helper created over the network the
   id of its slugified name, with no way to ask for another, so the name is derived from the
   bulb's id (already a slug), never from its display name.
 - **No group entity.** A switching group mints nothing in HA. A group of `input_boolean`s
@@ -240,12 +241,13 @@ destructive by surprise.
   Area's. A new Area becomes a new, non-adaptive room (id from the Area id). A room whose Area
   is gone from HA is dropped.
 - **A bulb is matched by its `ha_match_key`**, or by `entity_id` when it has none (see "Bulb
-  identity" below). A moved bulb follows its Area with its id and hard switches; a light with
+  identity" below). A moved bulb follows its Area with its id, hard switches and `ignored`
+  flag; a light with
   no (known) Area goes to `unassigned`; a bulb whose light HA no longer has is dropped; a new
   light becomes a new bulb (id from its object id, unique among bulb and switching-group ids,
   and never one a bulb in the old snapshot used). Its name and entity_id follow HA's.
-- **Switching-group and learning-unit members that leave the room are dropped**, and a group
-  or unit left empty is dropped with it.
+- **Switching-group and learning-unit members that leave the room are dropped** (as are
+  ignored ones), and a group or unit left empty is dropped with it.
 - **HA light groups are not bulbs.** A `light.*` that lists member `entity_id`s (HA's group
   platform) or is a Hue room/zone is skipped: driving it as well as its members would command
   the same lights twice. The doctor lists them.
@@ -289,6 +291,39 @@ switching-group and learning-unit memberships pruned.
 - No schema-version bump: the key is optional, so a P1 snapshot still loads, and its first
   sync records keys by matching on entity_id. Rename entities in HA only after that first
   sync; until a bulb has its key, a rename still reads as remove + add.
+
+### Ignored lights (settled in P4.1)
+
+Not every `light.*` is a room bulb. Indicator LEDs (a Zigbee coordinator's, a network
+cabinet's, the status LED of a switch or an access point) and gadget LEDs (a mug warmer's)
+are lights to HA, so discovery finds them, and each would get a soft switch and a bridge. A
+bulb marked **ignored** (`ignored: true`) is set aside:
+
+- **It stays in the snapshot**, in its room or in Unassigned, and the reconcile follows it
+  like any bulb: matched by `ha_match_key` (else by entity_id), so the flag survives a sync,
+  a move between Areas and an entity_id rename, and dropped when HA no longer has its light.
+  That is what lets it be un-ignored, and what keeps its id reserved.
+- **Nothing else sees it.** It gets no soft switch and no bridge, so the next deploy removes
+  the `lm_soft_` and `lm_bridge_` of one that was deployed, as it removes any artefact the
+  config no longer calls for, and leaves the light exactly as it is. A deploy doesn't need
+  its light to exist in HA; the Area writes never move it, and a Map move is refused; the
+  observer doesn't watch it; it is no switching group's or learning unit's member and
+  carries no hard switches (the cross-check refuses a config that says otherwise); the
+  hard-switch source picker and the group member picker don't offer it. Whatever
+  generates, deploys or observes reads the bulbs through `core.inventory.active_bulbs`, so
+  a module (adaptive, P5) never meets one.
+- **Ignoring drops what hangs off the bulb**: its hard switches, and its memberships (a
+  switching group or learning unit left with no members is dropped with it, a group's hard
+  switches too), since none of them means anything without a soft switch. When it would
+  drop anything the API asks first (409 `confirm_required`, listing it), as unflagging a
+  room's adaptive config does. Un-ignoring brings the bulb back bare: a soft switch and a
+  bridge on the next deploy, no bindings, nothing made live.
+- **A newly discovered light is never ignored**, and nothing classifies lights for the user:
+  a guess that a light is an indicator LED would hide a real bulb, so ignoring is always the
+  user's explicit choice.
+- Version 3 of the config added the flag. A version-2 config migrates with every bulb not
+  ignored. The bump is what makes an older Light Map refuse a version-3 config outright
+  rather than load the house without knowing which lights to leave alone.
 
 The writes from the Map change HA first, and then exactly that change is committed to the
 snapshot (settled in P3; see "The Map and its API"): never a full sync, which would also
@@ -391,7 +426,8 @@ The step order is what keeps a deploy from driving anything:
 3. Automations are written in the generator's order — bridges before hard switches — so no
    hard switch goes live before the bridges of the bulbs it switches.
 4. Automations are removed before the helpers they reference. Removing a bulb from the
-   config removes its soft switch and bridge and leaves the bulb exactly as it is.
+   config, or ignoring it, removes its soft switch and bridge and leaves the bulb exactly
+   as it is.
 
 No step calls a light service. Before writing, a switching-plane deploy validates the config
 and checks that every bulb and hard-switch source exists in HA (a missing bulb means the
@@ -451,9 +487,11 @@ The Map tab is the first thing a person uses, and the first that deploys to a re
 its shape follows from two rules: nothing reaches HA, or the committed config, that the
 user wasn't shown first, and nothing makes a bulb live beside the old system silently.
 
-**Layout.** Rooms (HA Areas, by name) down the page, then Unassigned. Per room: the name
-(click to rename the Area) and the ADAPTIVE checkbox; its bulbs, each by name and
-entity_id with its generated soft switch, which opens the hard-switch popup; a groups
+**Layout.** Rooms (HA Areas, by name) down the page, then Unassigned, then a collapsed
+"Ignored (N)" section listing every ignored light (P4.1) with its room and an Un-ignore
+action. Per room: the name (click to rename the Area) and the ADAPTIVE checkbox; its
+bulbs that aren't ignored, each by name and entity_id with Move and Ignore actions and its
+generated soft switch, which opens the hard-switch popup; a groups
 column (each group opens its popup; ADD makes one: name, members from the room's bulbs,
 hard switches); and the Adaptive Config button, enabled only while the room is adaptive,
 which opens a placeholder until the adaptive editor arrives (P5). Ticking ADAPTIVE writes a
@@ -505,13 +543,20 @@ HA write; if saving fails after it, the error says the HA change stands and a sy
 pick it up.
 
 **Edits carry the version they were made against.** The Map shows a `version` for each
-bulb's hard switches, each switching group, and each room's adaptive flag and config, and
-an edit sends it back as `base`; one made against an older version is refused (409
+bulb (its hard switches, whether it is ignored, and what ignoring it would drop), each
+switching group, and each room's adaptive flag and config, and an edit sends it back as
+`base`; one made against an older version is refused (409
 `edit_stale`) and the popup closes onto the Map as it now is. Edits replace whole lists (a
 bulb's bindings, a group's members), so without this a popup left open in a second tab
 would silently undo the first tab's edit when saved, and an acknowledgement (going live)
 or confirmation (dropping an adaptive config) given for the view on screen would cover
 bindings or settings the user never saw.
+
+**Ignoring a bulb** (P4.1) is a config edit like these, against the bulb's `version`:
+`PUT /api/bulbs/{bulb}/ignored`. Ignoring takes effect in HA only on the next deploy,
+whose preview lists the soft switch and bridge it removes. A bulb whose ignoring drops
+nothing (no hard switches, no memberships) is ignored at once, so setting a dozen
+indicator LEDs aside is a dozen clicks; otherwise the Map lists the drops and asks.
 
 **The committed config** lives at `LM_CONFIG_PATH` and is read fresh for every request (it
 is small, and a hand edit is picked up at once), written only through `config.save`, one
@@ -575,8 +620,9 @@ reading per bulb (long format) from a fresh read of HA's states:
   after 90 seconds. A guard is an entity a module raises while its own automations are
   changing the room's lights (`al_active_<room>`, P5). There is none before P5.
 
-Rooms without bulbs aren't observed. A room's lux and presence sensors are read from its
-`adaptive_config`, where the config shape keeps them (an open decision in
+Rooms without bulbs aren't observed, and an ignored bulb (P4.1) is never read: a room
+whose bulbs are all ignored isn't observed either. A room's lux and presence sensors are
+read from its `adaptive_config`, where the config shape keeps them (an open decision in
 `docs/ARCHITECTURE.md`).
 
 **Reactive detection.** A user intervention is a brightness change: a bulb that was on and

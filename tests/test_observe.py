@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 from websockets.asyncio.server import serve
 
+from app.core import config, inventory
 from app.core.ha import HAClient
 from app.core.observe import Observer, _until_next_tick, is_user_intervention
 from app.core.store import Store
@@ -648,6 +649,45 @@ class HooksTest(ObserverCase):
         self.assertEqual(later, ["heartbeat"])
         self.assertEqual(len(self.rows("SELECT * FROM heartbeat")), 1)  # stored first
         self.assertIn("RuntimeError('module bug')", self.log("observer")[0][1])
+
+
+class IgnoredTest(ObserverCase):
+    """An ignored bulb (P4.1: a light the user set aside, like an indicator LED) is never
+    read, and a room whose bulbs are all ignored isn't observed."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        doc = inventory.set_ignored(committed_config(), "chandelier_1", True)
+        self.config = config.checked(inventory.set_ignored(doc, "kitchen_strip", True))
+        await self.start()
+
+    async def test_an_ignored_bulb_gets_no_reading(self):
+        recorded = await self.observer.tick()
+        self.assertEqual([o["room_id"] for o in recorded], ["living_room"])  # kitchen: none left
+        self.assertEqual(
+            [r["bulb_id"] for r in self.rows("SELECT bulb_id FROM bulb_reading ORDER BY bulb_id")],
+            ["chandelier_2", "chandelier_3", "reading_lamp"],
+        )
+        self.assertEqual(self.observer.status()["bulbs"], 3)
+
+    async def test_an_ignored_bulb_is_never_a_reactive_change(self):
+        await self.manual("light.chandelier_1", 200)  # an LED dimming itself, say
+        await self.manual("light.kitchen_strip", 90)
+        await self.close_windows()
+        self.assertEqual(self.rows("SELECT * FROM reactive_event"), [])
+        # Its room's other bulbs are still watched.
+        await self.manual("light.chandelier_2", 200)
+        await self.close_windows()
+        self.assertEqual(
+            [c["bulb_id"] for c in self.rows("SELECT bulb_id FROM reactive_change ORDER BY bulb_id")],
+            ["chandelier_2", "chandelier_3", "reading_lamp"],
+        )
+
+    async def test_un_ignored_it_is_watched_again(self):
+        self.config = config.checked(inventory.set_ignored(self.config, "kitchen_strip", False))
+        self.observer.reload()
+        recorded = await self.observer.tick()
+        self.assertEqual([o["room_id"] for o in recorded], ["kitchen", "living_room"])
 
 
 class EndToEndTest(unittest.IsolatedAsyncioTestCase):

@@ -239,6 +239,77 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
       await page.keyboard.press("Escape");
     });
 
+    await step("ignoring a bulb that drops nothing is immediate", async () => {
+      assert.match(await page.textContent(".ignored-section summary"), /Ignored \(0\)/);
+      assert.equal(await page.getAttribute(".ignored-section", "open"), null); // collapsed
+      await page.click('tr[data-bulb="counter_lamp"] .ignore');
+      await page.waitForSelector('tr[data-bulb="counter_lamp"]', { state: "detached" });
+      assert.match(await page.textContent("#notices .notice.ok"), /Deploy to remove its soft switch and bridge/);
+      assert.match(await page.textContent(".ignored-section summary"), /Ignored \(1\)/);
+      assert.ok(await page.$('.ignored-section tr[data-ignored="counter_lamp"]'));
+      assert.match(await page.textContent('tr[data-ignored="counter_lamp"] .ignored-room'), /Kitchen/);
+    });
+
+    await step("ignoring a bulb that drops something asks first", async () => {
+      await page.click('tr[data-bulb="kitchen_strip"] .ignore');
+      await page.waitForSelector(dialog("confirm"));
+      assert.match(
+        await page.textContent(dialog("confirm")),
+        /switching group 'Kitchen all', which would have no members left/,
+      );
+      await page.click(`${dialog("confirm")} button:has-text("Cancel")`);
+      await page.waitForSelector(dialog("confirm"), { state: "detached" });
+      assert.ok(await page.$('tr[data-bulb="kitchen_strip"]'));
+      await page.click('tr[data-bulb="kitchen_strip"] .ignore');
+      await page.click(`${dialog("confirm")} button.confirm`);
+      await page.waitForSelector('tr[data-bulb="kitchen_strip"]', { state: "detached" });
+      assert.equal(await page.$('button.group[data-group="kitchen_all"]'), null); // left empty, dropped
+      assert.match(await page.textContent(".ignored-section summary"), /Ignored \(2\)/);
+    });
+
+    await step("ignored lights are offered by no picker", async () => {
+      await page.click('tbody[data-room="kitchen"] button.add-group');
+      const popup = dialog("group");
+      await page.waitForSelector(popup);
+      const members = await page.$$eval(`${popup} .member input`, (els) => els.map((e) => e.value));
+      assert.deepEqual(members, ["porch"]);
+      const sources = await page.$$eval("#lm-entities option", (els) => els.map((e) => e.value));
+      assert.ok(sources.includes("switch.reading_relay"));
+      assert.ok(!sources.includes("light.kitchen_strip") && !sources.includes("light.counter_lamp"));
+      await page.click(`${popup} button.cancel`);
+      await page.waitForSelector(popup, { state: "detached" });
+    });
+
+    await step("the next deploy removes the ignored bulbs' soft switches and bridges", async () => {
+      await page.click("#deploy-button");
+      const popup = dialog("deploy");
+      await page.waitForSelector(`${popup} .plan-table.steps`);
+      const text = await page.textContent(popup);
+      for (const bulb of ["counter_lamp", "kitchen_strip"]) {
+        assert.match(text, new RegExp(`remove\\s*soft switch\\s*lm_soft_${bulb}`));
+        assert.match(text, new RegExp(`remove\\s*automation\\s*lm_bridge_${bulb}`));
+      }
+      assert.doesNotMatch(text, /create\s*\S+\s*lm_\S*counter_lamp/);
+      await page.click(`${popup} .deploy-confirm`);
+      await page.waitForSelector(`${popup} .deploy-result`);
+      assert.match(await page.textContent(`${popup} .deploy-result`), /removed 4/);
+      await page.click(`${popup} button.cancel`);
+      await page.waitForSelector(popup, { state: "detached" });
+    });
+
+    await step("un-ignore from the Ignored section", async () => {
+      await page.click(".ignored-section summary");
+      await page.waitForSelector('.ignored-section[open] tr[data-ignored="counter_lamp"] .unignore');
+      await shot(page, "05-ignored");
+      await page.click('tr[data-ignored="counter_lamp"] .unignore');
+      await page.waitForSelector('tbody[data-room="kitchen"] tr[data-bulb="counter_lamp"]');
+      assert.match(await page.textContent("#notices .notice.ok:last-child"), /back in Kitchen/);
+      assert.match(await page.textContent(".ignored-section summary"), /Ignored \(1\)/);
+      // The section stays unfolded across the reload.
+      assert.ok(await page.$('.ignored-section[open] tr[data-ignored="kitchen_strip"]'));
+      assert.equal(await page.$('tr[data-ignored="counter_lamp"]'), null);
+    });
+
     await step("the other tabs are placeholders", async () => {
       await page.click('a[href="#now"]');
       await page.waitForSelector(".placeholder");
