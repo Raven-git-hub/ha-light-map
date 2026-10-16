@@ -5,11 +5,13 @@ truth; update both together.
 
 Parallel build in this repo: the live `ha-adaptive-light` keeps running untouched until P6.
 
-**Current phase: P4** (P0–P3 done: the scaffold, the inventory with stable bulb identity
-across HA entity renames, the switching plane with its deploy, and the Map tab with its
-HTTP API and deploy-with-preview; P4 builds the observation core: the WebSocket observer,
-per-bulb heartbeats, reactive detection, the CSV + SQLite store, the event log and the Log
-tab, plus a Host-header allowlist on the API).
+**Current phase: P4.1** (P0–P4 done: the scaffold, the inventory with stable bulb identity
+across HA entity renames, the switching plane with its deploy, the Map tab with its HTTP
+API and deploy-with-preview, and the observation core: the WebSocket observer, per-bulb
+heartbeats, reactive detection, the CSV + SQLite store, the event log and the Log tab, plus
+a Host-header allowlist on the API; P4.1 adds ignored lights, a per-bulb flag that sets
+aside the `light.*` entities that aren't room bulbs, such as indicator and gadget LEDs, so
+they get no soft switch or bridge).
 
 ## Phases
 
@@ -22,7 +24,8 @@ tab, plus a Host-header allowlist on the API).
 - **P3 — Map UI.** The Map tab: rooms, the adaptive checkbox, per-bulb soft-switch popups,
   group-soft ADD/edit popups, the Adaptive Config button (inert until P5).
 - **P4 — Observation core.** The WebSocket observer, per-bulb heartbeats, reactive detection,
-  the event log, storage. A platform service.
+  the event log, storage. A platform service. **P4.1** adds ignored lights: a per-bulb
+  flag that sets an indicator or gadget LED aside from the plane.
 - **P5 — Adaptive module.** Port scheduler + analyser; learning units; almanac keyed by
   unit; scene + maintenance generation commanding soft switches; the Now / Analysis /
   Almanac views and the adaptive room editor.

@@ -27,11 +27,18 @@ registries. To commit one to the snapshot, apply the same change to the config w
 the way a sync would, without also committing whatever else HA has changed meanwhile
 (which `sync_snapshot` would, and which must be reviewed through `snapshot_changes` first).
 
+Some lights aren't room bulbs (indicator LEDs, a mug warmer's LED), and the user can set
+one aside: an ignored bulb (`ignored: true`, P4.1) stays in the snapshot, followed through
+syncs like any bulb so it can be un-ignored, but is left out of everything else.
+`active_bulbs` is the inventory everything else works from (generation, deploy, the
+observer, and the modules): every bulb that isn't ignored. Discovery still finds every
+light, and nothing here ever decides on its own that a light is to be ignored.
+
 The rest of the Map's edits are pure config edits (`set_adaptive`, `set_hard_switches`,
-the switching-group edits): HA is not touched, and the result is checked when it is saved
-(validate-then-write). `live_bulbs` and `going_live` say which bulbs a hard switch makes
-live: during the parallel build (P0-P4) binding one is the step that makes a bridge
-authoritative beside the live ha-adaptive-light, so the Map warns before saving one.
+`set_ignored`, the switching-group edits): HA is not touched, and the result is checked when
+it is saved (validate-then-write). `live_bulbs` and `going_live` say which bulbs a hard
+switch makes live: during the parallel build (P0-P4) binding one is the step that makes a
+bridge authoritative beside the live ha-adaptive-light, so the Map warns before saving one.
 
 Hard rules:
 
@@ -46,6 +53,9 @@ Hard rules:
 - Entity IDs only, never device IDs. The device registry is read only to resolve an
   inherited Area; device IDs never reach the result or the config. A bulb's
   `ha_match_key` is an opaque match key: matched, never addressed or validated.
+- Ignoring is the user's choice, never a guess: a new light is never ignored, because
+  guessing that a light is an indicator LED would hide a real bulb. An ignored bulb is in
+  no switching group or learning unit and has no hard switches.
 """
 
 import copy
@@ -53,7 +63,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from app.core import config as config_mod
-from app.core.config import ConfigError
+from app.core.config import ConfigError, is_ignored
 from app.core.ha import HAClient
 
 UNASSIGNED = "Unassigned"
@@ -499,6 +509,76 @@ def remove_switching_group(
     if len(remaining) == len(groups):
         raise NotFound(f"room '{room_id}' has no switching group '{group_id}'")
     room["switching_groups"] = remaining
+    return doc
+
+
+# -- Ignored lights --------------------------------------------------------------------
+
+
+def active_bulbs(config: Mapping[str, Any]) -> list[tuple[Mapping[str, Any] | None, Any]]:
+    """Every bulb that isn't ignored, with its room (None for Unassigned), in config order:
+    the inventory the switching plane, deploy, the observer, and the modules work from.
+
+    An ignored bulb is a light the user set aside (an indicator LED, say). It stays in the
+    snapshot, so a sync keeps following it and it can be un-ignored, but it gets no soft
+    switch or bridge, isn't observed, and no module sees it. Read bulbs through here, not
+    straight from `room["bulbs"]`, so none of them can pick one up by accident.
+    """
+    return [(room, bulb) for room, bulb in _all_bulbs(config) if not is_ignored(bulb)]
+
+
+def ignored_bulbs(config: Mapping[str, Any]) -> list[tuple[Mapping[str, Any] | None, Any]]:
+    """Every ignored bulb, with its room (None for Unassigned), in config order."""
+    return [(room, bulb) for room, bulb in _all_bulbs(config) if is_ignored(bulb)]
+
+
+def ignore_drops(config: Mapping[str, Any], bulb_id: str) -> list[str]:
+    """What ignoring a bulb would throw away, one line each: its hard switches, its
+    switching-group and learning-unit memberships, and any group or unit that would be
+    left with no members (dropped too, with a group's hard switches). Empty when it would
+    drop nothing, and for a bulb already ignored."""
+    room, bulb = find_bulb(config, bulb_id)
+    if is_ignored(bulb):
+        return []
+    drops = []
+    own = [str(h.get("id")) for h in bulb.get("hard_switches", [])]
+    if own:
+        drops.append(f"its hard switch(es): {', '.join(own)}")
+    holders = [("switching group", g) for g in (room or {}).get("switching_groups", [])]
+    adaptive_config = (room or {}).get("adaptive_config") or {}
+    holders += [("learning unit", u) for u in adaptive_config.get("learning_units", [])]
+    for label, holder in holders:
+        if bulb_id not in holder.get("members", []):
+            continue
+        name = holder.get("name") or holder.get("id")
+        if [m for m in holder["members"] if m != bulb_id]:
+            drops.append(f"its place in {label} {name!r}")
+            continue
+        switches = [str(h.get("id")) for h in holder.get("hard_switches", [])]
+        drops.append(
+            f"{label} {name!r}, which would have no members left"
+            + (f", with its hard switch(es): {', '.join(switches)}" if switches else "")
+        )
+    return drops
+
+
+def set_ignored(config: Mapping[str, Any], bulb_id: str, ignored: bool) -> dict[str, Any]:
+    """Return the config with a bulb ignored, or not.
+
+    Ignoring takes everything that hangs off the bulb with it, since none of it means
+    anything without a soft switch: its hard switches, and its switching-group and
+    learning-unit memberships (a group or unit left empty goes too; `ignore_drops` says
+    what that loses). Un-ignoring brings it back bare: no bindings, no memberships, so
+    nothing becomes live. Either way the bulb stays where it is in the snapshot, with its
+    id. A pure edit: HA is not touched, and the result is checked when it is saved.
+    """
+    doc = copy.deepcopy(dict(config))
+    room, bulb = find_bulb(doc, bulb_id)
+    bulb["ignored"] = bool(ignored)
+    if ignored:
+        bulb["hard_switches"] = []
+        if room is not None:
+            config_mod.prune_members(room)
     return doc
 
 

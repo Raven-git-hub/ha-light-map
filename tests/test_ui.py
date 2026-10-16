@@ -143,7 +143,7 @@ class BrowserTest(unittest.TestCase):
             self.assertTrue(lines, result.stderr)
             report = json.loads(lines[-1])
             self.assertTrue(report["ok"], json.dumps(report, indent=2) + result.stderr)
-            self.assertEqual(len(report["steps"]), 13)
+            self.assertEqual(len(report["steps"]), 18)
 
             # What the clicks did, as the server and the fake HA saw it.
             saved = json.loads(path.read_text())
@@ -164,17 +164,10 @@ class BrowserTest(unittest.TestCase):
                 ],
             )
             self.assertEqual(kitchen["bulbs"][0]["hard_switches"], [])  # that popup was cancelled
-            self.assertEqual(
-                kitchen["switching_groups"],
-                [
-                    {
-                        "id": "kitchen_all",
-                        "name": "Kitchen all",
-                        "members": ["kitchen_strip"],
-                        "hard_switches": [],
-                    }
-                ],
-            )
+            # Ignored bulbs stay in the snapshot; the one un-ignored is back as it was.
+            self.assertEqual([b["ignored"] for b in kitchen["bulbs"]], [True, False, False])
+            # The group created earlier went with its only member when that was ignored.
+            self.assertEqual(kitchen["switching_groups"], [])
             self.assertTrue(kitchen["adaptive"])
             self.assertIn("garage", [r["id"] for r in saved["rooms"]])
             living = next(r for r in saved["rooms"] if r["id"] == "living_room")
@@ -185,7 +178,11 @@ class BrowserTest(unittest.TestCase):
             porch_entry = next(e for e in ha.entities if e["entity_id"] == "light.porch")
             self.assertEqual(porch_entry["area_id"], "kitchen")
             self.assertIn("lm_hard_porch_button", ha.automations)
-            self.assertIn("lm_soft_counter_lamp", ha.helpers["input_boolean"])
+            # Deployed, then removed while it was ignored (and not deployed since).
+            self.assertNotIn("lm_soft_counter_lamp", ha.helpers["input_boolean"])
+            self.assertNotIn("lm_bridge_counter_lamp", ha.automations)
+            self.assertNotIn("lm_soft_kitchen_strip", ha.helpers["input_boolean"])
+            self.assertIn("lm_soft_porch", ha.helpers["input_boolean"])
             self.assertEqual(ha.fired, [])  # deploying from the UI drove no bulb
 
     def test_the_log(self):

@@ -1,8 +1,9 @@
 """Observation: the live observer: per-bulb heartbeats, reactive (manual-change) detection,
 the event log. A platform service modules subscribe to. Readings are per bulb, long format.
 
-The observer watches the bulbs of every room that has any, and those rooms' lux and
-presence sensors, through HA's `state_changed` events, and the starts of automation runs
+The observer watches the bulbs of every room that has any (never an ignored one, P4.1: a
+light the user set aside, like an indicator LED), and those rooms' lux and presence
+sensors, through HA's `state_changed` events, and the starts of automation runs
 through `automation_triggered` (`HAClient.subscribe_events`, kept alive across drops by
 the client's reconnect ladder). It keeps a mirror of the states it watches, refreshed from
 HA's states at every (re)connect and every tick, and:
@@ -52,6 +53,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from app.core import config as config_mod
+from app.core import inventory
 from app.core.ha import HAClient, HAError
 from app.core.store import Store, timestamp
 
@@ -651,7 +653,12 @@ class Observer:
         if window.timer is not None and window.timer is not asyncio.current_task():
             window.timer.cancel()
         room = self._rooms.get(room_id)
-        entities = {**window.entities, **(dict(room.bulbs) if room else {})}
+        # A bulb no longer watched (ignored, or gone in a sync, since the window opened) is
+        # not read at the close: its mirror is gone, and reading it would record it as
+        # unavailable. It stays only if the user changed it while it was watched, as that
+        # change left it.
+        touched = {b: e for b, e in window.entities.items() if b in window.after}
+        entities = {**touched, **(dict(room.bulbs) if room else {})}
         min_delta = self._settings["reactive_min_delta"]
         changes = []
         for bulb_id in sorted(entities):
@@ -796,11 +803,20 @@ class Observer:
 
 
 def _rooms(config: Mapping[str, Any], providers: Iterable[GuardProvider]) -> dict[str, _Room]:
-    """The rooms to observe: every room with bulbs."""
+    """The rooms to observe: every room with active bulbs, and only those bulbs.
+
+    An ignored bulb is never read: an indicator LED's readings would mean nothing, and its
+    firmware dimming itself would look like a hand on a dimmer. A room whose bulbs are all
+    ignored isn't observed.
+    """
     providers = list(providers)
+    active: dict[str, list[tuple[str, str]]] = {}
+    for room, bulb in inventory.active_bulbs(config):
+        if room is not None:
+            active.setdefault(room["id"], []).append((bulb["id"], bulb["entity_id"]))
     rooms = {}
     for room in config.get("rooms") or []:
-        bulbs = tuple(sorted((b["id"], b["entity_id"]) for b in room.get("bulbs") or []))
+        bulbs = tuple(sorted(active.get(room["id"], [])))
         if not bulbs:
             continue
         # The sensors live in the adaptive module's block, where the config shape keeps

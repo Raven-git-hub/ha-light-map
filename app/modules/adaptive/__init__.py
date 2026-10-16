@@ -15,4 +15,8 @@ Through the four module seams:
 A learning unit is a set of bulbs sharing one learned brightness target per section: a free
 partition of the room's adaptive bulbs, independent of switching groups. Its members keep
 their own soft switches and can be on or off independently.
+
+An ignored bulb (a light the user set aside, such as an indicator LED; P4.1) is never part
+of the plane: it has no soft switch and is no learning unit's member. Read a room's bulbs
+through `core.inventory.active_bulbs`, never straight from the config.
 """

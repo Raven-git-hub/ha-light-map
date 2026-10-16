@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from app.core import config
+from app.core import config, inventory
 from app.core.ha import HAAuthError
 from tests.fakes import FakeHA, committed_config
 from tools import doctor
@@ -56,6 +56,21 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("a sync would make 3 changes", out)
         self.assertIn("bulb added: light.counter_lamp -> room 'kitchen'", out)
         self.assertIn("switching groups", out)
+
+    def test_an_ignored_light_is_listed_once_and_not_warned_about(self):
+        doc = inventory.set_ignored(committed_config(), "porch", True)
+        doc = inventory.set_ignored(doc, "chandelier_3", True)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config.save(path, doc)
+            code, out = self.run_doctor(FakeHA(), "--config", str(path))
+        self.assertEqual(code, 0)
+        self.assertIn("2 lights are ignored in the committed config", out)
+        # porch has no Area and chandelier_3 is unavailable: nothing to fix for either.
+        self.assertNotIn("lights have no Area", out)
+        self.assertNotIn("lights are unavailable", out)
+        self.assertRegex(out, r"porch +light\.porch +Porch  \(ignored\)")
+        self.assertNotIn("lm_soft_porch", out)
 
     def test_previews_a_switching_plane_deploy_without_writing(self):
         with tempfile.TemporaryDirectory() as directory:

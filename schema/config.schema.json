@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Light Map config",
   "description": "The committed config document. Everything downstream is a pure function of it; learned data (almanacs) is not stored here. See docs/ARCHITECTURE.md (Top-level config shape) and docs/DESIGN.md (Data model).",
-  "$comment": "Version 2 (P2) fixed hard_switch.source as a tagged union and added turn for presses; app/core/config.py migrates version 1 forward. Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1, system as of P4 (the observer); learning, schedule_profiles and adaptive_config fill in with the adaptive module (P5). Cross-references (ids unique within their scope; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
+  "$comment": "Version 2 (P2) fixed hard_switch.source as a tagged union and added turn for presses; version 3 (P4.1) added bulb.ignored; app/core/config.py migrates older versions forward. Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1, system as of P4 (the observer); learning, schedule_profiles and adaptive_config fill in with the adaptive module (P5). Cross-references (ids unique within their scope; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
   "type": "object",
   "required": ["version", "rooms", "schedule_profiles"],
   "additionalProperties": false,
@@ -182,7 +182,7 @@
       }
     },
     "bulb": {
-      "description": "One light.* entity, the actuation atom. Its soft-switch helper (input_boolean.lm_soft_<id>) and soft->bulb bridge are implicit (generated). Matched to HA by ha_match_key, or by entity_id when it has none; its id, hard switches, and memberships travel with it when it moves or its entity_id is renamed.",
+      "description": "One light.* entity, the actuation atom. Its soft-switch helper (input_boolean.lm_soft_<id>) and soft->bulb bridge are implicit (generated) unless it is ignored. Matched to HA by ha_match_key, or by entity_id when it has none; its id, hard switches, memberships and ignored flag travel with it when it moves or its entity_id is renamed.",
       "type": "object",
       "required": ["id", "name", "entity_id"],
       "additionalProperties": false,
@@ -202,6 +202,10 @@
           "description": "The HA entity-registry entry id of this bulb's light, recorded by the inventory. An OPAQUE match key only: the reconcile uses it to recognise the bulb when its entity_id is renamed in HA, and an Area write compares it with the registry entry at the bulb's entity_id so it never moves a different light. Never addressed, required to exist in HA, or written into generated artefacts; entity_id is what everything addresses. Absent for a light outside the entity registry, and until the first sync records it.",
           "type": "string",
           "minLength": 1
+        },
+        "ignored": {
+          "description": "Set aside: a light.* that isn't a room bulb (an indicator or gadget LED). It stays in the snapshot, followed like any bulb so it can be un-ignored, but gets no soft switch or bridge, isn't observed or written to HA's Areas, is no switching group's or learning unit's member, and has no hard switches (app/core/config.py cross-checks these). Default false, and only ever set by the user: a new light is never ignored.",
+          "type": "boolean"
         },
         "hard_switches": {
           "type": "array",

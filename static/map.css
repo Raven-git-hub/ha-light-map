@@ -126,6 +126,59 @@ tbody.room:first-of-type .room-row > * {
   opacity: 1;
 }
 
+/* Muted at full opacity: anything fainter falls below a readable contrast. */
+.bulb-cell .ignore {
+  margin-left: 0.2rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.bulb-row:hover .ignore,
+.bulb-cell .ignore:focus-visible {
+  color: var(--accent);
+}
+
+/* -- Ignored lights (P4.1) ------------------------------------------------------------ */
+
+.ignored-section {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.ignored-section summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.ignored-section[open] summary {
+  margin-bottom: 0.4rem;
+}
+
+.ignored-section > p {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+
+.ignored-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ignored-table td {
+  padding: 0.35rem 0.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.ignored-table td.actions {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+
 button.soft {
   padding: 0.15rem 0.5rem;
   font-family: var(--mono);

@@ -1,10 +1,11 @@
 # Light Map — Architecture
 
 Light Map is a self-hosted container that owns a home's lighting as two planes: a
-**switching plane** (every bulb has a soft switch; hard switches bind to it; a soft→bulb
-bridge makes the bulb follow) and **modules** that layer behaviour on top. **Adaptive
-Light** — learning a preferred light level per section and driving brightness — is the first
-module. This repository is a fresh, ground-up rebuild of `ha-adaptive-light`, map-first.
+**switching plane** (every bulb has a soft switch, bar the lights the user ignores; hard
+switches bind to it; a soft→bulb bridge makes the bulb follow) and **modules** that layer
+behaviour on top. **Adaptive Light** — learning a preferred light level per section and
+driving brightness — is the first module. This repository is a fresh, ground-up rebuild of
+`ha-adaptive-light`, map-first.
 
 This document is the structural source of truth: system layout, module boundaries, the
 config shape, the storage model, naming, the house rules, and the build roadmap. The
@@ -218,7 +219,8 @@ Everything downstream is a pure function of this committed document. Learned dat
 is not stored here; it lives in the almanac store. Detailed field semantics are in
 `docs/DESIGN.md` ("Data model").
 
-- `version` — schema version (2 since P2); the container migrates forward on load.
+- `version` — schema version (3 since P4.1, which added `ignored`; 2 since P2); the
+  container migrates forward on load.
 - `homeassistant` — `base_url`, `access_token` (redacted from exports; never persisted),
   `verify_ssl`, `reconnect_backoff_seconds` (the WebSocket reconnect ladder, default
   `[1, 2, 5, 10, 30, 60]`; the last step repeats).
@@ -237,11 +239,16 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
   it is always written (see "Storage model"). `data_dir` is read at startup.
 - `rooms[]` — from HA Areas (every Area is a room, with or without lights), each:
   - `id` (slug), `name`, `ha_area_id`, `adaptive` (bool)
-  - `bulbs[]`: `{ id (slug), name, entity_id (light.*), ha_match_key?, hard_switches[] }` —
-    a soft-switch helper and a soft→bulb bridge are implicit (generated) per bulb.
-    `ha_match_key` is the light's HA entity-registry entry id: an opaque key the reconcile
-    matches on, so a bulb survives its entity_id being renamed in HA (see
-    `docs/DESIGN.md`, "Bulb identity").
+  - `bulbs[]`: `{ id (slug), name, entity_id (light.*), ha_match_key?, ignored,
+    hard_switches[] }` — a soft-switch helper and a soft→bulb bridge are implicit
+    (generated) per bulb that isn't ignored. `ha_match_key` is the light's HA
+    entity-registry entry id: an opaque key the reconcile matches on, so a bulb survives
+    its entity_id being renamed in HA (see `docs/DESIGN.md`, "Bulb identity"). `ignored`
+    (default false; P4.1) sets aside a light that isn't a room bulb (an indicator or gadget
+    LED): it stays in the snapshot, so it can be un-ignored, but generation, deploy, the
+    Area writes and the observer leave it out, it is no group's or learning unit's member
+    and has no hard switches. Never set automatically (see `docs/DESIGN.md`, "Ignored
+    lights").
   - `switching_groups[]`: `{ id (slug), name, members (bulb ids), hard_switches[] }` — a
     named set of member bulbs plus its hard-switch bindings. A group mints **no** soft
     switch of its own: a hard switch bound to it acts on every member's per-bulb soft
@@ -276,14 +283,18 @@ including the bulbs in `unassigned[]`. Switching-group ids share that one namesp
 group names no HA entity, but a hard switch binds to a bulb or a group, and keeping the two
 apart lets either be named by id alone. Hard-switch ids are global (`lm_hard_<id>`).
 Learning-unit ids are unique within their room. Schedule-profile ids are global. A bulb's
-`ha_match_key`, when present, is unique across all bulbs. The schema checks shape;
+`ha_match_key`, when present, is unique across all bulbs. An ignored bulb keeps its id
+reserved like any other. The schema checks shape;
 `app/core/config.py` cross-checks these scopes and every reference.
 
-The cross-check also refuses a hard switch wired into a feedback loop: a source in Light
-Map's own `lm_` namespace, a `toggle` whose source is a bulb Light Map drives, or an event
-source on an HA core event (`state_changed`, `call_service`, `automation_reloaded`, ...),
-which fires for the plane's own work. Deploy adds the one check that needs HA's state: no
-`toggle` on an HA group of bulbs Light Map drives.
+The cross-check refuses an ignored bulb that is a switching-group or learning-unit member,
+or that carries hard switches: with no soft switch, none of them would act on anything. It
+also refuses a hard switch wired into a feedback loop: a source in Light Map's own `lm_`
+namespace, a `toggle` whose source is a bulb in the snapshot (an ignored one included:
+un-ignored, it would loop), or an event source on an HA core event (`state_changed`,
+`call_service`, `automation_reloaded`, ...), which fires for the plane's own work. Deploy
+adds the one check that needs HA's state: no `toggle` on an HA group of bulbs Light Map
+drives.
 
 As of P4 the core sections (`homeassistant`, `system`, `rooms[]`, `unassigned[]`) are
 validated in depth; `learning`, `schedule_profiles` and `adaptive_config` fill in with the
@@ -339,15 +350,15 @@ the query layer only; the archive keeps everything.
 ## Naming and namespaces
 
 - **Product / container:** Light Map. Repo `ha-light-map`.
-- **Switching plane:** `input_boolean.lm_soft_<bulb_id>`, one per bulb and only per bulb;
-  automations `lm_bridge_<bulb_id>` (soft→bulb) and `lm_hard_<hard_switch_id>` (hard→soft).
-  A switching group has no HA entity: an HA group of `input_boolean`s can only be made in
-  `configuration.yaml`, which Light Map never edits, and with no group entity there is no
-  group state to keep in sync. A hard switch bound to a group acts on every member's soft
-  switch. (A single group-state entity for dashboards, if ever wanted, would be an HA light
-  group of the member bulbs — a future enhancement, not a soft switch.) The soft switch's
-  helper is named `LM Soft <bulb_id>`, because HA derives a network-created helper's id from
-  its slugified name.
+- **Switching plane:** `input_boolean.lm_soft_<bulb_id>`, one per bulb (that isn't ignored)
+  and only per bulb; automations `lm_bridge_<bulb_id>` (soft→bulb) and
+  `lm_hard_<hard_switch_id>` (hard→soft). A switching group has no HA entity: an HA group of
+  `input_boolean`s can only be made in `configuration.yaml`, which Light Map never edits,
+  and with no group entity there is no group state to keep in sync. A hard switch bound to a
+  group acts on every member's soft switch. (A single group-state entity for dashboards, if
+  ever wanted, would be an HA light group of the member bulbs — a future enhancement, not a
+  soft switch.) The soft switch's helper is named `LM Soft <bulb_id>`, because HA derives a
+  network-created helper's id from its slugified name.
 - **Adaptive module:** keeps the recognizable `al_` names (`al_scene_`, `al_maint_`,
   `al_active_`, `al_hold_`, `sensor.al_almanac_`, `al_watchdog_`), so the ported generator
   barely changes.
@@ -370,7 +381,7 @@ room with bulbs to observe.
 | | |
 | --- | --- |
 | Reads | `GET /api/status`, `/api/map`, `/api/config` (export, token-free), `/api/entities` (hard-switch source picker), `/api/log` (the event log, filtered by minimum level, category and room; P4) |
-| Config edits | `PUT /api/rooms/{room}/adaptive`, `PUT /api/bulbs/{bulb}/hard_switches`, `POST /api/rooms/{room}/groups`, `PUT`/`DELETE /api/rooms/{room}/groups/{group}` |
+| Config edits | `PUT /api/rooms/{room}/adaptive`, `PUT /api/bulbs/{bulb}/hard_switches`, `PUT /api/bulbs/{bulb}/ignored` (P4.1), `POST /api/rooms/{room}/groups`, `PUT`/`DELETE /api/rooms/{room}/groups/{group}` |
 | Area edits (HA first) | `POST /api/rooms`, `PUT /api/rooms/{room}/name`, `POST /api/bulbs/{bulb}/move/preview` then `/move` |
 | Previewed actions | `GET /api/sync/preview` then `POST /api/sync`; `GET /api/deploy/preview` then `POST /api/deploy`; `GET /api/areas/preview` then `POST /api/areas/deploy` |
 
@@ -380,10 +391,10 @@ room with bulbs to observe.
   an Area write or a move is never applied unless it was previewed as it now stands.
 - **Validate-then-write**, every edit; a move also checks its config before its HA write.
   A config on disk that doesn't load is never overwritten from the Map.
-- **Edits carry what they were made against.** Each edit of an existing bulb's hard
-  switches, group, or room's adaptive flag sends the `version` the Map showed as `base`, and
-  is refused (409 `edit_stale`) if it has changed since, so a stale tab never silently
-  reverts another edit, and an acknowledgement covers only what was shown.
+- **Edits carry what they were made against.** Each edit of an existing bulb's hard switches
+  or ignored flag, group, or room's adaptive flag sends the `version` the Map showed as
+  `base`, and is refused (409 `edit_stale`) if it has changed since, so a stale tab never
+  silently reverts another edit, and an acknowledgement covers only what was shown.
 - **A Map edit commits only its own change** to the snapshot; whatever else HA changed waits
   for a reviewed sync.
 - **Coexistence.** An edit that makes a hard switch drive something new is refused (409
@@ -435,7 +446,8 @@ Parallel build in this repo; the live `ha-adaptive-light` keeps running untouche
 - **P3 — Map UI.** The Map tab: rooms, the adaptive checkbox, per-bulb soft-switch popups,
   group-soft ADD/edit popups, the Adaptive Config button (inert until P5).
 - **P4 — Observation core.** The WebSocket observer, per-bulb heartbeats, reactive detection,
-  the event log, storage. A platform service.
+  the event log, storage. A platform service. **P4.1** adds ignored lights: a per-bulb
+  flag that sets an indicator or gadget LED aside from the plane.
 - **P5 — Adaptive module.** Port scheduler + analyser; learning units; almanac keyed by
   unit; scene + maintenance generation commanding soft switches; the Now / Analysis /
   Almanac views and the adaptive room editor.

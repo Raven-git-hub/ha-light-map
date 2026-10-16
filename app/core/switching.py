@@ -3,7 +3,8 @@ hard->soft automations, soft->bulb bridge automations.
 
 Names (the `lm_` lane):
 
-- `input_boolean.lm_soft_<bulb_id>`: the soft switch, one per bulb and only per bulb. A
+- `input_boolean.lm_soft_<bulb_id>`: the soft switch, one per bulb and only per bulb, and
+  none for a bulb the user ignored (P4.1: a light that isn't a room bulb). A
   switching group mints no HA entity of its own: it is a named set of member bulbs plus its
   hard-switch bindings, and a hard switch bound to a group acts on every member's soft
   switch. (A group of input_booleans can't be created over HA's network API, only in
@@ -68,11 +69,17 @@ Hard rules:
   Jinja kept as inert strings, byte-identical output for the same config, and no almanac
   values baked in.
 - This lane emits only `lm_*` names and never touches the adaptive module's `al_*`.
+- An ignored bulb is in none of it: no soft switch, no bridge, and nothing addresses it
+  (bulbs are read through `core.inventory.active_bulbs`). The deploy then removes the
+  soft switch and bridge of one that was deployed, as it removes any artefact the config
+  no longer calls for, and leaves the light itself as it is.
 """
 
 import copy
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
+
+from app.core import inventory
 
 PREFIX = "lm"
 SOFT_DOMAIN = "input_boolean"
@@ -283,13 +290,10 @@ def references(config: Mapping[str, Any]) -> dict[str, dict[str, str]]:
 
 
 def _bulbs(config: Mapping[str, Any]) -> list[tuple[Mapping[str, Any] | None, Mapping[str, Any]]]:
-    """Every bulb with its room (None for Unassigned), sorted by bulb id: output follows
-    the bulbs, not the order rooms happen to be listed in."""
-    found: list[tuple[Mapping[str, Any] | None, Mapping[str, Any]]] = [
-        (room, bulb) for room in config.get("rooms", []) for bulb in room.get("bulbs", [])
-    ]
-    found += [(None, bulb) for bulb in config.get("unassigned", [])]
-    return sorted(found, key=lambda item: item[1]["id"])
+    """Every active (not ignored) bulb with its room (None for Unassigned), sorted by bulb
+    id: output follows the bulbs, not the order rooms happen to be listed in. The one place
+    this lane reads bulbs, so an ignored one gets no soft switch, bridge, or reference."""
+    return sorted(inventory.active_bulbs(config), key=lambda item: item[1]["id"])
 
 
 def _bindings(config: Mapping[str, Any]) -> list[Mapping[str, Any]]:
