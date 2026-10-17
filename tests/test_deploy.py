@@ -354,11 +354,13 @@ class LaneTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_fetch_live_reads_only_the_lane(self):
         ha = self.foreign_ha()
-        live = await deploy.fetch_live(ha, "lm")
+        live = await deploy.fetch_live(ha, "lm", domains=["input_boolean"])
         self.assertEqual(
             live,
             {"input_boolean": {}, "automation": {}, "unloaded": [], "unmanaged": [], "held": []},
         )
+        # Without `domains`, every helper domain deploy knows is read.
+        self.assertEqual((await deploy.fetch_live(ha, "lm"))["input_select"], {})
         al = await deploy.fetch_live(ha, "al")
         self.assertEqual(sorted(al["input_boolean"]), ["al_active_lounge", "al_hold_lounge"])
         self.assertEqual(sorted(al["automation"]), ["al_scene_lounge_day", "al_watchdog_guard"])

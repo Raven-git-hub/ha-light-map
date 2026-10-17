@@ -5,11 +5,17 @@ Python data structures, serialise with PyYAML; HA Jinja stays an inert string. S
 Each namespace (`lm` for the switching plane, `al` for Adaptive Light) registers one
 generator; `core.deploy` reconciles each namespace in its own lane. The core registers its
 own `lm` lane here; a module's lane is registered by the composition root (`app.main`),
-which is how `al` arrives in P5.
+which is how `al` arrives (P5.1, behind the cutover switch: until P6 only `lm` is
+registered). A namespace may also register its `references`: what its artefacts address in
+HA (`{entities, devices, ...}`, as `switching.references` gives them), which `core.deploy`
+checks exist before it writes anything in the lane.
 
 A generator returns its artefacts as an HA package: helper domains (e.g. `input_boolean`)
 map object id -> fields, as in HA's YAML; `automation` is a list of automation configs, as
-in automations.yaml. Every artefact id must be in the generator's own lane: `<prefix>_...`,
+in automations.yaml. A generator names every helper domain it ever writes, empty or not:
+the lane owns those domains, and `core.deploy` reads, plans and verifies only them (so a
+lane with no helpers left still has the strays of its domains removed). Every artefact id
+must be in the generator's own lane: `<prefix>_...`,
 and not inside a longer registered prefix (were the adaptive lane ever folded under
 `lm_al_`, `lm` would still never claim it).
 
@@ -33,6 +39,9 @@ import yaml
 from app.core import switching
 
 NamespaceGenerator = Callable[[Mapping[str, Any]], dict[str, Any]]
+# config -> {entities: {entity_id: who}, devices: {device_id: who}, ...}: what a lane's
+# artefacts address in HA, each with a description of who uses it.
+NamespaceReferences = Callable[[Mapping[str, Any]], Mapping[str, Mapping[str, str]]]
 
 AUTOMATION = "automation"
 
@@ -42,15 +51,33 @@ _PREFIX = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 # command its soft switches, so those must exist first), then modules as the composition
 # root registers them. Dicts keep insertion order, so this is stable.
 _GENERATORS: dict[str, NamespaceGenerator] = {}
+_REFERENCES: dict[str, NamespaceReferences] = {}
 
 
-def register_namespace(prefix: str, generator: NamespaceGenerator) -> None:
-    """Reserve an artefact prefix for a generator."""
+def register_namespace(
+    prefix: str,
+    generator: NamespaceGenerator,
+    *,
+    references: NamespaceReferences | None = None,
+) -> None:
+    """Reserve an artefact prefix for a generator, with what its artefacts address in HA
+    (`references`), if anything needs checking before the lane is deployed."""
     if not _PREFIX.match(prefix):
         raise ValueError(f"not a namespace prefix: {prefix!r}")
     if prefix in _GENERATORS:
         raise ValueError(f"namespace '{prefix}' is already registered")
     _GENERATORS[prefix] = generator
+    if references is not None:
+        _REFERENCES[prefix] = references
+
+
+def lane_references(
+    config: Mapping[str, Any], prefix: str
+) -> Mapping[str, Mapping[str, str]] | None:
+    """What namespace `prefix`'s artefacts address in HA for the config, or None if it
+    registered nothing to check."""
+    references = _REFERENCES.get(prefix)
+    return None if references is None else references(config)
 
 
 def namespaces() -> list[str]:
@@ -159,4 +186,4 @@ def to_yaml(data: Any) -> str:
     )
 
 
-register_namespace(switching.PREFIX, switching.generate)
+register_namespace(switching.PREFIX, switching.generate, references=switching.references)

@@ -12,6 +12,7 @@ import unittest
 from contextlib import nullcontext
 from pathlib import Path
 
+from app import main
 from app.core import config, inventory
 from app.core.config import ConfigError
 from app.core.ha import HAError
@@ -538,6 +539,12 @@ class EditorApiTest(ApiCase):
         kitchen["bulbs"] = [bulb("kitchen_strip")]
         return doc
 
+    def editor_version(self, room_id="living_room"):
+        """The editor's `version` for the config as saved: the room's block and its active
+        bulbs (`main.editor_version`), not the Map's room version."""
+        doc = config.loads(self.saved())
+        return main.editor_version(doc, next(r for r in doc["rooms"] if r["id"] == room_id))
+
     def view(self, room="living_room"):
         response = self.client.get(f"/api/rooms/{room}/adaptive_config")
         self.assertEqual(response.status_code, 200, response.text)
@@ -554,7 +561,8 @@ class EditorApiTest(ApiCase):
         self.assertEqual(
             view["room"], {"id": "living_room", "name": "Living Room", "ha_area_id": "living_room"}
         )
-        self.assertEqual(view["version"], self.version("living_room"))
+        self.assertEqual(view["version"], self.editor_version())
+        self.assertNotEqual(view["version"], self.version("living_room"))
         self.assertEqual(view["sections"], list(config.SECTIONS))
         bulbs = {b["id"]: b for b in view["bulbs"]}
         self.assertEqual(
@@ -677,7 +685,7 @@ class EditorApiTest(ApiCase):
         self.assertIn("porch_light", saved["adaptive_bulbs"])
         self.assertEqual(saved["scenes"]["night"]["units"]["chandelier"], {"mode": "off"})
         self.assertEqual(saved["scenes"]["day"], scenes("chandelier", "reading")["day"])
-        self.assertEqual(body["version"], self.version("living_room"))
+        self.assertEqual(body["version"], self.editor_version())
         self.assertEqual(self.ha.calls, [])  # the save never touches HA
         log = self.client.get("/api/log", params={"category": "config"}).json()["entries"]
         self.assertEqual(len(log), 1)
@@ -705,6 +713,33 @@ class EditorApiTest(ApiCase):
         # Ignoring a unit member (from the Map) changes the block, so the editor is stale.
         self.assertEqual(self.ignore("reading_lamp", confirm_drops=True).status_code, 200)
         self.assert_error(self.save(view["adaptive_config"], view["version"]), 409, "edit_stale")
+
+    def test_a_bulb_ignored_while_the_editor_is_open_makes_it_stale(self):
+        # The race the editor's own version closes (P5.1): the porch light is switched-only,
+        # so ignoring it in another tab leaves the block, and the Map's room version, as
+        # they were. The editor still offers it; made adaptive there and saved, it used to
+        # fail validation (a 422 about an ignored bulb) instead of asking for a reload.
+        view = self.view()
+        room_before = self.version("living_room")
+        self.assertEqual(self.ignore("porch_light").status_code, 200)
+        self.assertEqual(self.version("living_room"), room_before)
+        self.assertEqual(block(self.saved()), view["adaptive_config"])
+        edited = copy.deepcopy(view["adaptive_config"])
+        edited["adaptive_bulbs"].append("porch_light")
+        edited["learning_units"].append(
+            {"id": "porch", "name": "Porch", "members": ["porch_light"]}
+        )
+        before = self.path.read_text()
+        body = self.assert_error(self.save(edited, view["version"]), 409, "edit_stale")
+        self.assertIn("changed since the editor showed it", body["detail"])
+        self.assert_unchanged(before)
+        # Reloaded, the editor no longer offers it, and saves against the new version.
+        fresh = self.view()
+        self.assertNotIn("porch_light", [b["id"] for b in fresh["bulbs"]])
+        self.assertEqual(self.save(fresh["adaptive_config"], fresh["version"]).status_code, 200)
+        # Un-ignoring it (or a sync bringing a bulb in) changes the roster the same way.
+        self.assertEqual(self.ignore("porch_light", ignored=False).status_code, 200)
+        self.assert_error(self.save(fresh["adaptive_config"], fresh["version"]), 409, "edit_stale")
 
     def test_a_save_that_wouldnt_validate_writes_nothing(self):
         view = self.view()

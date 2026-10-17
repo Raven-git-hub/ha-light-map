@@ -11,8 +11,9 @@ in `app.modules`, so a module can be replaced or added without touching the trun
 seams are registries filled here: a module's namespace (`core.generate.register_namespace`),
 its bridge brightness (`core.switching.register_bridge_brightness`), and its observation
 (`Observer.subscribe`, `register_guard`, `register_section`). The core's own `lm` lane
-registers itself; no module's engine is attached yet: Adaptive Light's config and its
-editor are in (P5.0), its generator arrives in P5.1 and its runtime in P5.2.
+registers itself. Adaptive Light's config and editor are in (P5.0) and so is its generator
+(P5.1), but the generator is wired in only by the cutover switch, `ADAPTIVE_ENABLED`, which
+is off until P6 (see `wire_modules`); its runtime arrives in P5.2.
 
 The lifespan also opens the store (the CSV archive and its query layer, beside the config
 unless `system.data_dir` says otherwise) and starts the observer (P4), which subscribes to
@@ -47,7 +48,9 @@ Every request first passes the Host allowlist (`LM_ALLOWED_HOSTS`, plus `localho
   `fingerprint`, then a `POST` that must carry it and is refused (409 `preview_stale`) if
   what it would do has changed since: `/api/sync` (save the snapshot re-read from HA's
   Areas), `/api/deploy` (the switching plane's `lm_` lane), `/api/areas` (write the
-  snapshot back to HA's Areas). So nothing is ever applied that wasn't shown first.
+  snapshot back to HA's Areas). So nothing is ever applied that wasn't shown first. With
+  the cutover switch on, the deploy preview also shows each module lane's plan, read-only:
+  only the `lm_` lane is applied from here until cutover.
 
 Hard rules:
 
@@ -69,6 +72,9 @@ Hard rules:
 - Coexistence (until cutover, P6): binding a hard switch makes its bulbs' bridges live
   beside ha-adaptive-light, so an edit that makes a hard switch drive something new is
   refused (409 `coexistence`) until the request acknowledges it (`acknowledge_live`).
+  The adaptive lane's `al_` names are the live system's own, so the adaptive module stays
+  unwired (`ADAPTIVE_ENABLED` off) until cutover: nothing generates, previews or writes
+  `al_`, and the switching plane's output is exactly P5.0's.
 - The HA token never reaches the config or a response.
 - What changes HA or the config is recorded in the event log; a log entry that can't be
   written never fails the action it records.
@@ -93,14 +99,35 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core import config as config_mod
 from app.core import deploy, inventory, switching
+from app.core import generate as generate_mod
 from app.core.config import ConfigError
 from app.core.deploy import DeployError, StalePreview
 from app.core.ha import HAAuthError, HAClient, HAError
 from app.core.inventory import InventoryError, NotFound
 from app.core.observe import Observer
 from app.core.store import LEVELS, Store
+from app.modules.adaptive import generate as adaptive_generate
 
 log = logging.getLogger(__name__)
+
+# -- The cutover switch ----------------------------------------------------------------
+#
+# Off until cutover (P6). Adaptive Light's artefacts keep the predecessor's `al_` names,
+# and those are exactly what the live ha-adaptive-light holds on the same HA, down to its
+# helpers' names (`AL Active <room>`, ...). An `al_` deploy now would adopt the old
+# system's helpers, rewrite its scene and watchdog automations and remove its maintenance
+# ones, since a lane removes whatever under its prefix the config doesn't call for.
+#
+# Off: neither the `al` namespace nor the adaptive bridge-brightness provider is
+# registered, so `core.generate.namespaces()` is ["lm"], every bridge takes the plain path,
+# and the generated `lm_` lane is byte-identical to P5.0's (tests/golden/lm_only.yaml).
+# On: `al` is generated, reconciled as its own lane by `core.deploy`, and previewed
+# (read-only) beside the switching deploy, and adaptive bulbs' bridges read the almanac.
+#
+# A constant, not an environment variable: turning it on is a reviewed change made with the
+# cutover, never a deployment setting that could be set early. Tests turn it on in a scope
+# of their own (`tests.fakes.adaptive_wired`). Do not turn it on here before P6.
+ADAPTIVE_ENABLED = False
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -128,6 +155,12 @@ COEXISTENCE_WARNING = (
     "ha-adaptive-light, which keeps driving the same bulbs, and neither knows what the "
     "other did. Bind only a switch the old system doesn't use. Send acknowledge_live to "
     "save it anyway."
+)
+
+MODULE_LANES_NOTE = (
+    "Light Map's own module lanes, shown read-only: this deploy applies the lm_ lane only. "
+    "The al_ lane holds the names the live ha-adaptive-light uses, so it is applied at "
+    "cutover (P6), once the old system is gone."
 )
 
 COEXISTENCE_NOTE = (
@@ -375,6 +408,21 @@ def room_version(room: Mapping[str, Any]) -> str:
     return fingerprint({"adaptive": room.get("adaptive"), "config": room.get("adaptive_config")})
 
 
+def editor_version(doc: Mapping[str, Any], room: Mapping[str, Any]) -> str:
+    """What the adaptive editor's save is made against: the room's adaptive flag and block
+    (`room_version`) and its active-bulb roster. A bulb ignored, moved out or synced in from
+    another tab while the editor is open changes which bulbs the editor may offer without
+    always touching the block (a switched-only bulb's doesn't), so with the block alone a
+    stale editor that then made an ignored bulb adaptive got a validation error (422) the
+    user couldn't act on, rather than a reload (409 `edit_stale`)."""
+    roster = sorted(
+        bulb["id"]
+        for home, bulb in inventory.active_bulbs(doc)
+        if home is not None and home["id"] == room["id"]
+    )
+    return fingerprint({"room": room_version(room), "bulbs": roster})
+
+
 def _commit(
     request: Request,
     before: Mapping[str, Any],
@@ -504,7 +552,8 @@ def adaptive_view(
     ha_error: str | None,
 ) -> dict[str, Any]:
     """The adaptive editor's view of one adaptive room (P5.0): its adaptive_config as
-    saved (normalised), the `version` a save sends back as `base`, and each active bulb
+    saved (normalised), the `version` a save sends back as `base` (`editor_version`, which
+    also covers the room's active bulbs), and each active bulb
     with its tier, its learning unit, its switching groups and its dimmability
     (`inventory.bulb_capability`, from `states`: entity_id -> HA state, or None when HA
     couldn't be read, `ha_error` saying why, which leaves every capability unknown and so
@@ -537,7 +586,7 @@ def adaptive_view(
         )
     return {
         "room": {k: room[k] for k in ("id", "name", "ha_area_id")},
-        "version": room_version(room),
+        "version": editor_version(doc, room),
         "adaptive_config": adaptive_config,
         "sections": list(config_mod.SECTIONS),
         "modes": list(config_mod.MODES),
@@ -627,6 +676,8 @@ def status(request: Request) -> dict[str, Any]:
             else {"running": False, "reason": state.observer_reason}
         ),
         "coexistence": COEXISTENCE_NOTE,
+        # Whether the cutover switch has wired the adaptive lane in (off until P6).
+        "adaptive": {"wired": adaptive_generate.PREFIX in generate_mod.namespaces()},
     }
 
 
@@ -888,18 +939,19 @@ async def save_adaptive_config(
 ) -> dict[str, Any]:
     """Replace an adaptive room's whole adaptive_config, from the adaptive editor (P5.0).
 
-    Made against the room's `version` as the editor showed it (`base`; 409 `edit_stale`
-    otherwise, so a stale editor never reverts another edit), validated before it is
-    written (the units must partition exactly the adaptive bulbs, the matrix cover them),
-    and recorded in the event log with what it changed. Never reads or writes HA: whether a
-    bulb can dim is the editor's guard, and the config can't see HA. It changes only the
-    config; nothing is generated or deployed (the adaptive generator arrives in P5.1).
+    Made against the `version` the editor showed (`base`: the room's block and its active
+    bulbs, `editor_version`; 409 `edit_stale` otherwise, so a stale editor never reverts
+    another edit, nor offers a bulb ignored since), validated before it is written (the
+    units must partition exactly the adaptive bulbs, the matrix cover them), and recorded
+    in the event log with what it changed. Never reads or writes HA: whether a bulb can dim
+    is the editor's guard, and the config can't see HA. It changes only the config; what
+    reaches HA is the adaptive lane's next deploy, which waits for cutover (P6).
     """
     async with _store(request).lock:
         doc = _store(request).read()
         room = _adaptive_room(doc, room_id)
         what = f"{room['name']}'s adaptive config"
-        _check_base(body.base, room_version(room), what, "the editor")
+        _check_base(body.base, editor_version(doc, room), what, "the editor")
         proposed = config_mod.checked(
             inventory.set_adaptive_config(doc, room_id, body.adaptive_config)
         )
@@ -926,7 +978,7 @@ async def save_adaptive_config(
             detail={"changes": changes},
             category="config",
         )
-        return {**result, "changes": changes, "version": room_version(after)}
+        return {**result, "changes": changes, "version": editor_version(proposed, after)}
 
 
 # -- Bulbs -----------------------------------------------------------------------------
@@ -1163,12 +1215,31 @@ def _going_live(doc: Mapping[str, Any], deploy_plan: Mapping[str, Any]) -> list[
     return found
 
 
+async def _module_lanes(ha: HAClient, doc: Mapping[str, Any]) -> dict[str, Any]:
+    """Each wired module lane's plan (or why it would be refused), read-only: nothing
+    here is applied, and there is no fingerprint to apply it with. Empty while the cutover
+    switch is off, since no module lane is registered."""
+    lanes: dict[str, Any] = {}
+    for prefix in generate_mod.namespaces():
+        if prefix == switching.PREFIX:
+            continue
+        try:
+            lane_plan = await deploy.prepare(ha, doc, prefix)
+        except (ConfigError, DeployError) as exc:
+            lanes[prefix] = {"ready": False, "refused": exc.problems}
+        else:
+            lanes[prefix] = {"ready": True, "refused": [], "plan": deploy.summarise(lane_plan)}
+    return lanes
+
+
 @router.get("/deploy/preview")
 async def deploy_preview(request: Request) -> dict[str, Any]:
     """Everything a switching-plane deploy would do, writing nothing: the plan for the
     `lm_` lane (or why it would be refused), the hard switches it puts live, the crossover
     report (what else in HA drives these bulbs; names already taken), and the coexistence
-    note. `ready` and `fingerprint` say whether, and how, to apply it."""
+    note. `ready` and `fingerprint` say whether, and how, to apply it. With the cutover
+    switch on, `modules` also lists each module lane's plan, read-only (P5.1): the key is
+    absent while it is off."""
     ha = _ha(request)
     doc = _store(request).read()
     preview: dict[str, Any] = {
@@ -1187,6 +1258,9 @@ async def deploy_preview(request: Request) -> dict[str, Any]:
             "fingerprint": _plan_digest(deploy_plan),
         }
     preview["crossover"] = await deploy.crossover(ha, doc)
+    lanes = await _module_lanes(ha, doc)
+    if lanes:
+        preview["modules"] = {"note": MODULE_LANES_NOTE, "lanes": lanes}
     return preview
 
 
@@ -1311,6 +1385,29 @@ async def areas_deploy(request: Request, body: Confirm) -> dict[str, Any]:
             detail={"moves": result["moves"]},
         )
         return result
+
+
+# -- The modules -----------------------------------------------------------------------
+
+
+def wire_modules(*, adaptive: bool = ADAPTIVE_ENABLED) -> None:
+    """Attach the modules to the core's seams. Called once, below, for the live app, with
+    the cutover switch (off until P6: nothing is registered, and the core runs exactly as
+    in P5.0). `adaptive=True` registers Adaptive Light's `al` namespace (its generator and
+    what it addresses in HA) and its bridge brightness; the registries are the process's,
+    so a test does it with them patched (`tests.fakes.adaptive_wired`)."""
+    if adaptive:
+        generate_mod.register_namespace(
+            adaptive_generate.PREFIX,
+            adaptive_generate.generate,
+            references=adaptive_generate.references,
+        )
+        switching.register_bridge_brightness(
+            adaptive_generate.PREFIX, adaptive_generate.bridge_brightness
+        )
+
+
+wire_modules()
 
 
 # -- The app ---------------------------------------------------------------------------

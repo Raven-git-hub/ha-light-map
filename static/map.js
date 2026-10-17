@@ -1428,7 +1428,7 @@
 
   // -- Deploy --------------------------------------------------------------------------
 
-  const KIND_LABEL = { input_boolean: "soft switch", automation: "automation" };
+  const KIND_LABEL = { input_boolean: "soft switch", input_select: "select", automation: "automation" };
 
   function planRows(plan) {
     const rows = [];
@@ -1580,7 +1580,30 @@
         );
       }
     }
-    return [...parts, ...crossoverSection(preview.crossover)];
+    return [...parts, ...modulesSection(preview.modules), ...crossoverSection(preview.crossover)];
+  }
+
+  // Module lanes (the adaptive al_ lane), present only once the cutover switch wires one in:
+  // read-only, since this dialog applies the lm_ lane alone.
+  function modulesSection(modules) {
+    if (!modules) return [];
+    const parts = [h("h3", {}, "Module lanes (read-only)"), h("p", { class: "muted" }, modules.note)];
+    for (const [prefix, lane] of Object.entries(modules.lanes)) {
+      if (!lane.ready) {
+        parts.push(h("div", { class: "box warn module-lane" }, h("p", {}, `${prefix}_ would be refused:`), list(lane.refused)));
+        continue;
+      }
+      const rows = planRows(lane.plan);
+      parts.push(
+        h(
+          "div",
+          { class: "box module-lane" },
+          h("p", {}, `${prefix}_: ${rows.length ? `${plural(rows.length, "step")}, not applied here` : "nothing to do"}`),
+          rows.length ? list(rows, ([verb, kind, id]) => `${verb} ${KIND_LABEL[kind] || kind} ${id}`) : null,
+        ),
+      );
+    }
+    return parts;
   }
 
   function deployResult(result) {
