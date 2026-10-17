@@ -94,6 +94,12 @@ class HAAuthError(HAError):
     the user discovering the real problem."""
 
 
+class HATimeoutError(HAError):
+    """HA took the request but didn't answer in time (a read timeout): unlike a refusal or
+    an unreachable HA, what was asked may well be happening (HA shields a service call from
+    a dropped connection)."""
+
+
 class HANotFoundError(HAError):
     """A REST request answered 404: what it asked for doesn't exist."""
 
@@ -580,6 +586,8 @@ class HAClient:
                 json=json,
                 timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
             )
+        except httpx.ReadTimeout as exc:
+            raise HATimeoutError(f"{method} {path} got no answer in time: {exc!r}") from exc
         except httpx.HTTPError as exc:
             raise HAError(f"{method} {path} failed: {exc}") from exc
         if response.status_code in (401, 403):

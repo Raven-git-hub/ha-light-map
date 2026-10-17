@@ -40,8 +40,8 @@ What the payload takes from where (P5.2a):
   snapshot in force (`latest`). The state is that snapshot's `valid_from` (`unknown` before
   the first), so a stalled analyser shows as a date that stops moving;
 - `mode`, the knobs (`lux_margin`, `max_step_pct`, `maintenance_enabled`) and, while nothing
-  is learned, a `lux_target_seed`: from the config as it is now, so an edit in the adaptive
-  editor takes effect at the next publish, without waiting for a pass.
+  is learned, a `lux_target_seed` above 0: from the config as it is now, so an edit in the
+  adaptive editor takes effect at the next publish, without waiting for a pass.
 
 Hard rules:
 
@@ -151,12 +151,17 @@ def payload(
         # The room's lux target rides on every unit's row: take the newest in force (a unit
         # redrawn keeps the room's learned lux, which is the room's, not the unit's).
         learned = max(rows.values(), key=_recency, default={}).get("lux_target")
+        seed = knobs.get("lux_target_seed")
+        if isinstance(seed, bool) or not isinstance(seed, (int, float)) or seed <= 0:
+            # A lux of 0 is a sensor's floor, never a measurement: a target of 0 can't be
+            # met, and maintenance would dim the lights toward 1 trying.
+            seed = None
         attributes[section] = {
             UNITS: {
                 unit_id: target(rows.get(unit_id), knobs["units"][unit_id]["mode"])
                 for unit_id in unit_ids
             },
-            LUX_TARGET: learned if learned is not None else knobs.get("lux_target_seed"),
+            LUX_TARGET: learned if learned is not None else seed,
             LUX_MARGIN: knobs["lux_margin"],
             MAX_STEP_PCT: knobs["max_step_pct"],
             MAINTENANCE_ENABLED: knobs["maintenance_enabled"],

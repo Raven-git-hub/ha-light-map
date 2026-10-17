@@ -581,12 +581,37 @@ def _describe(error: jsonschema.ValidationError) -> str:
         message = f"a schedule profile with id '{DEFAULT_PROFILE}' is required"
     elif error.validator == "not" and error.validator_value == {"required": ["turn"]}:
         message = "turn is only allowed when mode is press"
+    elif error.validator == "oneOf" and error.context:
+        message = _tagged_union(error) or message
     elif error.validator == "const" and list(error.absolute_path)[-2:] == ["source", "type"]:
         message = (
             "follow needs a state source: it tracks an entity's on/off, which an event or "
             "device trigger doesn't have"
         )
     return f"{where}: {message}"
+
+
+def _tagged_union(error: jsonschema.ValidationError, within: str = "") -> str | None:
+    """What is wrong with a value of a tagged union (a schedule trigger), or None when it
+    names no known shape. The stock message only says it fits none of the shapes; the
+    shape it meant is the one whose `type` matched, and that branch's own errors say what
+    is wrong with it ("time: '24:00' does not match ..."), a nested trigger's included."""
+    branches: dict[Any, list[jsonschema.ValidationError]] = {}
+    for sub in error.context or ():
+        branches.setdefault(sub.relative_schema_path[0], []).append(sub)
+    meant = [
+        errors
+        for errors in branches.values()
+        if not any(list(e.relative_path) == ["type"] for e in errors)
+    ]
+    if len(meant) != 1:
+        return None
+    parts = []
+    for sub in meant[0]:
+        where = "/".join(filter(None, [within, *(str(p) for p in sub.relative_path)]))
+        nested = _tagged_union(sub, where) if sub.validator == "oneOf" else None
+        parts.append(nested or f"{where or 'value'}: {sub.message}")
+    return "; ".join(parts)
 
 
 def cross_check(config: Mapping[str, Any]) -> None:

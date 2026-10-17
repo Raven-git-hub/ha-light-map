@@ -265,6 +265,11 @@ class PayloadTest(StoreCase):
         )
         self.assertEqual(day["lux_target"], 300)  # nothing learned: the seed
         self.assertEqual(published["attributes"]["afternoon"]["lux_target"], 210.5)  # learned wins
+        # A seed of 0 seeds nothing: 0 lux is a sensor's floor, a target maintenance could
+        # only chase by dimming every light toward 1.
+        scenes["day"]["lux_target_seed"] = 0
+        current = almanac.latest(self.store, ROOM, today=TODAY)
+        self.assertIsNone(almanac.payload(self.room, current)["attributes"]["day"]["lux_target"])
 
     def test_a_learned_zero_is_nothing_learned(self):
         published = self.payload(a_pass({("day", "reading"): 0, ("day", "chandelier"): 255}))

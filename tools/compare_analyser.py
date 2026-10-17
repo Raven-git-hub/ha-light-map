@@ -1,7 +1,7 @@
 """Compare analyser: run the analyser twice over identical input and diff the almanacs.
 
     python tools/compare_analyser.py --legacy-csv path/to/heartbeat_YYYY-MM-DD.csv
-    python tools/compare_analyser.py --config /data/config.json [--today 2026-10-17]
+    python tools/compare_analyser.py --config /data/config.json --tz Europe/London [--today ...]
 
 Used to prove that a change to the learning maths does what was intended and nothing else:
 the same readings go through the analyser under two sets of `AnalyserFlags` (by default the
@@ -18,7 +18,9 @@ Two inputs:
   about any real installation. A group's "on" is its brightness above 0, and Light Map
   works out "any light on" from the bulbs rather than taking the CSV's column.
 - `--config`: a committed config and its store (`system.data_dir`): every adaptive room,
-  pooled into its learning units as the nightly pass would.
+  pooled into its learning units as the nightly pass would. It needs HA's time zone
+  (`--tz`): it files each reading under its day, and a wrong one would misfile the readings
+  near midnight without a word.
 
 Ported from ha-adaptive-light's `tools/compare_analyser.py`. Read-only: it never contacts
 Home Assistant, and never opens a live store: it reads a copy of the config's CSV archive (the
@@ -192,10 +194,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     source.add_argument("--config", type=Path, help="a committed config, with its store")
     parser.add_argument("--today", type=date.fromisoformat, help="the pass's date (default: today)")
     parser.add_argument(
-        "--tz", default="Europe/London", help="HA's time zone (default: Europe/London)"
+        "--tz",
+        help="HA's time zone, which files each reading under its day (required with --config; "
+        "default for the predecessor's CSV: Europe/London, its house's)",
     )
     args = parser.parse_args(argv)
-    tz = ZoneInfo(args.tz)
+    if args.config and not args.tz:
+        parser.error("--config needs --tz: HA's time zone files each reading under its day")
+    tz = ZoneInfo(args.tz or "Europe/London")
     today = args.today or datetime.now(tz).date()
     with tempfile.TemporaryDirectory() as scratch:
         store = Store(Path(scratch))

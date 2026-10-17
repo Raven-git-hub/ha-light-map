@@ -49,7 +49,7 @@ Two offline tools for the adaptive engine (they never contact Home Assistant):
 
 ```sh
 python tools/sweep.py [--config path/to/config.json]      # a year of section boundaries
-python tools/compare_analyser.py --config path/to/config.json   # legacy vs current learner
+python tools/compare_analyser.py --config path/to/config.json --tz Europe/London  # learner, legacy vs current
 ```
 
 ## Run

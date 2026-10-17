@@ -98,6 +98,7 @@ _STREAMS: dict[str, tuple[_Column, ...]] = {
         "lux_sensors:int!",
         "occupancy:bool",
         "deferred_ms:int!",
+        "presence_configured:bool",
     ),
     "bulb_reading": _columns(
         "ts:ts!", "room_id:text!", "bulb_id:text!", "is_on:bool", "brightness:int"

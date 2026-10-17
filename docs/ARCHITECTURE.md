@@ -157,8 +157,8 @@ tools/
   sweep.py           A year of section-boundary computations at several latitudes,
                      reporting each collapse and checking for unexpected ones (P5.2a).
   compare_analyser.py  Run the analyser twice over identical input (legacy vs current
-                     flags) and diff the almanacs; reads a store, or the predecessor's
-                     wide heartbeat CSV (P5.2a).
+                     flags) and diff the almanacs; reads a copy of a config's archive, or
+                     the predecessor's wide heartbeat CSV (P5.2a).
 tests/               Unit tests (stdlib unittest, `python -m unittest`) against fakes and
                      fixtures; never a real HA. `test_ui.py` also drives the Map, the Log
                      and the adaptive editor in headless Chromium (`tests/ui/map_ui.cjs`,
@@ -312,7 +312,8 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
   (slug), name?, sections[], collision_policy, min_section_minutes }` (P5.2a). A profile
   with id `default` must always exist.
   - `sections[]`: all six sections, once each, in canonical order (`sunrise` ... `sleep`),
-    each `{ id (section), trigger, priority? }`. `trigger` says when the section starts
+    each `{ id (section), name?, trigger, priority? }` (`name`: a display name, used from
+    P5.2b). `trigger` says when the section starts
     each day: `{ type: clock, time: "HH:MM" }`, `{ type: sun, event: sunrise | sunset,
     offset_minutes? }`, or `{ type: earliest | latest, of: [trigger, ...] }` (at least
     two; "sunrise or 05:30, whichever is earlier"). `priority` (0–1000) decides a
@@ -320,8 +321,9 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
     firmest component's.
   - `collision_policy`: `collapse` (default: the lower-priority section is skipped that
     day) or `clamp` (a section that starts too soon after the last is moved to start
-    `min_section_minutes` after it; an order inversion still collapses).
-  - `min_section_minutes` (default 30): the shortest section; one shorter collides.
+    `min_section_minutes` after it, within its day; one that can't fit, and an order
+    inversion, still collapse).
+  - `min_section_minutes` (1..720, default 30): the shortest section; one shorter collides.
 
   Version 5 backfills every profile that has no `sections` with the standard schedule
   (the predecessor's six boundaries: sunrise = the earlier of sunrise and 05:30, day =
@@ -388,7 +390,10 @@ Tables (`schema/storage.schema.sql`; `ts` is ISO-8601 UTC, booleans 0/1):
   (nullable: recorded at observation time from the module that has sections, P5),
   `lux` (nullable; 0 is a floor, not a measurement), `lux_sensors` (how many sensors `lux`
   came from), `occupancy` (nullable: no presence sensor, or none available),
-  `deferred_ms` (how long the tick waited for a guard). Unique on (`room_id`, `ts`).
+  `deferred_ms` (how long the tick waited for a guard), `presence_configured` (whether the
+  room had a presence sensor configured, so a null occupancy says "no sensor" or "no
+  usable state" as of then; null for heartbeats recorded before P5.2a). Unique on
+  (`room_id`, `ts`).
 - `bulb_reading` — long format, one row per bulb per heartbeat: `id`, `heartbeat_id` (fk),
   `bulb_id`, `is_on` (nullable: HA had no usable state for the bulb), `brightness`
   (nullable; 0–255).

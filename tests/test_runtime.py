@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.core import config, switching
-from app.core.ha import HAError
+from app.core.ha import HAError, HATimeoutError
 from app.core.observe import Observer
 from app.core.store import Store
 from app.modules.adaptive import almanac
@@ -129,6 +129,22 @@ class HookTest(RuntimeCase):
         # It records nothing itself: the observer did.
         self.assertEqual(self.store.query("SELECT COUNT(*) AS n FROM reactive_event")[0]["n"], 0)
 
+    async def test_a_window_opened_in_the_last_section_doesnt_hold_this_one(self):
+        # A dimmer turned in the last two minutes of a section closes after the next
+        # section's scene lowered the hold: it must not keep maintenance out of this one.
+        self.ha.helper_states[SELECT] = "day"
+        await self.tick()
+        late = {"kind": "reactive", "room_id": ROOM, "event": {"section": "sunrise"}}
+        await self.runtime.on_observation(late)
+        self.assertEqual(self.services(), [])
+        await self.runtime.on_observation({**late, "event": {"section": "day"}})
+        self.assertEqual(self.services(), [("input_boolean", "turn_on", {"entity_id": HOLD})])
+
+    async def test_once_stopped_it_holds_nothing(self):
+        await self.runtime.stop()
+        await self.runtime.on_observation({"kind": "reactive", "room_id": ROOM, "event": {}})
+        self.assertEqual(self.services(), [])
+
     async def test_a_hold_ha_refuses_is_logged_not_raised(self):
         with mock.patch.object(self.ha, "call_service", side_effect=HAError("down")):
             await self.runtime.on_observation({"kind": "reactive", "room_id": ROOM})
@@ -149,17 +165,18 @@ class HookTest(RuntimeCase):
 
 
 class CrossoverTest(RuntimeCase):
-    async def test_a_section_change_sets_the_select_and_fires_the_scene(self):
-        await self.tick()  # 10:30 on midsummer's day: day (sunrise + 3 h is 07:43)
-        self.assertEqual(self.crossovers(), ["day"])
+    async def test_a_section_change_fires_the_scene_and_sets_the_select(self):
+        await self.tick()  # 10:30 on midsummer's day: day (sunrise + 3 h is 07:42)
         self.assertEqual(self.triggered(), [f"automation.al_scene_{ROOM}_day"])
-        # The select first, then the scene, which HA answers only when its run is over.
-        [select, trigger] = [c for c in self.ha.calls if c[0] == "call_service"]
-        self.assertEqual(select[1][:2], ("input_select", "select_option"))
+        # The scene first (it sets the select itself before it changes a light, so a select
+        # showing a section means its scene started), then the select once it has run.
+        [trigger, select] = [c for c in self.ha.calls if c[0] == "call_service"]
         self.assertEqual(trigger[1][:2], ("automation", "trigger"))
+        self.assertEqual(select[1][:2], ("input_select", "select_option"))
+        self.assertEqual(self.crossovers(), ["day"])
         self.assertEqual(self.ha.helper_states[SELECT], "day")
         [event] = [e for e in self.events("scene") if "began" in e["message"]]
-        # Day began at sunrise + 3 h (07:42 that day): fired at 10:30, it's a catch-up.
+        # Day began at sunrise + 3 h: fired at 10:30, it's a catch-up.
         self.assertRegex(
             event["message"], r"^Living Room: day began \(\d+ s after its boundary\)\.$"
         )
@@ -247,7 +264,7 @@ class CrossoverTest(RuntimeCase):
 
         with mock.patch.object(self.ha, "call_service", flaky):
             await self.tick()
-            self.assertNotIn(ROOM, self.runtime._fired)
+            self.assertEqual(self.runtime._fired[ROOM], "sunrise")  # where its select still is
             await self.tick(self.clock + timedelta(seconds=20))
         self.assertEqual(self.triggered(), [f"automation.al_scene_{ROOM}_day"])
         self.assertEqual(self.runtime._fired[ROOM], "day")
@@ -265,6 +282,71 @@ class CrossoverTest(RuntimeCase):
         # The day scene's 120 s transition, its 30 s settle, and a margin.
         self.assertEqual(seen[("automation", "trigger")], 120 + 30 + 60)
         self.assertIsNone(seen[("input_select", "select_option")])
+
+    async def test_a_scene_ha_took_but_didnt_answer_in_time_isnt_run_again(self):
+        # HA shields the run from the dropped request: running it again could turn lights
+        # back on that the user turned off after it.
+        real = self.ha.call_service
+
+        async def slow(domain, service, data, **kwargs):
+            if domain == "automation":
+                raise HATimeoutError("POST /api/services/automation/trigger got no answer")
+            return await real(domain, service, data, **kwargs)
+
+        with mock.patch.object(self.ha, "call_service", slow):
+            await self.tick()
+            await self.tick(self.clock + timedelta(seconds=20))
+        self.assertEqual(len([c for c in self.services() if c[0] == "automation"]), 0)
+        self.assertEqual(self.runtime._fired[ROOM], "day")
+        self.assertIn("taking it as running", self.events("scene")[0]["message"])
+
+    async def test_no_section_is_adopted_until_the_select_is_there(self):
+        # Just after HA starts, or before the al_ lane is deployed: no select, so nothing
+        # says which section the house is in, and nothing is fired.
+        del self.ha.helper_states[SELECT]
+        await self.tick()
+        self.assertEqual(self.services(), [])
+        self.assertNotIn(ROOM, self.runtime._fired)
+        waiting = [e for e in self.events() if "waiting for its scene select" in e["message"]]
+        self.assertEqual(len(waiting), 1)
+        await self.tick(self.clock + timedelta(seconds=20))  # not re-read every tick
+        self.assertEqual(len([c for c in self.ha.calls if c[0] == "get_states"]), 1)
+        # HA has restored it, showing the section in force: adopted, and nothing fired.
+        self.ha.helper_states[SELECT] = "day"
+        await self.tick(self.clock + timedelta(minutes=1))
+        self.assertEqual(self.services(), [])
+        self.assertEqual(self.runtime._fired[ROOM], "day")
+        self.assertNotIn("waiting", " ".join(self.runtime.status()["failing"]))
+
+    async def test_a_reconnect_adopts_again_before_firing(self):
+        # HA restarts (a reconnect) while its select isn't restored yet: the runtime waits
+        # for it rather than firing the section the house is already in.
+        self.ha.helper_states[SELECT] = "day"
+        await self.tick()
+        self.assertEqual(self.services(), [])
+        del self.ha.helper_states[SELECT]
+        await self.ha.announce("connected", "2026.10.0")
+        await self.tick(self.clock + timedelta(seconds=20))
+        self.assertEqual(self.triggered(), [])
+        self.ha.helper_states[SELECT] = "day"
+        await self.tick(self.clock + timedelta(minutes=2))
+        self.assertEqual(self.triggered(), [])
+        self.assertIn(ROOM, self.runtime._adopted)
+
+    async def test_a_reconnect_in_the_middle_of_a_tick(self):
+        # The observer's connection comes up while the first tick reads HA's states.
+        real = self.ha.get_states
+
+        async def reconnecting():
+            await self.ha.announce("connected", "2026.10.0")
+            return await real()
+
+        with mock.patch.object(self.ha, "get_states", reconnecting):
+            await self.tick()
+        self.assertEqual(self.triggered(), [f"automation.al_scene_{ROOM}_day"])
+        # And the next tick reads the location again.
+        await self.tick(self.clock + timedelta(seconds=20))
+        self.assertEqual(len([c for c in self.ha.calls if c[0] == "get_config"]), 2)
 
     async def test_nothing_until_ha_says_where_and_when(self):
         with self.assertLogs("app.modules.adaptive.runtime", "WARNING"):

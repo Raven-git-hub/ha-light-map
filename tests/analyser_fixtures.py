@@ -14,9 +14,11 @@ import random
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
+
+UTC = timezone.utc
 
 from app.core.store import Store
 
@@ -111,10 +113,12 @@ def readings(
                     Reactive(at, section_for(at), 30.0, {b: (True, 120, True) for b in bulbs})
                 )
             continue
-        moment = datetime.combine(day, time(0, 0), tzinfo=TZ)
-        end = moment + timedelta(days=1)
+        # Stepped in UTC, so a day the clocks change on has its 23 or 25 hours.
+        moment = datetime.combine(day, time(0, 0), tzinfo=TZ).astimezone(UTC)
+        end = datetime.combine(day + timedelta(days=1), time(0, 0), tzinfo=TZ).astimezone(UTC)
         occupied = True
         while moment < end:
+            here = moment.astimezone(TZ)
             if rng.random() < 0.05:
                 occupied = not occupied
             for b in bulbs:
@@ -134,13 +138,16 @@ def readings(
                     state[b] = (True, level[b])
                 else:
                     state[b] = (False, 0 if off_brightness_zero and rng.random() < 0.5 else None)
-            fixture.heartbeats.append(Heartbeat(moment, section_for(moment), lux, occupied, state))
+            fixture.heartbeats.append(Heartbeat(here, section_for(here), lux, occupied, state))
             if rng.random() < 0.02:
-                at = moment + timedelta(minutes=rng.choice([1, 4, 7]))
+                # Now and then at the very instant of a heartbeat (the heartbeat sorts first).
+                at = (moment + timedelta(minutes=rng.choice([0, 1, 4, 7]))).astimezone(TZ)
                 changed_any = rng.random() < 0.8
                 event = {}
                 for b in bulbs:
-                    if on[b]:
+                    if on[b] and rng.random() < 0.1:
+                        event[b] = (False, None, changed_any)  # the user turned it off
+                    elif on[b]:
                         event[b] = (
                             True,
                             min(255, max(1, level[b] + rng.choice([-50, 25]))),

@@ -320,6 +320,36 @@ class ScheduleProfileTest(unittest.TestCase):
                 target[path[-1]] = value
                 self.assertTrue(problems_of(config.loads, doc))
 
+    def test_a_section_may_carry_a_name_and_the_minimum_is_a_minute(self):
+        doc = committed_config()
+        doc["schedule_profiles"][0]["sections"][0]["name"] = "Early"
+        self.assertEqual(config.loads(doc)["schedule_profiles"][0]["sections"][0]["name"], "Early")
+        doc["schedule_profiles"][0]["min_section_minutes"] = 0
+        # Two sections at one instant would leave one never in force.
+        self.assertTrue(any("min_section_minutes" in p for p in problems_of(config.loads, doc)))
+
+    def test_a_bad_trigger_names_what_is_wrong(self):
+        for trigger, expected in (
+            (
+                {"type": "clock", "time": "24:00"},
+                "sections/4/trigger: time: '24:00' does not match",
+            ),
+            ({"type": "sun", "event": "noon"}, "trigger: event: 'noon' is not one of"),
+            (
+                {
+                    "type": "latest",
+                    "of": [{"type": "clock", "time": "05:30"}, {"type": "clock", "time": "5:30"}],
+                },
+                "trigger: of/1/time: '5:30' does not match",
+            ),
+            ({"type": "earliest", "of": [{"type": "clock", "time": "05:30"}]}, "of: "),
+        ):
+            with self.subTest(trigger):
+                doc = committed_config()
+                doc["schedule_profiles"][0]["sections"][4]["trigger"] = trigger
+                problems = problems_of(config.loads, doc)
+                self.assertTrue(any(expected in p for p in problems), problems)
+
     def test_learning_is_checked_and_every_field_optional(self):
         doc = committed_config()
         doc["learning"] = {
@@ -330,7 +360,7 @@ class ScheduleProfileTest(unittest.TestCase):
             "post_reactive_boost": [2, 1.5],
             "recency_weights": [
                 {"max_age_days": 7, "weight": 2},
-                {"max_age_days": None, "weight": 1},
+                {"max_age_days": None, "weight": 0},  # older days don't count
             ],
             "confidence": {"high_weight_threshold": 20, "low_multiplier": 0.25},
         }

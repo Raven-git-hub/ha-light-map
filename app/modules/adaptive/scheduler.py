@@ -30,10 +30,20 @@ knows only the next event, not when today's sunrise was, which catching up needs
 `FixedSunProvider` supplies them explicitly, for tests.
 
 Ported intact (the predecessor's `compute_day`, `resolve_trigger`, `default_priority`,
-`_find_conflict` and `active_section_at` keep their proven API and behaviour). New here:
-`apply_collision_policy` is split out of `compute_day` (it works on copies, so a caller's
-boundaries are never changed), and `compute_boundaries` and `section_at` take HA's location
-instead of a provider.
+`_find_conflict` and `active_section_at` keep their proven API and behaviour), with two
+departures, each a day the predecessor got wrong (P5.2a's review):
+
+- A clamp never moves a section past the day's end: one that can't fit collides as under
+  `collapse` instead. The predecessor moved it anyway, so with a long minimum a section
+  could start after midnight, even after the next day's first boundary, and be reported as
+  run yet never be in force.
+- `active_section_at` compares times as instants, not wall-clock readings: where the clocks
+  go back across a boundary (Beirut at midnight), the repeated hour read as before the
+  boundary again, and a runtime polling it would fire the previous section a second time.
+
+New here: `apply_collision_policy` is split out of `compute_day` (it works on copies, so a
+caller's boundaries are never changed), and `compute_boundaries` and `section_at` take HA's
+location instead of a provider.
 
 Hard rules:
 
@@ -275,9 +285,15 @@ def apply_collision_policy(
             # still leaves it running after the night scene. Order inversions always
             # collapse.
             if policy == "clamp" and violation == "gap":
-                cand.planned = blocker.planned + min_gap
-                cand.reason = f"clamped to {min_gap} after {blocker.section}"
-                break
+                moved = blocker.planned + min_gap
+                # Never past the day's end (a departure from the predecessor): moved there, a
+                # section could start after the next day's first boundary and never be in
+                # force, though reported as run. One that can't fit collides as under
+                # collapse, below.
+                if day_end is None or moved <= day_end:
+                    cand.planned = moved
+                    cand.reason = f"clamped to {min_gap} after {blocker.section}"
+                    break
 
             loser, winner = (blocker, cand) if cand_wins else (cand, blocker)
             loser.outcome = "collapsed"
@@ -325,6 +341,15 @@ def _find_conflict(
     return None, None
 
 
+def _not_after(planned: datetime, when: datetime) -> bool:
+    """`planned` is no later than `when`, as instants when both have a zone: Python compares
+    two times in the same zone by their wall clock, ignoring `fold`, so in an hour the
+    clocks repeat (a fall-back) a boundary already past would read as still to come."""
+    if planned.tzinfo is not None and when.tzinfo is not None:
+        return planned.timestamp() <= when.timestamp()
+    return planned <= when
+
+
 def active_section_at(
     schedule: Mapping[str, Any],
     provider: SunProvider,
@@ -340,7 +365,7 @@ def active_section_at(
     for delta in range(LOOKBACK_DAYS + 1):
         day = when.date() - timedelta(days=delta)
         ran = [b for b in compute_day(schedule, provider, day, tzinfo) if b.ran]
-        past = [b for b in ran if b.planned <= when]
+        past = [b for b in ran if _not_after(b.planned, when)]
         if past:
             last = past[-1]
             return last.section, last.planned

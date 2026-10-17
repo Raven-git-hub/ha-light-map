@@ -146,6 +146,31 @@ class ParityTest(StoreCase):
                     ours, theirs = self.run_both(fixture, flags, **tuning)
                     self.assert_same(ours, theirs, fixture.bulbs)
 
+    def test_across_the_spring_clock_change(self):
+        # 29 March 2026: London's day of 23 hours, in the window. (The autumn change repeats
+        # an hour of local times, which the predecessor's store ordered by its local text:
+        # its own quirk, not compared here.)
+        fixture = fx.readings(5, first=date(2026, 3, 20), days=12, skip_days=(4,))
+        self.load(fixture)
+        today = date(2026, 4, 1)
+        for flags in every_flag_combination():
+            with self.subTest(**flags):
+                theirs = predecessor.analyse_room(
+                    self.conn,
+                    fx.ROOM,
+                    fixture.bulbs,
+                    fx.predecessor_scene_config(fixture.bulbs),
+                    predecessor.LearningConfig(flags=predecessor.AnalyserFlags(**flags)),
+                    today,
+                )
+                ours = self.analyse(
+                    {b: [b] for b in fixture.bulbs},
+                    LearningConfig(flags=AnalyserFlags(**flags)),
+                    today=today,
+                )
+                self.assertEqual(theirs["_meta"]["days_analysed"], 11)
+                self.assert_same(ours, theirs, fixture.bulbs)
+
     def test_the_maths_reaches_every_branch_in_the_fixtures(self):
         # The parity above only means something if the fixtures exercise what it compares.
         fixture = fx.readings(1)
@@ -172,6 +197,11 @@ class ParityTest(StoreCase):
         self.assertEqual(bands, {"low", "medium", "high"})
         self.assertTrue(any(s.weight in (3.0, 2.0, 1.5) for s in samples))  # the boost
         self.assertTrue(any(not s.settled for s in samples))  # a ramp
+        heartbeats = {s.ts for s in samples if s.source == "heartbeat"}
+        self.assertTrue(any(s.ts in heartbeats for s in reactive))  # at a heartbeat's instant
+        self.assertTrue(  # a user turning a bulb off
+            any(not r.is_on for s in reactive for r in s.bulbs.values())
+        )
 
 
 class DayCase(StoreCase):
@@ -296,6 +326,44 @@ class StoreMappingTest(StoreCase):
         # one, a heartbeat that couldn't read it is left out, as the predecessor read it.
         self.assertEqual(samples(presence_configured=False), 2)
         self.assertEqual(samples(presence_configured=True), 1)
+
+    def test_a_sensor_added_later_doesnt_rewrite_history(self):
+        # Two weeks with no presence sensor (occupancy null, always occupied), then one is
+        # added. Judged by today's config, every older row would read "unoccupied" and the
+        # room would fall back to bootstrap on a day of data.
+        at = datetime(2026, 6, 13, 12, 0, tzinfo=fx.TZ)
+
+        def beat(minute, occupancy, configured):
+            self.store.append_heartbeat(
+                {
+                    "ts": at + timedelta(minutes=minute),
+                    "room_id": fx.ROOM,
+                    "section": "day",
+                    "lux": 40.0,
+                    "occupancy": occupancy,
+                    "presence_configured": configured,
+                },
+                [{"bulb_id": "a", "is_on": True, "brightness": 100}],
+            )
+
+        beat(0, None, False)  # no sensor then: occupied
+        beat(10, None, True)  # a sensor, unreadable: not occupied
+        beat(20, None, None)  # recorded before the observer noted it: as the room is now
+
+        def samples(now_configured):
+            timeline = analyser.load_timeline(
+                self.store,
+                fx.ROOM,
+                ["a"],
+                date(2026, 6, 1),
+                LearningConfig(),
+                tz=fx.TZ,
+                presence_configured=now_configured,
+            )
+            return [s.ts[11:16] for s in timeline["2026-06-13"]["day"]]
+
+        self.assertEqual(samples(now_configured=True), ["11:00"])
+        self.assertEqual(samples(now_configured=False), ["11:00", "11:20"])
 
     def test_a_reading_with_no_state_is_no_reading(self):
         at = datetime(2026, 6, 13, 12, 0, tzinfo=fx.TZ)
@@ -661,9 +729,15 @@ class CompareToolTest(StoreCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertLogs("app.core.store", "WARNING") as logs:
             self.assertEqual(
-                compare_analyser.main(["--config", str(config_path), "--today", "2026-06-14"]), 0
+                compare_analyser.main(
+                    ["--config", str(config_path), "--tz", "Europe/London", "--today", "2026-06-14"]
+                ),
+                0,
             )
         self.assertIn("rebuilt the query layer from the archive", logs.output[0])  # the copy
+        # Without HA's time zone it can't say which day a reading belongs to.
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            compare_analyser.main(["--config", str(config_path)])
         self.assertIn("living_room", out.getvalue())
         self.assertIn("chandelier", out.getvalue())
         self.assertEqual(sorted((p.name, p.stat().st_mtime_ns) for p in data.rglob("*")), before)

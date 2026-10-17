@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS heartbeat (
     lux_sensors INTEGER NOT NULL DEFAULT 0,  -- how many sensors lux came from
     occupancy   INTEGER CHECK (occupancy IN (0, 1)),  -- NULL: no presence sensor available
     deferred_ms INTEGER NOT NULL DEFAULT 0,  -- how long the tick waited for a guard
+    -- Whether the room had a presence sensor configured (P5.2a; NULL: recorded before). A
+    -- null occupancy means "no sensor, always occupied" when 0 and "the sensor had no
+    -- usable state" when 1, and only the time of recording can say which.
+    presence_configured INTEGER CHECK (presence_configured IN (0, 1)),
     UNIQUE (room_id, ts)
 );
 CREATE INDEX IF NOT EXISTS heartbeat_room_ts ON heartbeat (room_id, ts);

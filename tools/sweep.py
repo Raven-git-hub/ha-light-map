@@ -16,6 +16,8 @@ the list is there to be read. An *unexpected* one is a day the scheduler got wro
 - a section that neither ran nor collapsed with a reason, or that is missing or doubled;
 - kept sections out of chronological or canonical order;
 - two kept sections closer than the profile's `min_section_minutes`;
+- a kept section starting outside its day (it would never be in force once the next day's
+  first boundary passed it: the predecessor's clamp could do that);
 - a kept section's `ends` that isn't the next one's start.
 
 Any of those makes the exit status 1. Ported from ha-adaptive-light's `tools/sweep.py`
@@ -75,9 +77,12 @@ class SweepResult:
     unexpected: list[str] = field(default_factory=list)
 
 
-def check_day(boundaries: Sequence[Boundary], profile: Mapping[str, Any]) -> list[str]:
+def check_day(
+    boundaries: Sequence[Boundary], profile: Mapping[str, Any], day: date | None = None
+) -> list[str]:
     """What is wrong with one day's boundaries (nothing, for a day the scheduler got
-    right): see the module docstring for what counts."""
+    right): see the module docstring for what counts. With `day`, a kept boundary must also
+    start on it."""
     problems = []
     sections = sorted(b.section for b in boundaries)
     if sections != sorted(CANONICAL_ORDER):
@@ -98,6 +103,9 @@ def check_day(boundaries: Sequence[Boundary], profile: Mapping[str, Any]) -> lis
             problems.append(f"{after.section} runs after {before.section}, out of canonical order")
         if after.planned - before.planned < gap:
             problems.append(f"{before.section} lasts less than {gap}")
+    for b in kept:
+        if day is not None and b.planned.date() != day:
+            problems.append(f"{b.section} starts on {b.planned.date()}, outside its day")
     for i, b in enumerate(kept):
         expected = kept[i + 1].planned if i + 1 < len(kept) else None
         if b.ends != expected:
@@ -121,7 +129,9 @@ def sweep(
                 found.days.append(day)
                 reason = _kind(b.reason)
                 found.reasons[reason] = found.reasons.get(reason, 0) + 1
-        result.unexpected += [f"{day}: {problem}" for problem in check_day(boundaries, profile)]
+        result.unexpected += [
+            f"{day}: {problem}" for problem in check_day(boundaries, profile, day)
+        ]
         day += timedelta(days=1)
     return result
 
@@ -138,7 +148,10 @@ def profiles(config_path: Path | None, only: str | None) -> list[tuple[str, dict
     if config_path is None:
         found = [("standard", {"id": "standard", **config_mod.standard_schedule()})]
     else:
-        doc = config_mod.load(config_path)
+        try:
+            doc = config_mod.load(config_path)
+        except config_mod.ConfigError as exc:
+            raise SystemExit(f"{config_path} doesn't load: {exc}") from None
         found = [(p["id"], p) for p in doc["schedule_profiles"]]
     if only is not None:
         found = [(pid, p) for pid, p in found if pid == only]

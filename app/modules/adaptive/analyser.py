@@ -22,9 +22,10 @@ What the predecessor's store recorded and this one derives (docs/DESIGN.md, "The
 
 - the day a sample belongs to: its timestamp's date in HA's time zone, the zone of the
   `now` a pass is given;
-- occupied: occupancy 1, or null in a room with no presence sensor configured (no sensor
-  meant "always occupied" there; a configured sensor with no usable state read as not
-  occupied there, and is excluded here);
+- occupied: occupancy 1, or null in a room with no presence sensor configured when the
+  heartbeat was recorded (no sensor meant "always occupied" there; a configured sensor with
+  no usable state read as not occupied there, and is excluded here). A heartbeat recorded
+  before the observer noted that is judged by the room's sensors now;
 - any light on: any adaptive bulb of the room on. A switched-only bulb is outside the
   learner entirely.
 
@@ -202,7 +203,9 @@ def load_timeline(
     presence_configured: bool,
 ) -> dict[str, dict[str, list[Sample]]]:
     """timeline[local_date][section] -> chronological samples, from the room's heartbeats and
-    reactive events on or after `cutoff_date` (local), with the readings of `bulb_ids`."""
+    reactive events on or after `cutoff_date` (local), with the readings of `bulb_ids`.
+    `presence_configured` (whether the room has a presence sensor now) stands in for a
+    heartbeat that didn't record it."""
     bulbs = set(bulb_ids)
     cutoff = cutoff_date.isoformat()
     # Every row from the cutoff's local midnight on; the local date is worked out per row.
@@ -226,14 +229,19 @@ def load_timeline(
             )
 
     for row in store.query(
-        "SELECT id, ts, section, lux, occupancy FROM heartbeat "
+        "SELECT id, ts, section, lux, occupancy, presence_configured FROM heartbeat "
         "WHERE room_id = ? AND ts >= ? ORDER BY ts",
         (room_id, since),
     ):
         if row["section"] not in SECTIONS:
             continue  # recorded before any module reported sections
-        # No presence sensor means always occupied, not never: the predecessor's rule.
-        occupied = row["occupancy"] == 1 or (row["occupancy"] is None and not presence_configured)
+        # No presence sensor means always occupied, not never: the predecessor's rule. Whether
+        # there was one is as recorded with the heartbeat (a sensor added later must not
+        # turn history into "unoccupied"), or, for one recorded before that was, as now.
+        had_sensor = row["presence_configured"]
+        if had_sensor is None:
+            had_sensor = presence_configured
+        occupied = row["occupancy"] == 1 or (row["occupancy"] is None and not had_sensor)
         if not occupied:
             continue
         local_date = _local_date(row["ts"], tz)
@@ -529,8 +537,9 @@ def build_almanac(
 
     days_analysed = len(dates)
     mode = "learning" if days_analysed >= cfg.bootstrap_min_days else "bootstrap"
-    # A fresh room comes alive the next day; once learning, only complete days feed a
-    # published almanac, and a big swing can't land overnight.
+    # A fresh room comes alive the next day; once learning, a snapshot takes effect only
+    # days after its newest day of data, so a big swing can't land overnight. (The 00:15
+    # pass counts the day just begun, as the predecessor's did.)
     delay = cfg.publish_delay_days if mode == "learning" else 0
     valid_from = (most_recent + timedelta(days=delay)).isoformat()
 

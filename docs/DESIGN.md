@@ -1002,8 +1002,8 @@ A profile (`schedule_profiles[]`, selected by a room's `adaptive_config.schedule
 says when each section starts, every day, ported from the predecessor's `schedule`:
 
 ```
-{ id, name?, collision_policy: collapse | clamp, min_section_minutes,
-  sections: [ { id: <section>, trigger, priority? } x 6, in canonical order ] }
+{ id, name?, collision_policy: collapse | clamp, min_section_minutes (1..720),
+  sections: [ { id: <section>, name?, trigger, priority? } x 6, in canonical order ] }
 
 trigger = { type: clock, time: "HH:MM" }
         | { type: sun, event: sunrise | sunset, offset_minutes? }      (-720..720)
@@ -1019,10 +1019,16 @@ trigger = { type: clock, time: "HH:MM" }
   sunset at 21:21 after night at 20:30) or *gap* (it starts within `min_section_minutes`
   of the last, too soon for the crossover's transition). The loser is **collapsed**,
   skipped for the day with its reason. Under `clamp` a gap conflict instead moves the later
-  section to start `min_section_minutes` after the one before; an order inversion always
-  collapses, since moving sunset later still leaves it after night.
+  section to start `min_section_minutes` after the one before, as long as that is still
+  within the day; one that can't fit collides as under `collapse`, and an order inversion
+  always collapses, since moving sunset later still leaves it after night.
 - A sun event that doesn't happen that day (polar day or night) collapses its section; an
-  offset that pushes a boundary out of the day is clamped to 00:00..23:59.
+  offset that pushes a boundary out of the day is clamped to 00:00..23:59. So every
+  section that runs starts within its own day.
+- A section's `name` is accepted (the predecessor's profiles had one) and is the boundary's
+  name; the editor that sets it, and the scene select's display names, are P5.2b's.
+  `min_section_minutes` is at least 1: two sections starting at one instant would leave one
+  never in force.
 - **The standard schedule** (the predecessor's): sunrise = the earlier of sunrise and
   05:30 (priority 100), day = sunrise + 3 h, afternoon = sunset − 3 h, sunset = sunset
   (each 50), night = 20:30, sleep = 22:00 (each 100); `collapse`, 30 minutes.
@@ -1043,7 +1049,13 @@ config.
 `app.modules.adaptive.scheduler` is the predecessor's, ported intact: pure computation (a
 profile, a date and a place in, the day's six boundaries out, each run or collapsed with
 its reason), testable offline across a whole year, which matters because its failure modes
-are seasonal. Sun times are computed locally (`astral`) from HA's own location (latitude,
+are seasonal. Two departures, each a day the predecessor got wrong (found by P5.2a's
+review): its clamp could move a section past midnight, even after the next day's first
+boundary, where it was reported as run but never in force (now it collapses instead, as
+above); and it compared times by the wall clock, so where the clocks go back across a
+boundary (Beirut, at midnight) the repeated hour read as before the boundary again, which a
+runtime polling it would answer by firing the previous section a second time (now it
+compares instants). Sun times are computed locally (`astral`) from HA's own location (latitude,
 longitude, elevation and time zone, from `/api/config`): HA's `sun.sun` only knows the next
 event, so it can't say when today's sunrise was, which catching up after a restart needs.
 
@@ -1056,7 +1068,8 @@ clock change all take the same path.
 `tools/sweep.py` runs a year of days at five latitudes (the equator to Tromsø) for each
 profile, listing every collapse with its dates and reasons, and fails on an *unexpected*
 one: a section neither run nor collapsed with a reason, kept boundaries out of
-chronological or canonical order, or two kept sections closer than the minimum.
+chronological or canonical order, two kept sections closer than the minimum, or one
+starting outside its day (the predecessor's clamp).
 
 ### The analyser
 
@@ -1081,9 +1094,13 @@ What the predecessor's store recorded that this one doesn't is derived, the same
 - **The day** a sample belongs to is its timestamp's date in HA's time zone (the runtime
   passes the time in it), so a sleep section that crosses midnight splits across two days,
   as before.
-- **Occupied** is a heartbeat whose occupancy is 1, or null in a room with no presence
+- **Occupied** is a heartbeat whose occupancy is 1, or null in a room that had no presence
   sensor configured (the predecessor: "no sensor means always occupied"). A configured
-  sensor with no usable state read as unoccupied there, and is excluded here.
+  sensor with no usable state read as unoccupied there, and is excluded here. Which of the
+  two a null meant is recorded with the heartbeat (`presence_configured`, P5.2a), never
+  taken from the config at analysis time: judged by today's config, adding a sensor turned
+  every earlier heartbeat into "unoccupied", and the room fell back to bootstrap on a day of
+  data. A heartbeat recorded before that column existed is judged by the config as it is.
 - **Any light on** means any adaptive bulb of the room: a switched-only bulb is outside the
   learner entirely (its readings never pool into a unit, and it neither opens a sample to
   the lux target nor settles one).
@@ -1097,7 +1114,8 @@ one row per unit per section, learned or not (see the storage model's `almanac`)
 for a room with no data in the lookback. The learned brightness is kept whatever the
 unit's mode: whether a unit is held off is the config's, resolved at publish, so turning it
 back to auto finds its target waiting. `tools/compare_analyser.py` runs it twice over the
-same input, legacy flags against the current, and prints both, from a store or from the
+same input, legacy flags against the current, and prints both, from a copy of a config's
+archive (with HA's time zone, `--tz`, which files each reading under its day) or from the
 predecessor's wide heartbeat CSV.
 
 ### The almanac
@@ -1110,7 +1128,9 @@ row whose `valid_from` has come, local date), and publishes it (`publish`) as
 - per section, `units` holds every current unit's target: `"off"` when the config holds the
   unit off for the section (whether or not anything is learned), else its learned
   brightness (1..255), else null;
-- `lux_target` is the learned one, else the section's `lux_target_seed`, else null;
+- `lux_target` is the learned one, else the section's `lux_target_seed` when above 0 (0 lux
+  is a sensor's floor: a target of 0 can't be met, and maintenance would dim every light
+  toward 1 chasing it), else null;
   `lux_margin`, `max_step_pct` and `maintenance_enabled` are the config's scene matrix as
   it is now, not as it was at the last pass, so a knob changed in the editor takes effect at
   the next publish;
@@ -1128,18 +1148,27 @@ detection, and the runtime plugs into it.
   adaptive room, before its first crossover the scheduled one), the guard provider
   (`input_boolean.al_active_<room>`, so a heartbeat waits out a crossover or a nudge and
   their late transition steps are never learned) and its observation handler, then runs
-  its loop. Once HA answers it reads HA's location, and the scene selects, once: a room
-  whose select already shows the section in force isn't fired again, because re-firing the
-  current scene at every restart would turn back on the soft switches the user has turned
-  off since. Each scene automation is found by its `id` attribute, not an assumed entity
-  id.
+  its loop. Once HA answers it reads HA's location, and **adopts** each room's section from
+  its scene select: a room whose select already shows the section in force isn't fired
+  again, because re-firing the current scene at every restart would turn back on the soft
+  switches the user has turned off since. A room is adopted only once its select is there
+  showing a section; until then (HA still starting, whose REST API answers before every
+  integration has loaded, or the `al_` lane not deployed) nothing fires for it. A reconnect
+  (HA restarting) makes it read the location and adopt again. Each scene automation is
+  found by its `id` attribute, not an assumed entity id.
 - **Every 20 seconds** (`tick`) it works out each adaptive room's section from the clock and
   its profile, and when it differs from the one fired, fires the room's
-  `al_scene_<room>_<section>` with `automation.trigger` and sets its scene select. The
+  `al_scene_<room>_<section>` with `automation.trigger`, and sets its scene select once
+  the scene has run. The scene sets the select itself before it changes any light, so a
+  select showing a section means its scene started: setting it first, a restart between
+  that and a failed trigger's retry would adopt the section and never run its scene. The
   trigger runs in the background: HA answers it only when the run, its transition and
-  settle included, is over. A crossover HA couldn't take is retried at the next tick (and
-  logged once); one whose scene automation HA doesn't have is logged, with the select set,
-  and waits for the next section. A collapsed section is logged once a day.
+  settle included, is over. One HA didn't take is retried at the next tick (logged once);
+  one HA took but didn't answer in time is running (HA shields it from a dropped request)
+  and isn't retried, since a second run could turn back on what the user turned off since.
+  With no scene automation in HA, only the select is set (so the bridges and maintenance
+  read the right section), logged, and the room waits for its next section. A collapsed
+  section is logged once a day.
 - **Nightly**, at 00:15 local, or at the first tick after if it was down then (a pass
   already in the store for the day counts), it runs the analyser in a worker thread and
   records the snapshots.
@@ -1151,7 +1180,12 @@ detection, and the runtime plugs into it.
   tick publishes everything again.
 - **A reactive event** in an adaptive room raises `input_boolean.al_hold_<room>`:
   maintenance stands down for the rest of the section, and the next crossover's scene
-  lowers it. The runtime never records or reclassifies an observation; that is core's.
+  lowers it. Not for an event whose window opened in the section before (a dimmer turned in
+  a section's last two minutes closes after the next scene lowered the hold, and would keep
+  maintenance out of a section the user never touched), and not once the runtime is
+  stopping. Any bulb of the room counts, a switched-only one too: maintenance holds the
+  room's lux, so it would dim the adaptive bulbs to undo a lamp the user just turned up. The
+  runtime never records or reclassifies an observation; that is core's.
 
 It only commands HA (services, the almanac's state) and reads what it can't get from the
 observer (the location, and the scene selects and automation ids once); it never reads a
@@ -1196,7 +1230,8 @@ reading per bulb (long format) from a fresh read of HA's states:
   `lux` is 0, the floor, which the analyser keeps out of lux targets (P5). Null when no
   sensor is configured or available; `lux_sensors` counts the sensors the value came from.
 - `occupancy` is 1 if any presence sensor is on, 0 if none is, and null when none is
-  configured or available. Presence sensors are read as binary sensors (`on` is
+  configured or available; `presence_configured` (P5.2a) says which of the two a null is,
+  as it was when recorded. Presence sensors are read as binary sensors (`on` is
   occupied); a `person` or `device_tracker` reports `home`, which reads as not occupied. Recorded, not interpreted: what a room with no sensor means for
   learning (the predecessor treated it as always occupied) is the analyser's call.
 - `section` is whatever the module with sections reports for the room (adaptive's

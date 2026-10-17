@@ -9,7 +9,8 @@ the client's reconnect ladder). It keeps a mirror of the states it watches, refr
 HA's states at every (re)connect and every tick, and:
 
 - every `system.heartbeat_interval_minutes` (aligned to the clock), records per room one
-  heartbeat (lux, occupancy, the section a module reports) plus one reading per bulb;
+  heartbeat (lux, occupancy and whether the room has a presence sensor to read it from,
+  the section a module reports) plus one reading per bulb;
 - turns a burst of manual brightness changes in a room, consolidated over
   `system.reactive_window_seconds`, into one reactive event;
 - writes both to the store first, then hands them to every subscribed module handler, and
@@ -574,6 +575,10 @@ class Observer:
             "lux_sensors": sensors,
             "occupancy": self._occupancy(room),
             "deferred_ms": round(waited * 1000),
+            # Recorded with it, because a null occupancy means "no sensor, always occupied"
+            # or "the sensor had no usable state", and a sensor added later must not turn
+            # the first into the second for a learner reading history.
+            "presence_configured": bool(room.presence_sensors),
         }
         readings = []
         for bulb_id, entity in room.bulbs:

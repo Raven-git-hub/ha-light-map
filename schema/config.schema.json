@@ -59,7 +59,7 @@
           "minimum": 1
         },
         "publish_delay_days": {
-          "description": "A learned snapshot takes effect this many days after its last day of data, so only complete days feed it and it can't swing overnight. Ignored in bootstrap mode, so a fresh room comes alive on day two. Default 2.",
+          "description": "A learned snapshot takes effect this many days after its newest day of data (the nightly pass, at 00:15, counts the day just begun), so a big swing can't land overnight. Ignored in bootstrap mode, so a fresh room comes alive on day two. Default 2.",
           "type": "integer",
           "minimum": 0
         },
@@ -96,7 +96,7 @@
               },
               "weight": {
                 "type": "number",
-                "exclusiveMinimum": 0
+                "minimum": 0
               }
             }
           }
@@ -572,7 +572,7 @@
       "additionalProperties": false,
       "properties": {
         "lux_target_seed": {
-          "description": "A manual seed for the section's lux target, or null (the default) to OBSERVE: the lux target is learned from the heartbeats, from the first nightly pass on. Superseded by the learned target.",
+          "description": "A manual seed for the section's lux target, or null (the default) to OBSERVE: the lux target is learned from the heartbeats, from the first nightly pass on. Superseded by the learned target. 0 seeds nothing: a lux of 0 is a sensor's floor, a target maintenance could never reach.",
           "type": ["number", "null"],
           "minimum": 0
         },
@@ -672,9 +672,9 @@
           "enum": ["collapse", "clamp"]
         },
         "min_section_minutes": {
-          "description": "The shortest a section may be: one starting sooner after the last collides. Keeps a two-minute section from firing a crossover with a two-minute transition that is overridden before it finishes. Default 30.",
+          "description": "The shortest a section may be: one starting sooner after the last collides. Keeps a two-minute section from firing a crossover with a two-minute transition that is overridden before it finishes. At least 1 (two sections at the same instant would leave one never in force). Default 30.",
           "type": "integer",
-          "minimum": 0,
+          "minimum": 1,
           "maximum": 720
         }
       }
@@ -687,6 +687,11 @@
       "properties": {
         "id": {
           "$ref": "#/$defs/section"
+        },
+        "name": {
+          "description": "A display name for the section, as the predecessor's profiles had (accepted, and used as the boundary's name; the editor that sets it, and the scene select's display names, arrive with P5.2b).",
+          "type": "string",
+          "minLength": 1
         },
         "trigger": {
           "$ref": "#/$defs/trigger"

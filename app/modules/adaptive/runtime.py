@@ -20,12 +20,14 @@ Three things it does on its own clock, every `TICK_SECONDS`:
 - **Crossovers, level-triggered.** Rather than setting a timer for each boundary, it asks
   which section each adaptive room should be in now (`scheduler.active_section_at`, from the
   room's schedule profile and HA's location) and fires a crossover whenever that differs
-  from the one it fired: the room's scene select is set to the section and its
-  `al_scene_<room>_<section>` fired with `automation.trigger` (which skips conditions:
-  that is why scenes carry none). Normal running, a start after downtime, a dropped
-  connection and a clock change all take that one path. At its first tick it adopts the
-  section each room's select already shows, so a restart doesn't fire the current scene
-  again, which would turn back on the soft switches the user has turned off since.
+  from the one it fired: the room's `al_scene_<room>_<section>` with `automation.trigger`
+  (which skips conditions: that is why scenes carry none), the scene setting the room's
+  scene select before it changes any light, and the runtime setting it too once the scene
+  has run. Normal running, a start after downtime, a dropped connection and a clock change
+  all take that one path. It first adopts the section each room's select already shows
+  (at its start, and again after a reconnect), and only once the select is there showing
+  one: a restart doesn't fire the current scene again, which would turn back on the soft
+  switches the user has turned off since.
 - **The nightly pass**, at `ANALYSIS_AT` local time (or at the first tick after, when it was
   down then; a pass the store already holds for the day counts): `analyser.run` in a
   worker thread, its snapshots recorded (`almanac.record`).
@@ -62,7 +64,7 @@ from datetime import date, datetime, time, timezone
 from typing import Any
 
 from app.core.config import SECTIONS
-from app.core.ha import HAClient, HAError
+from app.core.ha import HAClient, HAError, HATimeoutError
 from app.core.observe import Observer
 from app.core.store import Store, timestamp
 from app.modules.adaptive import almanac, analyser, scheduler
@@ -113,13 +115,15 @@ class AdaptiveRuntime:
         self._config: Mapping[str, Any] = {}
         self._config_problem: str | None = None
         self._provider: scheduler.AstralSunProvider | None = None
+        # Set by a reconnect: read HA's location again (the last one serves until then).
+        self._relocate = False
         # The section fired (or adopted from its select) per room, and the rooms whose select
-        # has been read.
+        # has been read showing a section.
         self._fired: dict[str, str] = {}
         self._adopted: set[str] = set()
         # Scene automation id -> entity id, from HA's automation entities' `id` attribute.
         self._scenes: dict[str, str] = {}
-        self._mapped_at: float | None = None
+        self._mapped_at: datetime | None = None
         # Per room, the payload last published (canonical JSON).
         self._published: dict[str, str] = {}
         self._analysed_on: date | None = None
@@ -129,6 +133,7 @@ class AdaptiveRuntime:
         self._task: asyncio.Task[None] | None = None
         self._background: set[asyncio.Task[Any]] = set()
         self._started = False
+        self._stopped = False
         self.last_analysis: str | None = None
 
     # -- Lifecycle ---------------------------------------------------------------------
@@ -151,7 +156,10 @@ class AdaptiveRuntime:
         self.ha.add_connection_listener(self._on_connection)
 
     async def stop(self) -> None:
-        """Stop the loop. A scene already fired runs on in HA."""
+        """Stop the loop, and stop acting on observations: the observer, stopped after this,
+        flushes its open reactive windows, and a hold raised then would outlive the app. A
+        scene already fired runs on in HA."""
+        self._stopped = True
         self.ha.remove_connection_listener(self._on_connection)
         tasks = [t for t in (self._task, *self._background) if t is not None]
         self._task = None
@@ -169,6 +177,8 @@ class AdaptiveRuntime:
             except Exception as exc:  # noqa: BLE001 - the loop must outlive any one tick
                 log.exception("an adaptive tick failed")
                 self._fail("tick", "error", f"An adaptive runtime tick failed: {exc!r}")
+            else:
+                self._ok("tick")
             await asyncio.sleep(self._tick_seconds)
 
     def status(self) -> dict[str, Any]:
@@ -193,12 +203,13 @@ class AdaptiveRuntime:
             return None
         if room_id in self._fired:
             return self._fired[room_id]
-        if self._provider is None:
+        provider = self._provider
+        if provider is None:
             return None
         try:
-            local = self._now().astimezone(self._provider.tzinfo)
+            local = self._now().astimezone(provider.tzinfo)
             return scheduler.active_section_at(
-                self._profile(self._config, room), self._provider, local, self._provider.tzinfo
+                self._profile(self._config, room), provider, local, provider.tzinfo
             )[0]
         except Exception:  # noqa: BLE001 - no section is recorded rather than none observed
             return None
@@ -212,11 +223,18 @@ class AdaptiveRuntime:
     async def on_observation(self, observation: dict[str, Any]) -> None:
         """Handle one heartbeat or reactive event from the platform observer: a reactive
         event in an adaptive room raises its hold. Core recorded it; nothing here does."""
-        if observation.get("kind") != "reactive":
+        if observation.get("kind") != "reactive" or self._stopped:
             return
         room_id = observation.get("room_id")
         room = self._room(room_id) if isinstance(room_id, str) else None
         if room is None:
+            return
+        # A window opens with the user's first change and closes two minutes later: one
+        # opened in the last minutes of a section closes after the next section's scene has
+        # lowered the hold, and raising it then would keep maintenance out of a section the
+        # user never touched.
+        opened_in = (observation.get("event") or {}).get("section")
+        if opened_in is not None and opened_in != self.section(room["id"]):
             return
         try:
             await self.ha.call_service(
@@ -240,10 +258,15 @@ class AdaptiveRuntime:
 
     async def _on_connection(self, state: str, detail: str | None) -> None:
         if state == "connected":
-            # HA may have restarted: what was published over REST is gone, and its location
-            # may have changed. Both are fetched again by the next tick.
+            # HA may have restarted: what was published over REST is gone, its location may
+            # have changed, and the scene selects are being restored (the REST API answers
+            # before every integration has loaded). So the next tick publishes again, reads
+            # the location again, and adopts each room's section again from its select
+            # before firing anything, as at a start.
             self._published.clear()
-            self._provider = None
+            self._relocate = True
+            self._adopted.clear()
+            self._mapped_at = None
 
     # -- The loop ----------------------------------------------------------------------
 
@@ -252,14 +275,17 @@ class AdaptiveRuntime:
         nightly pass when it is due, and publish any almanac that changed."""
         config = self._reload()
         rooms = al.adaptive_rooms(config)
-        if not rooms or not await self._locate():
+        if not rooms:
             return
-        assert self._provider is not None
-        local = now.astimezone(self._provider.tzinfo)
+        # Taken once for the tick: a reconnect mid-tick asks for a fresh one next time.
+        provider = await self._locate()
+        if provider is None:
+            return
+        local = now.astimezone(provider.tzinfo)
         await self._adopt(rooms)
         for room in rooms:
             if room["id"] in self._adopted:
-                await self._schedule(config, room, local)
+                await self._schedule(config, room, local, provider)
         await self._nightly(config, local)
         await self._publish_due(rooms, local.date())
 
@@ -279,26 +305,31 @@ class AdaptiveRuntime:
                 )
         return self._config
 
-    async def _locate(self) -> bool:
-        """HA's location for the sun (its time zone too), once per connection."""
-        if self._provider is not None:
-            return True
+    async def _locate(self) -> scheduler.AstralSunProvider | None:
+        """HA's location for the sun (its time zone too), read once per connection; the
+        last one read serves while HA can't be asked again."""
+        if self._provider is not None and not self._relocate:
+            return self._provider
         try:
-            self._provider = scheduler.provider_for(await self.ha.get_config())
+            provider = scheduler.provider_for(await self.ha.get_config())
         except HAError as exc:
             self._fail("location", "warning", f"Can't read Home Assistant's location yet: {exc}")
-            return False
+            return self._provider
         except ValueError as exc:
             self._fail("location", "error", f"No sections can be scheduled: {exc}")
-            return False
+            return self._provider
         self._ok("location")
-        return True
+        self._provider, self._relocate = provider, False
+        return provider
 
     async def _adopt(self, rooms: Sequence[Mapping[str, Any]]) -> None:
-        """For each room not yet seen, the section its select already shows; and the scene
-        automations' entity ids."""
+        """For each room not yet adopted, the section its select already shows (and the
+        scene automations' entity ids). A room is adopted only once its select is there
+        with a section: before HA has loaded it (just after HA starts, or before the al_
+        lane is deployed) nothing says which section the house is in, and firing the
+        current scene again would turn back on the lights the user has turned off since."""
         pending = [room for room in rooms if room["id"] not in self._adopted]
-        if not pending:
+        if not pending or not self._remap_due():
             return
         try:
             states = await self._read_states()
@@ -307,9 +338,20 @@ class AdaptiveRuntime:
             return
         self._ok("adopt")
         for room in pending:
-            select = states.get(al.scene_select_entity(room["id"])) or {}
-            if select.get("state") in SECTIONS:
-                self._fired[room["id"]] = select["state"]
+            select_id = al.scene_select_entity(room["id"])
+            select = (states.get(select_id) or {}).get("state")
+            if select not in SECTIONS:
+                self._fail(
+                    f"adopt:{room['id']}",
+                    "warning",
+                    f"{room['name']}: waiting for its scene select ({select_id}, now "
+                    f"{select or 'missing'}) before changing its section: is the al_ lane "
+                    "deployed?",
+                    room["id"],
+                )
+                continue
+            self._ok(f"adopt:{room['id']}")
+            self._fired[room["id"]] = select
             self._adopted.add(room["id"])
 
     async def _read_states(self) -> dict[str, Mapping[str, Any]]:
@@ -325,18 +367,21 @@ class AdaptiveRuntime:
             and isinstance(state.get("attributes"), Mapping)
             and state["attributes"].get("id")
         }
-        self._mapped_at = asyncio.get_running_loop().time()
+        self._mapped_at = self._now()
         return states
 
     async def _schedule(
-        self, config: Mapping[str, Any], room: Mapping[str, Any], local: datetime
+        self,
+        config: Mapping[str, Any],
+        room: Mapping[str, Any],
+        local: datetime,
+        provider: scheduler.AstralSunProvider,
     ) -> None:
         room_id = room["id"]
         profile = self._profile(config, room)
-        assert self._provider is not None
         try:
             section, started = scheduler.active_section_at(
-                profile, self._provider, local, self._provider.tzinfo
+                profile, provider, local, provider.tzinfo
             )
         except scheduler.SunUnavailable as exc:
             self._fail(
@@ -347,19 +392,22 @@ class AdaptiveRuntime:
             )
             return
         self._ok(f"section:{room_id}")
-        self._log_collapses(room, profile, local.date())
+        self._log_collapses(room, profile, local.date(), provider)
         if section != self._fired.get(room_id):
             await self._crossover(room, section, started, local)
 
     def _log_collapses(
-        self, room: Mapping[str, Any], profile: Mapping[str, Any], day: date
+        self,
+        room: Mapping[str, Any],
+        profile: Mapping[str, Any],
+        day: date,
+        provider: scheduler.AstralSunProvider,
     ) -> None:
         """Once a day per room: the sections the schedule skips today, and why."""
         if self._collapses_logged.get(room["id"]) == day:
             return
         self._collapses_logged[room["id"]] = day
-        assert self._provider is not None
-        for boundary in scheduler.compute_day(profile, self._provider, day, self._provider.tzinfo):
+        for boundary in scheduler.compute_day(profile, provider, day, provider.tzinfo):
             if not boundary.ran:
                 self._log(
                     "info",
@@ -371,8 +419,13 @@ class AdaptiveRuntime:
     async def _crossover(
         self, room: Mapping[str, Any], section: str, started: datetime, local: datetime
     ) -> None:
-        """Move a room into a section: set its scene select and fire its scene. Retried at
-        the next tick if HA can't take it."""
+        """Move a room into a section: fire its scene, which sets the room's scene select
+        before it changes any light, so a select showing a section means its scene has
+        started (which is what a restart adopts); then, once it has run, set the select too.
+        The predecessor's order: setting the select first, a restart between that and a
+        failed trigger's retry would adopt the section and never run its scene. With no
+        scene automation in HA, only the select is set, so the bridges and maintenance at
+        least read the right section. Retried at the next tick if HA doesn't take it."""
         room_id = room["id"]
         scene = al.scene_id(room_id, section)
         entity = self._scenes.get(scene)
@@ -380,64 +433,104 @@ class AdaptiveRuntime:
             try:
                 await self._read_states()
             except HAError:
-                pass  # the select below says whether HA can be reached at all
+                pass  # the call below says whether HA can be reached at all
             entity = self._scenes.get(scene)
-        try:
-            # First, so the bridges and maintenance read the new section even if the scene
-            # can't be run; the scene sets it again, which changes nothing.
-            await self.ha.call_service(
-                "input_select",
-                "select_option",
-                {"entity_id": al.scene_select_entity(room_id), "option": section},
-            )
-        except HAError as exc:
-            self._fail(
-                f"crossover:{room_id}",
-                "error",
-                f"{room['name']}: couldn't move into {section}; retrying: {exc}",
+        late = (local - started).total_seconds()
+        began = f"{room['name']}: {section} began" + (
+            f" ({late:.0f} s after its boundary)" if late > LATE_SECONDS else ""
+        )
+        detail = {"section": section, "planned": started.isoformat(), "scene": entity}
+        if entity is None:
+            try:
+                await self._select(room_id, section)
+            except HAError as exc:
+                self._fail(
+                    f"crossover:{room_id}",
+                    "error",
+                    f"{room['name']}: couldn't move into {section}; retrying: {exc}",
+                    room_id,
+                )
+                return
+            self._ok(f"crossover:{room_id}")
+            self._fired[room_id] = section
+            self._log(
+                "warning",
+                "scene",
+                f"{began}, but its scene automation {scene} isn't in Home Assistant: only "
+                "the section was set.",
                 room_id,
+                detail,
             )
             return
-        self._ok(f"crossover:{room_id}")
+        previous = self._fired.get(room_id)
         self._fired[room_id] = section
-        late = (local - started).total_seconds()
-        self._log(
-            "info",
-            "scene",
-            f"{room['name']}: {section} began"
-            + (f" ({late:.0f} s after its boundary)" if late > LATE_SECONDS else "")
-            + "."
-            + ("" if entity else f" Its scene automation {scene} isn't in Home Assistant."),
-            room_id,
-            {"section": section, "planned": started.isoformat(), "scene": entity},
+        self._log("info", "scene", f"{began}.", room_id, detail)
+        transition = int(room["adaptive_config"]["scenes"][section]["transition_seconds"])
+        timeout = transition + al.SETTLE_SECONDS + TRIGGER_MARGIN_SECONDS
+        self._spawn(self._trigger(room, section, entity, timeout, previous))
+
+    async def _select(self, room_id: str, section: str) -> None:
+        await self.ha.call_service(
+            "input_select",
+            "select_option",
+            {"entity_id": al.scene_select_entity(room_id), "option": section},
         )
-        if entity is not None:
-            transition = int(room["adaptive_config"]["scenes"][section]["transition_seconds"])
-            timeout = transition + al.SETTLE_SECONDS + TRIGGER_MARGIN_SECONDS
-            self._spawn(self._trigger(room, section, entity, timeout))
 
     async def _trigger(
-        self, room: Mapping[str, Any], section: str, entity: str, timeout: float
+        self,
+        room: Mapping[str, Any],
+        section: str,
+        entity: str,
+        timeout: float,
+        previous: str | None = None,
     ) -> None:
-        """Fire a scene. HA answers only when its run is over, so this runs in the
-        background; if HA didn't take it, the crossover is retried at the next tick."""
+        """Fire a scene and, once it has run, make sure the select shows its section. HA
+        answers automation.trigger only when the run is over, so this runs in the
+        background. If HA didn't take it, the crossover is retried at the next tick. If HA
+        took it but didn't answer in time, the run is going on (HA shields a service call
+        from a dropped connection): retrying could run the scene twice, so it isn't."""
+        room_id = room["id"]
         try:
             await self.ha.call_service(
                 "automation", "trigger", {"entity_id": entity}, timeout=timeout
             )
-        except HAError as exc:
+        except HATimeoutError:
             self._log(
-                "error",
+                "warning",
                 "scene",
-                f"{room['name']}: the {section} scene ({entity}) failed; retrying: {exc}",
-                room["id"],
+                f"{room['name']}: the {section} scene ({entity}) hasn't finished after "
+                f"{timeout:.0f} s; taking it as running.",
+                room_id,
             )
-            if self._fired.get(room["id"]) == section:
-                del self._fired[room["id"]]
+            return
+        except HAError as exc:
+            self._fail(
+                f"trigger:{room_id}",
+                "error",
+                f"{room['name']}: the {section} scene ({entity}) failed; retrying: {exc}",
+                room_id,
+            )
+            if self._fired.get(room_id) == section:
+                # Back to the section the room was in (its select still shows it), so the
+                # next tick fires this one again.
+                if previous is None:
+                    del self._fired[room_id]
+                else:
+                    self._fired[room_id] = previous
+            return
+        self._ok(f"trigger:{room_id}")
+        if self._fired.get(room_id) == section:
+            # The scene set it already; this changes nothing unless the scene in HA is one
+            # that doesn't (an older deploy).
+            try:
+                await self._select(room_id, section)
+            except HAError:
+                pass  # the scene ran: the next crossover sets it again
 
     def _remap_due(self) -> bool:
-        now = asyncio.get_running_loop().time()
-        return self._mapped_at is None or now - self._mapped_at >= REMAP_SECONDS
+        if self._mapped_at is None:
+            return True
+        return (self._now() - self._mapped_at).total_seconds() >= REMAP_SECONDS
 
     async def _nightly(self, config: Mapping[str, Any], local: datetime) -> None:
         today = local.date()
@@ -510,10 +603,10 @@ class AdaptiveRuntime:
         room = self._room(room_id)
         if room is None:
             raise KeyError(f"room '{room_id}' is not adaptive")
-        if not await self._locate():
+        provider = await self._locate()
+        if provider is None:
             raise HAError("Home Assistant's location (and time zone) can't be read")
-        assert self._provider is not None
-        await self._publish(room, self._now().astimezone(self._provider.tzinfo).date(), force=True)
+        await self._publish(room, self._now().astimezone(provider.tzinfo).date(), force=True)
 
     # -- Helpers -----------------------------------------------------------------------
 

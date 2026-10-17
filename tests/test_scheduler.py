@@ -142,6 +142,23 @@ class ComputeDayTest(unittest.TestCase):
         self.assertEqual(found["night"].reason, "clamped to 0:30:00 after sunset")
         self.assertEqual(found["sunset"].ends, at(20, 40))
 
+    def test_a_clamp_never_moves_a_section_out_of_its_day(self):
+        # Three hours apart at least, under clamp: night moves to 22:30, and sleep would move
+        # to 01:30 tomorrow, after tomorrow's own first boundary: never in force, though
+        # reported as run (the predecessor's clamp). It collides as under collapse instead:
+        # night and sleep tie (100), and the earlier section wins.
+        profile = {**schedule(), "collision_policy": "clamp", "min_section_minutes": 180}
+        found = run(profile, mild())
+        self.assertEqual(found["night"].planned, at(22, 30))
+        self.assertFalse(found["sleep"].ran)
+        self.assertIn(
+            "gap conflict: night (priority 100) takes precedence over sleep", found["sleep"].reason
+        )
+        for b in found.values():
+            if b.ran:
+                self.assertEqual(b.planned.date(), DAY, b.section)
+        self.assertEqual(sweep.check_day(list(found.values()), profile, DAY), [])
+
     def test_the_minimum_is_the_profiles(self):
         provider = FixedSunProvider(time(6, 30), time(20, 10))
         found = run({**schedule(), "min_section_minutes": 15}, provider)
@@ -261,6 +278,23 @@ class SectionAtTest(unittest.TestCase):
         with self.assertRaises(SunUnavailable):
             scheduler.active_section_at(sun_only, FixedSunProvider(None, None), at(12, 0))
 
+    def test_a_fall_back_hour_never_takes_the_section_back(self):
+        # Beirut's clocks go back from 00:00 to 23:00 on 25 October 2026, so 23:00-24:00 on
+        # the 24th happens twice. Sleep starts at 23:30: once in force, the repeated hour
+        # must not read as before it again (comparing wall clocks did, and the runtime would
+        # fire night a second time).
+        beirut = ZoneInfo("Asia/Beirut")
+        profile = with_section(schedule(), "sleep", trigger={"type": "clock", "time": "23:30"})
+        provider = FixedSunProvider(time(6, 30), time(17, 0), beirut)
+        moment, seen = datetime(2026, 10, 24, 17, 0, tzinfo=UTC), []
+        while moment < datetime(2026, 10, 24, 23, 0, tzinfo=UTC):
+            local = moment.astimezone(beirut)
+            section = scheduler.active_section_at(profile, provider, local, beirut)[0]
+            if not seen or seen[-1] != section:
+                seen.append(section)
+            moment += timedelta(minutes=5)
+        self.assertEqual(seen, ["sunset", "night", "sleep"])
+
     def test_at_a_place_with_a_time_in_any_zone(self):
         # 23:30 UTC on midsummer's day is 00:30 the next day in London: still sleep.
         when = datetime(2026, 6, 21, 23, 30, tzinfo=UTC)
@@ -286,9 +320,18 @@ class SweepTest(unittest.TestCase):
     def test_a_year_at_every_site_has_no_unexpected_collapse(self):
         for label, latitude, longitude, zone in sweep.SITES:
             provider = AstralSunProvider(latitude, longitude, ZoneInfo(zone))
-            for policy in ("collapse", "clamp"):
-                with self.subTest(label, policy=policy):
-                    profile = {**schedule(), "collision_policy": policy}
+            for policy, minimum in (
+                ("collapse", 30),
+                ("clamp", 30),
+                ("clamp", 300),
+                ("clamp", 720),
+            ):
+                with self.subTest(label, policy=policy, minimum=minimum):
+                    profile = {
+                        **schedule(),
+                        "collision_policy": policy,
+                        "min_section_minutes": minimum,
+                    }
                     result = sweep.sweep(profile, provider, 2026, label)
                     self.assertEqual(result.days, 365)
                     self.assertEqual(result.unexpected, [])
@@ -335,6 +378,14 @@ class SweepTest(unittest.TestCase):
             any("out of canonical order" in p for p in sweep.check_day(broken, schedule()))
         )
         self.assertTrue(sweep.check_day(day[:5], schedule()))
+        # A kept section that starts on another day would never be in force.
+        broken = copy.deepcopy(day)
+        broken[5].planned = at(1, 30, DAY + timedelta(days=1))
+        broken[4].ends = broken[5].planned
+        self.assertIn(
+            f"sleep starts on {DAY + timedelta(days=1)}, outside its day",
+            sweep.check_day(broken, schedule(), DAY),
+        )
 
     def test_the_tool(self):
         out = io.StringIO()
@@ -360,6 +411,10 @@ class SweepTest(unittest.TestCase):
             ):
                 self.assertEqual(sweep.main(["--config", str(path), "--profile", "evening"]), 1)
             self.assertIn("UNEXPECTED", printed.getvalue())
+            path.write_text("{")
+            with self.assertRaises(SystemExit) as caught:
+                sweep.main(["--config", str(path)])
+            self.assertIn("doesn't load", str(caught.exception))
 
 
 if __name__ == "__main__":
