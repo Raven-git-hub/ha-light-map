@@ -225,8 +225,12 @@ def _v3_to_v4(doc: dict[str, Any]) -> dict[str, Any]:
             for member in (unit.get("members") if isinstance(unit.get("members"), list) else [])
             if isinstance(member, str)
         }
+        # Runs before validation, so it tolerates what it can't read: a bulb id that isn't a
+        # string (a hand edit) is left for validation to report, not a crash at startup.
         adaptive_config["adaptive_bulbs"] = [
-            bulb["id"] for bulb in _dicts(room.get("bulbs")) if bulb.get("id") in in_units
+            bulb["id"]
+            for bulb in _dicts(room.get("bulbs"))
+            if isinstance(bulb.get("id"), str) and bulb["id"] in in_units
         ]
     return doc
 
@@ -402,7 +406,7 @@ def apply_defaults(config: Mapping[str, Any]) -> dict[str, Any]:
             adaptive_config.setdefault("adaptive_bulbs", [])
             adaptive_config.setdefault("learning_units", [])
             adaptive_config["scenes"] = normalize_scenes(
-                adaptive_config.get("scenes"), adaptive_config["learning_units"]
+                adaptive_config.get("scenes", {}), adaptive_config["learning_units"]
             )
     for bulb in _dicts(doc["unassigned"]):
         bulb.setdefault("hard_switches", [])
@@ -418,14 +422,13 @@ def normalize_scenes(scenes: Any, units: Any) -> Any:
     Units are removed in several places that don't touch the matrix (the editor, ignoring a
     unit's last member, a sync taking its bulbs out of the room); reshaping it here, on
     every load and save, is what keeps an orphan column from ever reaching the document, and
-    gives a new unit its column. Nothing else is fixed: a value of the wrong type, a mode
-    that isn't one, a misspelt section or knob stays where it is for validation to report,
-    since dropping it would silently undo what someone wrote. Canonical order (sections,
-    then knobs, then units in the room's unit order), so it is deterministic. Runs before
-    validation, so it leaves alone what it can't read.
+    gives a new unit its column. Only what is absent is filled: anything present stays as
+    it is, an explicit null included, so a value of the wrong type, a mode that isn't one, a
+    misspelt section or knob is left for validation to report, since dropping or fixing it
+    would silently undo what someone wrote. Canonical order (sections, then knobs, then
+    units in the room's unit order), so it is deterministic. Runs before validation, so it
+    leaves alone what it can't read.
     """
-    if scenes is None:
-        scenes = {}
     if not isinstance(scenes, dict) or not isinstance(units, list):
         return scenes
     unit_ids = list(dict.fromkeys(u["id"] for u in _dicts(units) if isinstance(u.get("id"), str)))
@@ -443,10 +446,8 @@ def normalize_scenes(scenes: Any, units: Any) -> Any:
         if isinstance(cells, dict):
             row["units"] = {}
             for unit_id in unit_ids:
-                cell = cells.get(unit_id)
-                if cell is None:
-                    cell = {"mode": DEFAULT_MODE}
-                elif isinstance(cell, dict):
+                cell = cells.get(unit_id, {})
+                if isinstance(cell, dict):
                     cell = {"mode": DEFAULT_MODE, **cell}
                 row["units"][unit_id] = cell
         else:

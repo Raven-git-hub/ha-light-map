@@ -9,6 +9,7 @@ import ast
 import copy
 import json
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 
 from app.core import config, inventory
@@ -16,6 +17,7 @@ from app.core.config import ConfigError
 from app.core.ha import HAError
 from tests.fakes import STATES, committed_config, light, scenes, v2_config, v3_config
 from tests.test_api import ApiCase
+
 
 SCHEMA = json.loads(
     (Path(__file__).resolve().parent.parent / "schema" / "config.schema.json").read_text()
@@ -135,6 +137,33 @@ class MigrationTest(unittest.TestCase):
         block(old)["scenes"] = {"evening": {"groups": {}}}
         found = problems_of(config.loads, old)
         self.assertTrue(any("evening" in p for p in found), found)
+
+    def test_a_malformed_version_3_config_is_refused_not_a_crash(self):
+        # The migration runs before validation: what it can't read is validation's to
+        # report (a ConfigError, so the Map says the config is broken), never a TypeError
+        # that stops the app starting.
+        old = v3_config()
+        living(old)["bulbs"][0]["id"] = ["chandelier_1"]
+        self.assertTrue(problems_of(config.loads, old))
+        old = v3_config()
+        block(old)["learning_units"] = "chandelier"
+        self.assertTrue(problems_of(config.loads, old))
+
+    def test_version_4_refuses_what_version_3_let_through_by_hand(self):
+        # Documented in DESIGN ("Version 4"): refused with the problem named, to fix by hand.
+        for key, value, fragment in (
+            ("presence_sensors", ["device_tracker.phone"], "presence sensor device_tracker.phone"),
+            ("lux_sensors", ["input_number.lux"], "lux sensor input_number.lux"),
+        ):
+            old = v3_config()
+            block(old)[key] = value
+            with self.subTest(key):
+                self.assertTrue(any(fragment in p for p in problems_of(config.loads, old)))
+        old = v3_config()
+        old["schedule_profiles"][1]["name"] = None
+        self.assertTrue(
+            any("schedule_profiles/1/name" in p for p in problems_of(config.loads, old))
+        )
 
     def test_versions_1_and_2_migrate_through(self):
         self.assertEqual(config.loads(v2_config()), committed_config())
@@ -330,6 +359,20 @@ class NormaliseTest(unittest.TestCase):
         found = problems_of(config.loads, doc)
         self.assertTrue(any("lux_margn" in p for p in found), found)
         self.assertTrue(any("sunset/units/reading/mode" in p for p in found), found)
+
+    def test_only_what_is_absent_is_filled(self):
+        # An explicit null is something someone wrote: reported, not replaced by a default.
+        doc = committed_config()
+        block(doc)["scenes"]["night"]["units"]["reading"] = None
+        found = problems_of(config.loads, doc)
+        self.assertTrue(any("night/units/reading" in p for p in found), found)
+        doc = committed_config()
+        block(doc)["scenes"] = None
+        found = problems_of(config.loads, doc)
+        self.assertTrue(any("adaptive_config/scenes" in p for p in found), found)
+        doc = committed_config()
+        del block(doc)["scenes"]  # absent: filled
+        self.assertEqual(block(config.loads(doc))["scenes"], scenes("chandelier", "reading"))
 
     def test_normalising_is_idempotent_and_deterministic(self):
         doc = committed_config()
@@ -566,6 +609,38 @@ class EditorApiTest(ApiCase):
         self.assertIn("connection refused", view["ha"]["error"])
         self.assertEqual({b["capability"]["locked"] for b in view["bulbs"]}, {False})
         self.assertEqual(view["suggestions"], {"lux_sensors": [], "presence_sensors": []})
+
+    def test_an_unexpected_answer_from_ha_never_fails_the_read(self):
+        async def returning(value):
+            return value
+
+        async def timing_out():
+            raise TimeoutError()
+
+        for name, reader, logged in (
+            ("an empty body", lambda: returning(None), False),
+            ("a proxy's login page", lambda: returning("<html>login</html>"), False),
+            ("a timeout the client didn't wrap", timing_out, True),
+        ):
+            self.ha.get_states = reader
+            # A failure the client didn't wrap is logged: it may be a bug worth seeing.
+            logs = self.assertLogs("app.main", "WARNING") if logged else nullcontext()
+            with self.subTest(name), logs:
+                view = self.view()
+                self.assertFalse(view["ha"]["available"], name)
+                self.assertEqual({b["capability"]["locked"] for b in view["bulbs"]}, {False})
+        odd = copy.deepcopy(STATES)
+        for state in odd:
+            if state["entity_id"] == "light.counter_lamp":
+                state["attributes"] = ["onoff"]
+        odd.append("not a state")
+        self.ha.get_states = lambda: returning(odd)
+        view = self.view()
+        self.assertTrue(view["ha"]["available"])
+        counter = next(b for b in view["bulbs"] if b["id"] == "counter_lamp")
+        self.assertEqual(
+            (counter["capability"]["dimmable"], counter["capability"]["locked"]), (None, False)
+        )
 
     def test_a_room_that_isnt_adaptive_has_no_editor(self):
         self.assert_error(

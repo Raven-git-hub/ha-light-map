@@ -483,7 +483,8 @@ def bulb_capability(state: Mapping[str, Any] | None) -> dict[str, Any]:
         return capability_unknown("Capability unknown: Home Assistant has no such light.")
     if state.get("state") in OFFLINE:
         return capability_unknown("Capability unknown (offline).")
-    modes = (state.get("attributes") or {}).get("supported_color_modes")
+    attributes = state.get("attributes")
+    modes = attributes.get("supported_color_modes") if isinstance(attributes, Mapping) else None
     if not isinstance(modes, list) or not modes or not all(isinstance(m, str) for m in modes):
         return capability_unknown(
             "Capability unknown: Home Assistant doesn't report its colour modes."

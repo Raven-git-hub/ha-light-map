@@ -30,12 +30,9 @@ async function shot(page, name) {
 
 const dialog = (name) => `dialog[data-dialog="${name}"]`;
 const row = (bulb) => `#adaptive-editor tr[data-bulb="${bulb}"]`;
-const columns = (page) =>
-  page.$$eval(".scene-matrix thead th.unit-head", (els) => els.map((e) => e.dataset.unit));
+const columns = (page) => page.$$eval(".scene-matrix thead th.unit-head", (els) => els.map((e) => e.dataset.unit));
 const units = (page) =>
-  page.$$eval(".unit-card", (els) =>
-    els.map((e) => [e.dataset.unit, e.querySelector(".unit-members").textContent]),
-  );
+  page.$$eval(".unit-card", (els) => els.map((e) => [e.dataset.unit, e.querySelector(".unit-members").textContent]));
 const stateText = (page) => page.textContent("#editor-state");
 const saved = (page) =>
   page.evaluate(async () => {
@@ -127,7 +124,10 @@ const saved = (page) =>
     await step("edit the matrix: a mode, the knobs, and a bad value holds the save", async () => {
       await page.click('tr[data-section="night"] td.mode-cell[data-unit="living_all"] .mode-off');
       assert.equal(
-        await page.getAttribute('tr[data-section="night"] td.mode-cell[data-unit="living_all"] .mode-off', "aria-pressed"),
+        await page.getAttribute(
+          'tr[data-section="night"] td.mode-cell[data-unit="living_all"] .mode-off',
+          "aria-pressed",
+        ),
         "true",
       );
       await page.fill('tr[data-section="sunrise"] .knob.knob-lux_margin', "8");
@@ -138,6 +138,19 @@ const saved = (page) =>
       assert.ok(await page.isDisabled("#editor-save"));
       assert.match(await page.textContent("#editor-problems"), /Sunset: Fade \(s\): must be more than or equal to 0/);
       assert.ok(await page.$('tr[data-section="sunset"] .knob-transition_seconds.invalid'));
+      // A redraw (adding a sensor redraws the editor) keeps what was typed beside its
+      // error, so the error can still be fixed where it is shown.
+      const lux = '.sensor-list[data-field="lux_sensors"]';
+      await page.fill(`${lux} .sensor-input`, "sensor.window_lux");
+      await page.click(`${lux} .add-sensor`);
+      await page.waitForSelector(`${lux} .chip[data-sensor="sensor.window_lux"]`);
+      assert.equal(await page.inputValue('tr[data-section="sunset"] .knob-transition_seconds'), "-5");
+      assert.ok(await page.$('tr[data-section="sunset"] .knob-transition_seconds.invalid'));
+      assert.ok(await page.isDisabled("#editor-save"));
+      // A step too small to survive as a fraction is refused here, not by the server.
+      await page.fill('tr[data-section="day"] .knob.knob-max_step_pct', "0.00001");
+      assert.match(await page.textContent("#editor-problems"), /Day: Max step %: too small to save/);
+      await page.fill('tr[data-section="day"] .knob.knob-max_step_pct', "2.5");
       await page.fill('tr[data-section="sunset"] .knob-transition_seconds', "90");
       assert.ok(await page.isEnabled("#editor-save"));
       assert.equal(await page.textContent("#editor-problems"), "");
@@ -166,6 +179,7 @@ const saved = (page) =>
         { id: "living_all", name: "Chandelier", members: ["chandelier_1", "chandelier_2", "chandelier_3"] },
       ]);
       assert.deepEqual(config.presence_sensors, ["binary_sensor.sofa"]);
+      assert.deepEqual(config.lux_sensors, ["sensor.living_room_lux", "sensor.window_lux"]);
       assert.equal(config.schedule_profile, "default");
       assert.deepEqual(config.scenes.night.units, { living_all: { mode: "off" } });
       assert.deepEqual(config.scenes.day.units, { living_all: { mode: "auto" } });
@@ -185,6 +199,16 @@ const saved = (page) =>
       await page.waitForSelector(dialog("confirm"), { state: "detached" });
       assert.equal(new URL(page.url()).hash, "#config/living_room");
       assert.equal(await page.inputValue("#profile-select"), "evening"); // the draft is kept
+      // The browser's Back asks too, and staying keeps the entry it went back to: Back
+      // again asks again rather than skipping past it (or out of the app).
+      for (let i = 0; i < 2; i += 1) {
+        await page.goBack();
+        await page.waitForSelector(dialog("confirm"));
+        await page.click(`${dialog("confirm")} button:has-text("Cancel")`);
+        await page.waitForSelector(dialog("confirm"), { state: "detached" });
+        assert.equal(new URL(page.url()).hash, "#config/living_room");
+      }
+      assert.equal(await page.inputValue("#profile-select"), "evening");
       await page.click("#editor-revert");
       await page.click(`${dialog("confirm")} button.confirm`);
       await page.waitForFunction(() => document.querySelector("#editor-state")?.textContent === "Saved");
@@ -215,11 +239,18 @@ const saved = (page) =>
       // Reloaded: the night change is gone (it would have reverted the other edit), and the
       // lamp is shown switched-only, which saving makes so.
       assert.equal(
-        await page.getAttribute('tr[data-section="night"] td.mode-cell[data-unit="living_all"] .mode-off', "aria-pressed"),
+        await page.getAttribute(
+          'tr[data-section="night"] td.mode-cell[data-unit="living_all"] .mode-off',
+          "aria-pressed",
+        ),
         "true",
       );
       assert.equal(await page.getAttribute(`${row("reading_lamp")} .tier-switched`, "aria-pressed"), "true");
-      assert.equal(await stateText(page), "Unsaved changes");
+      // The demotion is the editor's, not an edit of the user's: Save offers it, but
+      // there is nothing to revert.
+      assert.match(await stateText(page), /Not saved yet: 1 bulb that can.t dim to make switched-only/);
+      assert.ok(await page.isEnabled("#editor-save"));
+      assert.ok(await page.isDisabled("#editor-revert"));
       assert.deepEqual(await columns(page), ["living_all"]);
       await shot(page, "03-demoted");
       await page.click("#editor-save");

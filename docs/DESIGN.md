@@ -661,8 +661,9 @@ and reshapes `scenes` to exactly the room's current units × the six sections: a
 section, knob or cell takes its default, and the column of a unit that no longer exists is
 dropped. Removing a unit anywhere (the editor, ignoring its last member, a sync that takes
 its bulbs out of the room) never leaves an orphan column, and a new unit arrives `auto` in
-every section. Anything else it doesn't recognise (a misspelt section or knob, a mode that
-isn't one) is left in place for validation to report, never silently dropped or fixed.
+every section. Only what is absent is filled: anything present stays as written, an explicit
+`null` included, so what it doesn't recognise (a misspelt section or knob, a mode that isn't
+one) is left in place for validation to report, never silently dropped or fixed.
 Unlike `system`'s tuning, the scene defaults are written into the document: the matrix has
 to cover every unit and section, and the editor shows exactly what is saved.
 
@@ -680,8 +681,11 @@ depend on it. The editor's read (`GET /api/rooms/{room}/adaptive_config`) reads 
 bulb's state once and classifies it by `supported_color_modes`:
 
 - exactly `{onoff}` → **can't dim**: locked switched-only, can't join a unit, with a note
-  saying why. A bulb already adaptive is shown demoted in the editor's draft, with a note
-  that saving makes it switched-only.
+  saying why. A bulb already adaptive (a hand edit, or saved before HA reported it) is
+  shown demoted in the editor's draft, with a note that saving makes it switched-only. The
+  demotion is the editor's, not the user's: Save offers it ("not saved yet"), but Revert
+  has nothing to undo and leaving doesn't ask about it, since it comes back on every
+  opening.
 - the attribute missing, or the bulb `unavailable`, `unknown` or absent, or HA unreachable
   → **capability unknown**: not locked, with a soft note. Locking on an outage would lock a
   dimmer out because it happened to be offline.
@@ -695,7 +699,12 @@ editor in the main view (`#config/<room>`), with a way back to the Map. The Conf
 adaptive config. The editor works on a draft: the sensors (entity suggestions come from the
 same state read), the schedule profile, each active bulb's tier with the dimmability lock,
 the learning-unit partition, and the matrix (a row per section with its knobs, and an
-Auto/Off cell per unit). It asks before leaving with unsaved changes. Saving sends the whole
+Auto/Off cell per unit). A field holding something invalid keeps what was typed, beside
+its error, until it is fixed, and Save waits. It asks before leaving with unsaved edits
+(a tab, a link, the browser's Back, closing the page); staying keeps the history the user
+moved through, and a save already in flight lands either way. The read never fails on
+HA's account: an error, or an answer that isn't a list of states, leaves every capability
+unknown. Saving sends the whole
 block (`PUT /api/rooms/{room}/adaptive_config`) with the room's `version` as `base`, like
 every other edit: one made against an older version is refused (409 `edit_stale`), and the
 editor reloads the room as it now is. The save is validate-then-write, and the event log
@@ -705,9 +714,13 @@ records it with what changed. It changes only the config.
 `adaptive_bulbs` = its bulbs that are in its learning units (what a version-3 unit meant:
 those bulbs learn), and everything else defaulted. A version-3 `scenes` was an open object
 that nothing wrote but `{}`: it is normalised like any other, and whatever in it doesn't fit
-the new shape is left for validation to report. A room that isn't adaptive has no block to
-migrate, so a house with no adaptive room loads exactly as before; the bump is what makes an
-older Light Map refuse a version-4 config rather than load an adaptive block it can't read.
+the new shape is left for validation to report. Version 4 also checks two things version 3
+let through, which only a hand edit could have set: a sensor's domain (a `device_tracker`
+as a presence sensor, an `input_number` as a lux sensor) and a profile's `name` being text.
+A config holding one is refused with the problem named, to fix by hand, rather than
+migrated by a guess. A room that isn't adaptive has no block to migrate, so a house with no
+adaptive room loads exactly as before; the bump is what makes an older Light Map refuse a
+version-4 config rather than load an adaptive block it can't read.
 
 ---
 

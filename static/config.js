@@ -55,7 +55,8 @@
       key: "maintenance_enabled",
       label: "Maintain",
       check: true,
-      title: "Run lux maintenance in this section (off by default for Night and Sleep, where lux sits at the sensor's floor)",
+      title:
+        "Run lux maintenance in this section (off by default for Night and Sleep, where lux sits at the sensor's floor)",
     },
     {
       key: "lux_target_seed",
@@ -135,9 +136,12 @@
   // -- The editor ----------------------------------------------------------------------
 
   // The room being edited: `view` as the server sent it, `draft` the adaptive_config being
-  // edited, `baseline` the draft's key as loaded (dirty = it differs), `bad` the knob
-  // fields holding something invalid (by field), `demoted` the bulbs the lock took out of
-  // the adaptive tier on load, `serverProblems` what the last refused save said.
+  // edited, `baseline` the saved block's key (what Save compares with), `opened` the
+  // draft's key as the editor opened it (what the user's own edits are measured from:
+  // it differs from `baseline` only by the lock's demotions), `bad` the fields holding
+  // something invalid ({message, raw}: what was typed, shown again when the field is
+  // redrawn), `demoted` the bulbs the lock took out of the adaptive tier on opening,
+  // `serverProblems` what the last refused save said.
   let ed = null;
 
   async function editor(main, roomId) {
@@ -149,7 +153,12 @@
         h("p", { class: "muted" }, "Loading the room’s adaptive config…"),
       ),
     );
-    LM.protect(() => Boolean(ed && ed.roomId === roomId && dirty()), "This room’s adaptive config changes");
+    // Only the user's own edits ask before leaving: the lock's demotions are the editor's,
+    // and come back on every opening. A save in flight lands whether or not the view stays.
+    LM.protect(
+      () => Boolean(ed && ed.roomId === roomId && edited() && !ed.saving),
+      "This room’s adaptive config changes",
+    );
     await load(roomId);
   }
 
@@ -185,6 +194,7 @@
       view,
       draft: structuredClone(view.adaptive_config),
       baseline: key(view.adaptive_config),
+      opened: null,
       bad: {},
       demoted: new Set(),
       serverProblems: [],
@@ -199,6 +209,7 @@
         setTier(bulb.id, false);
       }
     }
+    ed.opened = key(ed.draft);
     render();
   }
 
@@ -229,7 +240,10 @@
     return JSON.stringify(value ?? null);
   }
 
+  // dirty: what Save would change (the user's edits and the lock's demotions); edited:
+  // the user's own edits, which Revert drops and leaving asks about.
   const dirty = () => key(ed.draft) !== ed.baseline;
+  const edited = () => key(ed.draft) !== ed.opened;
   const bulbOf = (id) => ed.view.bulbs.find((b) => b.id === id);
   const unitOf = (id) => ed.draft.learning_units.find((u) => u.members.includes(id));
   const isAdaptive = (id) => ed.draft.adaptive_bulbs.includes(id);
@@ -347,7 +361,7 @@
   }
 
   function problems() {
-    return [...Object.values(ed.bad), ...ed.serverProblems];
+    return [...Object.values(ed.bad).map((b) => b.message), ...ed.serverProblems];
   }
 
   // -- Rendering -----------------------------------------------------------------------
@@ -356,6 +370,11 @@
     const el = ed && host(ed.roomId);
     if (!el) return;
     const { view } = ed;
+    // A unit's name error goes with the unit: no field would be left to fix it in.
+    const units = new Set(ed.draft.learning_units.map((u) => u.id));
+    for (const field of Object.keys(ed.bad)) {
+      if (field.startsWith("unit:") && !units.has(field.slice(5))) delete ed.bad[field];
+    }
     fill(
       el,
       nav(),
@@ -408,12 +427,20 @@
   function refreshBar() {
     const state = document.getElementById("editor-state");
     if (!state || !ed) return;
-    const changed = dirty();
+    const pending = dirty();
+    const own = edited();
     const found = problems();
-    state.textContent = ed.saving ? "Saving…" : changed ? "Unsaved changes" : "Saved";
-    state.className = changed ? "pill warn" : "pill ok";
-    document.getElementById("editor-save").disabled = ed.saving || !changed || found.length > 0;
-    document.getElementById("editor-revert").disabled = ed.saving || !changed;
+    const demoted = [...ed.demoted].filter((id) => !isAdaptive(id)).length;
+    state.textContent = ed.saving
+      ? "Saving…"
+      : own
+        ? "Unsaved changes"
+        : pending
+          ? `Not saved yet: ${plural(demoted, "bulb")} that can’t dim to make switched-only`
+          : "Saved";
+    state.className = pending ? "pill warn" : "pill ok";
+    document.getElementById("editor-save").disabled = ed.saving || !pending || found.length > 0;
+    document.getElementById("editor-revert").disabled = ed.saving || !own;
     fill(
       document.getElementById("editor-problems"),
       found.length
@@ -431,8 +458,8 @@
     );
   }
 
-  // Any edit: the server's last refusal no longer describes the draft.
-  function edited({ full = false } = {}) {
+  // After any edit: the server's last refusal no longer describes the draft.
+  function changed({ full = false } = {}) {
     ed.serverProblems = [];
     if (full) render();
     else refreshBar();
@@ -462,7 +489,7 @@
             return;
           }
           ed.draft[field] = [...ed.draft[field], entityId];
-          edited({ full: true });
+          changed({ full: true });
         };
         input.addEventListener("keydown", (event) => {
           if (event.key === "Enter") add();
@@ -490,7 +517,7 @@
                         "aria-label": `Remove ${entityId}`,
                         onclick: () => {
                           ed.draft[field] = ed.draft[field].filter((s) => s !== entityId);
-                          edited({ full: true });
+                          changed({ full: true });
                         },
                       },
                       "×",
@@ -526,7 +553,7 @@
         id: "profile-select",
         onchange: (event) => {
           ed.draft.schedule_profile = event.target.value;
-          edited();
+          changed();
         },
       },
       choices.map((p) => h("option", { value: p.id }, p.name === p.id ? p.id : `${p.name} (${p.id})`)),
@@ -547,7 +574,11 @@
   function bulbsSection() {
     const { view } = ed;
     if (!view.bulbs.length) {
-      return h("p", { class: "muted none" }, "This room has no bulbs to make adaptive (an ignored light is never offered).");
+      return h(
+        "p",
+        { class: "muted none" },
+        "This room has no bulbs to make adaptive (an ignored light is never offered).",
+      );
     }
     return [
       h(
@@ -587,7 +618,7 @@
           title: value === "adaptive" && locked ? bulb.capability.note : null,
           onclick: () => {
             setTier(bulb.id, value === "adaptive");
-            edited({ full: true });
+            changed({ full: true });
           },
         },
         label,
@@ -653,7 +684,7 @@
         "aria-label": `${bulb.name}: learning unit`,
         onchange: (event) => {
           moveTo(bulb.id, event.target.value);
-          edited({ full: true });
+          changed({ full: true });
         },
       },
       ed.draft.learning_units.map((u) => h("option", { value: u.id }, u.name)),
@@ -693,7 +724,7 @@
                 disabled: !members.length || done,
                 onclick: () => {
                   learnGroup(group);
-                  edited({ full: true });
+                  changed({ full: true });
                 },
               },
               `Learn ${group.name} as one unit`,
@@ -719,7 +750,11 @@
   function unitsSection() {
     const units = ed.draft.learning_units;
     if (!units.length) {
-      return h("p", { class: "muted none" }, "No learning units yet: make a bulb adaptive and it gets a unit of its own.");
+      return h(
+        "p",
+        { class: "muted none" },
+        "No learning units yet: make a bulb adaptive and it gets a unit of its own.",
+      );
     }
     return [
       h(
@@ -734,7 +769,7 @@
           const name = h("input", {
             type: "text",
             class: "unit-name-input",
-            value: unit.name,
+            value: ed.bad[`unit:${unit.id}`] ? ed.bad[`unit:${unit.id}`].raw : unit.name,
             "aria-label": `Name of learning unit ${unit.id}`,
             oninput: (event) => {
               const text = event.target.value.trim();
@@ -742,9 +777,12 @@
                 unit.name = text;
                 delete ed.bad[`unit:${unit.id}`];
               } else {
-                ed.bad[`unit:${unit.id}`] = `Learning unit ${unit.id} needs a name.`;
+                ed.bad[`unit:${unit.id}`] = {
+                  message: `Learning unit ${unit.id} needs a name.`,
+                  raw: event.target.value,
+                };
               }
-              edited();
+              changed();
             },
             // The new name shows in the bulbs' unit pickers and the matrix's header.
             onchange: () => {
@@ -763,7 +801,7 @@
                     class: "link split-unit",
                     onclick: () => {
                       splitUnit(unit);
-                      edited({ full: true });
+                      changed({ full: true });
                     },
                   },
                   "Split: each bulb its own unit",
@@ -834,7 +872,7 @@
               b.classList.toggle("on", on);
               b.setAttribute("aria-pressed", String(on));
             }
-            edited();
+            changed();
           },
         },
         mode === "auto" ? "Auto" : "Off",
@@ -843,11 +881,7 @@
     return h(
       "td",
       { class: "mode-cell", dataset: { unit: unit.id } },
-      h(
-        "div",
-        { class: "segmented", role: "group", "aria-label": `${SECTION_NAMES[section]}: ${unit.name}` },
-        buttons,
-      ),
+      h("div", { class: "segmented", role: "group", "aria-label": `${SECTION_NAMES[section]}: ${unit.name}` }, buttons),
     );
   }
 
@@ -863,11 +897,15 @@
         "aria-label": label,
         onchange: (event) => {
           row[spec.key] = event.target.checked;
-          edited();
+          changed();
         },
       });
     }
-    const shown = row[spec.key] === null ? "" : spec.scale ? Number((row[spec.key] * spec.scale).toFixed(4)) : row[spec.key];
+    // A field holding something invalid is redrawn with what was typed, beside its error,
+    // so the error can always be fixed where it is shown.
+    const saved =
+      row[spec.key] === null ? "" : spec.scale ? Number((row[spec.key] * spec.scale).toFixed(4)) : row[spec.key];
+    const shown = ed.bad[field] ? ed.bad[field].raw : saved;
     const input = h("input", {
       type: "number",
       class: `knob knob-${spec.key}`,
@@ -880,10 +918,10 @@
       "aria-label": label,
       oninput: (event) => {
         const problem = setKnob(row, spec, event.target.value);
-        if (problem) ed.bad[field] = `${label}: ${problem}`;
+        if (problem) ed.bad[field] = { message: `${label}: ${problem}`, raw: event.target.value };
         else delete ed.bad[field];
         event.target.classList.toggle("invalid", Boolean(problem));
-        edited();
+        changed();
       },
     });
     if (ed.bad[field]) input.classList.add("invalid");
@@ -904,9 +942,14 @@
     const n = Number(raw);
     if (!Number.isFinite(n)) return "not a number";
     if (spec.integer && !Number.isInteger(n)) return "a whole number of seconds";
-    if (spec.exclusiveMin ? n <= spec.min : n < spec.min) return `must be more than ${spec.exclusiveMin ? "" : "or equal to "}${spec.min}`;
+    if (spec.exclusiveMin ? n <= spec.min : n < spec.min)
+      return `must be more than ${spec.exclusiveMin ? "" : "or equal to "}${spec.min}`;
     if (spec.max !== undefined && n > spec.max) return `must be at most ${spec.max}`;
-    row[spec.key] = spec.scale ? Number((n / spec.scale).toFixed(6)) : n;
+    // Checked as it would be saved: a percentage too small to survive the rounding would
+    // save as 0, which the server refuses.
+    const value = spec.scale ? Number((n / spec.scale).toFixed(6)) : n;
+    if (spec.exclusiveMin && value <= spec.min) return "too small to save";
+    row[spec.key] = value;
     return null;
   }
 
@@ -949,11 +992,15 @@
   }
 
   async function revert() {
-    if (!ed || !dirty()) return;
-    const sure = await confirmBox("Revert?", ["Drop the unsaved changes and show the room’s adaptive config as saved."], {
-      confirm: "Revert",
-      danger: true,
-    });
+    if (!ed || !edited()) return;
+    const sure = await confirmBox(
+      "Revert?",
+      ["Drop the unsaved changes and show the room’s adaptive config as saved."],
+      {
+        confirm: "Revert",
+        danger: true,
+      },
+    );
     if (sure) await load(ed.roomId);
   }
 

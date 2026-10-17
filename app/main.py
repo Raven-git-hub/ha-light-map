@@ -560,7 +560,8 @@ def _sensor_suggestions(states: Mapping[str, Mapping[str, Any]]) -> dict[str, li
         domain, _, object_id = entity_id.partition(".")
         if object_id.startswith(config_mod.OWN_PREFIXES):
             continue
-        attributes = state.get("attributes") or {}
+        attributes = state.get("attributes")
+        attributes = attributes if isinstance(attributes, Mapping) else {}
         entry = {"entity_id": entity_id, "name": attributes.get("friendly_name") or entity_id}
         if domain == "sensor" and (
             attributes.get("device_class") == "illuminance"
@@ -849,15 +850,25 @@ def _adaptive_room(doc: Mapping[str, Any], room_id: str) -> Mapping[str, Any]:
 async def _editor_states(request: Request) -> tuple[dict[str, Any] | None, str | None]:
     """HA's states by entity_id, read once, for the adaptive editor's dimmability; or None
     and why not. Never fails the read: without HA the editor still works, with every
-    bulb's capability unknown (and so nothing locked)."""
+    bulb's capability unknown (and so nothing locked). That includes an answer that isn't
+    a list of states (an empty body, a proxy's login page) and a failure the client didn't
+    wrap: the editor edits the config, and HA is only a hint for it."""
     ha = request.app.state.ha
     if ha is None:
         return None, f"Home Assistant is not configured ({request.app.state.ha_error})"
     try:
         states = await ha.get_states()
-    except HAError as exc:
-        return None, f"Home Assistant could not be read ({exc})"
-    return {s["entity_id"]: s for s in states if isinstance(s.get("entity_id"), str)}, None
+    except Exception as exc:  # noqa: BLE001 - whatever went wrong, the editor still serves
+        if not isinstance(exc, HAError):
+            log.warning("reading HA's states for the adaptive editor failed: %r", exc)
+        return None, f"Home Assistant could not be read ({str(exc) or type(exc).__name__})"
+    if not isinstance(states, list):
+        return None, "Home Assistant could not be read (its answer was not a list of states)"
+    found = {}
+    for state in states:
+        if isinstance(state, Mapping) and isinstance(state.get("entity_id"), str):
+            found[state["entity_id"]] = state
+    return found, None
 
 
 @router.get("/rooms/{room_id}/adaptive_config")

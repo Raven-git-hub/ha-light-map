@@ -206,7 +206,10 @@ const LM = (() => {
 
   const PLACEHOLDERS = {
     now: ["Now", "The live state of each adaptive room. Arrives with the Adaptive Light engine (P5.2)."],
-    analysis: ["Analysis", "What the learner made of each learning unit. Arrives with the Adaptive Light engine (P5.2)."],
+    analysis: [
+      "Analysis",
+      "What the learner made of each learning unit. Arrives with the Adaptive Light engine (P5.2).",
+    ],
     almanac: [
       "Almanac",
       "The learned targets per learning unit and section. Arrives with the Adaptive Light engine (P5.2).",
@@ -218,29 +221,41 @@ const LM = (() => {
   }
 
   // The view on screen's unsaved-edit check, and the route it was shown for. Set by the
-  // view (protect), cleared by every route that leaves it.
+  // view (protect), cleared by every route that leaves it. `asking`: the leave question is
+  // open, and answering it decides where to go.
   let guard = null;
   let shown = null;
+  let asking = false;
 
   function protect(dirty, what = "Your changes") {
     guard = dirty ? { dirty, what } : null;
   }
 
   async function route() {
-    const hash = location.hash || "#map";
-    if (guard && hash !== shown && guard.dirty()) {
-      const leave = await confirmBox(
-        "Leave without saving?",
-        [`${guard.what} haven’t been saved. Leaving drops them.`],
-        { confirm: "Leave", danger: true },
-      );
+    // A second hashchange while the question is open (the back button again) doesn't ask
+    // twice: the answer goes to wherever the address then is.
+    if (asking) return;
+    if (guard && (location.hash || "#map") !== shown && guard.dirty()) {
+      asking = true;
+      let leave;
+      try {
+        leave = await confirmBox("Leave without saving?", [`${guard.what} haven’t been saved. Leaving drops them.`], {
+          confirm: "Leave",
+          danger: true,
+        });
+      } finally {
+        asking = false;
+      }
       if (!leave) {
-        // Stay: put the address back without routing again (replaceState fires no
-        // hashchange), so the view and its draft are exactly as they were.
-        history.replaceState(null, "", shown);
+        // Stay: put the view's address back as a new entry, without routing again
+        // (pushState fires no hashchange), so the view and its draft are exactly as they
+        // were. Not replaceState: after the back button that would overwrite the entry
+        // the user went back to, and the next Back would skip it.
+        if ((location.hash || "#map") !== shown) history.pushState(null, "", shown);
         return;
       }
     }
+    const hash = location.hash || "#map";
     guard = null;
     shown = hash;
     const [name, ...rest] = hash.slice(1).split("/");
