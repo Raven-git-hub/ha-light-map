@@ -17,7 +17,7 @@ Light Map is a ground-up rebuild of `ha-adaptive-light`.
 
 ## Status
 
-**P5.0: the adaptive config and its editor.** On top of P1's inventory (rooms from HA Areas,
+**P5.2a: the adaptive engine.** On top of P1's inventory (rooms from HA Areas,
 two-way sync), P2's switching plane (a soft switch `input_boolean.lm_soft_<bulb>` and a
 soft→bulb bridge per bulb, a hard→soft automation per hard-switch binding, deployed in their
 own `lm_` lane and verified), P3's Map (the editor and the deploy surface, with every HA
@@ -28,9 +28,13 @@ room bulb be ignored), the first step of the Adaptive Light module is in. A room
 adaptive on the Map opens a dedicated editor (the **Config** tab): its lux and presence
 sensors, its schedule profile, which of its bulbs are adaptive and which stay switched-only
 (a bulb Home Assistant reports as on/off only can't be made adaptive), how the adaptive
-bulbs pool into learning units, and the section × unit scene matrix. This phase only
-edits the config: the adaptive automations arrive in P5.1, the learner and its views in
-P5.2. Deploying never drives a bulb: each soft switch starts at its bulb's current state.
+bulbs pool into learning units, and the section × unit scene matrix. P5.1 generates the
+adaptive automations (in their own `al_` lane) and P5.2a the engine that drives them: the
+section scheduler, the nightly learner pooling each learning unit's bulbs, the almanac it
+publishes to Home Assistant, and the runtime loop. All of the adaptive module stays switched
+off until cutover (P6), because its `al_` names are the live `ha-adaptive-light`'s own; the
+read-only views over it arrive in P5.2b. Deploying never drives a bulb: each soft switch
+starts at its bulb's current state.
 Until cutover (P6) Light Map runs beside `ha-adaptive-light`; binding a hard switch makes
 its bulbs live, and the Map warns before saving one. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -39,6 +43,13 @@ To see what Light Map makes of your Home Assistant (read-only):
 ```sh
 export LM_HA_BASE_URL=http://homeassistant.local:8123 LM_HA_TOKEN=...
 python tools/doctor.py                      # add --config path/to/config.json to compare
+```
+
+Two offline tools for the adaptive engine (they never contact Home Assistant):
+
+```sh
+python tools/sweep.py [--config path/to/config.json]      # a year of section boundaries
+python tools/compare_analyser.py --config path/to/config.json --tz Europe/London  # learner, legacy vs current
 ```
 
 ## Run

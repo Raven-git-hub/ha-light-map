@@ -210,13 +210,52 @@ def scenes(*unit_ids: str, **modes: str) -> dict[str, Any]:
     }
 
 
+def schedule() -> dict[str, Any]:
+    """The standard schedule (the predecessor's six boundaries), written out (not taken from
+    `config.standard_schedule`, so the fixture checks it rather than echoing it)."""
+    return {
+        "sections": [
+            {
+                "id": "sunrise",
+                "priority": 100,
+                "trigger": {
+                    "type": "earliest",
+                    "of": [
+                        {"type": "sun", "event": "sunrise", "offset_minutes": 0},
+                        {"type": "clock", "time": "05:30"},
+                    ],
+                },
+            },
+            {
+                "id": "day",
+                "priority": 50,
+                "trigger": {"type": "sun", "event": "sunrise", "offset_minutes": 180},
+            },
+            {
+                "id": "afternoon",
+                "priority": 50,
+                "trigger": {"type": "sun", "event": "sunset", "offset_minutes": -180},
+            },
+            {
+                "id": "sunset",
+                "priority": 50,
+                "trigger": {"type": "sun", "event": "sunset", "offset_minutes": 0},
+            },
+            {"id": "night", "priority": 100, "trigger": {"type": "clock", "time": "20:30"}},
+            {"id": "sleep", "priority": 100, "trigger": {"type": "clock", "time": "22:00"}},
+        ],
+        "collision_policy": "collapse",
+        "min_section_minutes": 30,
+    }
+
+
 def committed_config() -> dict[str, Any]:
     """A valid committed config for the fixture house, as of some earlier sync. Its bulbs
     carry match keys; `without_keys` gives the P1-era equivalent. The living room is
-    adaptive, with every bulb adaptive in two learning units; `v3_config` gives it as
-    version 3 wrote it."""
+    adaptive, with every bulb adaptive in two learning units; `v4_config` gives it as
+    version 4 wrote it, `v3_config` as version 3 did."""
     return {
-        "version": 4,
+        "version": 5,
         "homeassistant": {"base_url": "http://ha.local:8123", "verify_ssl": True},
         "system": {},
         "rooms": [
@@ -297,16 +336,28 @@ def committed_config() -> dict[str, Any]:
             },
         ],
         "unassigned": [bulb("porch")],
-        "schedule_profiles": [{"id": "default", "name": "Default"}, {"id": "evening"}],
+        "schedule_profiles": [
+            {"id": "default", "name": "Default", **schedule()},
+            {"id": "evening", **schedule()},
+        ],
         "learning": {},
     }
+
+
+def v4_config() -> dict[str, Any]:
+    """`committed_config` as P5.0-P5.1 (schema version 4) wrote it: schedule profiles that
+    are an id and a name (a new install's minimal `default`, and one with no name)."""
+    doc = committed_config()
+    doc["version"] = 4
+    doc["schedule_profiles"] = [{"id": "default", "name": "Default"}, {"id": "evening"}]
+    return doc
 
 
 def v3_config() -> dict[str, Any]:
     """`committed_config` as P4.1 (schema version 3) wrote it: an adaptive config with no
     `adaptive_bulbs` (a learning unit was what named a bulb for the module) and the open
     `scenes` object nothing filled."""
-    doc = committed_config()
+    doc = v4_config()
     doc["version"] = 3
     adaptive_config = doc["rooms"][0]["adaptive_config"]
     del adaptive_config["adaptive_bulbs"]
@@ -364,6 +415,7 @@ WRITES = (
     "save_automation_config",
     "delete_automation_config",
     "call_service",
+    "set_state",
 )
 
 
@@ -436,6 +488,13 @@ class FakeHA:
         self.drop_writes = drop_writes
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.ha_version = "2026.10.0"
+        # HA's core config: where the house is (London), for the scheduler's sun.
+        self.location: dict[str, Any] = {
+            "time_zone": "Europe/London",
+            "latitude": 51.51,
+            "longitude": -0.13,
+            "elevation": 20,
+        }
         self.closed = False
         self.helpers: dict[str, dict[str, dict[str, Any]]] = {
             domain: {item["id"]: copy.deepcopy(item) for item in items}
@@ -590,16 +649,33 @@ class FakeHA:
                 self.lingering[automation_id] = self.lag
         return True
 
-    async def call_service(self, domain: str, service: str, data: dict[str, Any]) -> Any:
+    async def call_service(
+        self, domain: str, service: str, data: dict[str, Any], *, timeout: float | None = None
+    ) -> Any:
         self._log("call_service", domain, service, copy.deepcopy(data))
-        if domain == "input_boolean" and not self.drop_writes:
+        if self.drop_writes:
+            return []
+        if domain == "input_boolean":
             for entity_id in _as_list(data["entity_id"]):
                 old = self.helper_states.get(entity_id)
                 new = {"turn_on": "on", "turn_off": "off"}.get(service)
                 if service == "toggle":
                     new = "off" if old == "on" else "on"
                 self._set(entity_id, new)
+        elif (domain, service) == ("input_select", "select_option"):
+            for entity_id in _as_list(data["entity_id"]):
+                self._set(entity_id, data["option"])
         return []
+
+    async def set_state(
+        self, entity_id: str, state: str, attributes: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Write an entity's state over REST, as the almanac is published."""
+        self._log("set_state", entity_id, state, copy.deepcopy(attributes))
+        written = {"entity_id": entity_id, "state": state, "attributes": copy.deepcopy(attributes)}
+        if not self.drop_writes:
+            self.states = [s for s in self.states if s["entity_id"] != entity_id] + [written]
+        return copy.deepcopy(written)
 
     def _set(self, entity_id: str, new: str | None) -> None:
         """Change an entity's state as HA would, recording every automation it triggers."""
@@ -745,7 +821,7 @@ class FakeHA:
 
     async def get_config(self) -> dict[str, Any]:
         self._log("get_config")
-        return {"version": self.ha_version, "time_zone": "Europe/London"}
+        return {"version": self.ha_version, **self.location}
 
     async def connect(self) -> None:
         self._log("connect")

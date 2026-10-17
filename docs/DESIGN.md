@@ -137,7 +137,7 @@ but in its own lane (settled in P2):
 - `lm_hard_<hard_switch_id>` (hard→soft): one automation per binding; its trigger comes
   from the binding's source and its action from its mode (see "Hard switches").
 - `lm_bridge_<bulb_id>` (soft→bulb): soft on → turn the bulb on (at a module-supplied
-  brightness, or its last one); soft off → turn it off.
+  brightness when the module has one for it, else at its last one); soft off → turn it off.
 - The adaptive almanac (`sensor.al_almanac_<room>`) is keyed by **learning-unit id**.
 
 Each automation's `alias` is its id, so its entity is `automation.<id>`, and its
@@ -174,8 +174,25 @@ generator embeds that fragment in the bulb's bridge, inside the soft-on branch, 
 - it is guarded on soft-on by construction, and can't change the target or the power;
 - at most one module may claim a bulb;
 - the provider must not bake almanac values in (it emits a template that reads them at
-  runtime), and must render a valid value on every path, because an invalid one fails the
-  whole `light.turn_on` and the bulb would not come on.
+  runtime), and must render a valid value on every path it applies its data, because an
+  invalid one fails the whole `light.turn_on` and the bulb would not come on.
+
+**The gate** (settled in P5.2a). A module doesn't always have a brightness for a bulb it
+claims: Adaptive Light has none for a unit nothing has been learned for, or one held off
+for the section, and a bridge that had to render *some* brightness brought such a bulb on at
+255 (an off bulb reports no brightness to keep), so a hard switch pressed at 3 a.m. in a
+sleep section held off came on at full brightness. So a provider may return its data
+gated (`core.switching.GatedBrightness(when, data)`): `when` is a condition template, and
+the bridge's soft-on branch becomes "when → `light.turn_on` with the data; else → the plain
+`light.turn_on`", which HA answers by restoring the bulb's own last brightness, as for a bulb
+no module claims. The guarantees hold: the gate only chooses which of two `light.turn_on`s
+runs, both on the bridge's own target and both inside the soft-on branch, so a module still
+can't power a bulb or retarget the bridge, and its data may still set only `brightness`,
+`brightness_pct` and `transition`. The gate and the data are rendered together, in one
+`variables` step, before the choice: rendered apart, a republish landing between the two
+could leave the data with nothing valid to render for a gate that had just said yes, and
+the bulb wouldn't come on. A provider that returns a plain mapping (ungated) applies it on
+every soft-on, as before.
 
 The fragment ships in the `lm` lane (it is part of the bridge), and only *reads* `al_`
 entities; the switching deployer still never writes one. The composition root registers
@@ -217,7 +234,8 @@ learning-unit × section (auto/off per unit per section; the tuning knobs are pe
 room-wide); at a crossover every member bulb of
 a unit is driven to the same power intent and, if on, the same brightness. This is a moderate
 but clean extension of the ported analyser (per-group averaging over on-samples already
-exists; a unit is now a set of bulbs rather than a single entity), not a rewrite.
+exists; a unit is now a set of bulbs rather than a single entity), not a rewrite. How the
+pooling is done (settled in P5.2a) is in "The adaptive engine", "The analyser".
 
 ---
 
@@ -598,9 +616,10 @@ P5 lands in three steps. **P5.0** is the adaptive per-room config and its editor
 generates and deploys nothing, and nothing new reaches HA. **P5.1** adds the adaptive
 generator (the `al_` lane, and the bridge-brightness fragment that brings an adaptive bulb
 on at its unit's target), behind the cutover switch (see "The adaptive generator").
-**P5.2** ports the scheduler (with the schedule profile's
-internal shape, its boundary editor and `tools/sweep.py`), the analyser, the almanac and
-the runtime loop, and adds the Now / Analysis / Almanac views.
+**P5.2a** ports the scheduler (with the schedule profile's
+internal shape and `tools/sweep.py`), the analyser, the almanac and the runtime loop (see
+"The adaptive engine"); **P5.2b** adds the Now / Analysis / Almanac views and the
+schedule-profile editor.
 
 **The block.** A room's `adaptive_config`, present exactly when the room is adaptive:
 
@@ -611,8 +630,8 @@ the runtime loop, and adds the Now / Analysis / Almanac views.
   Light Map's own entities (`lm_`, `al_`). Whether they exist in HA is a deploy-time check.
 - `schedule_profile` — the id of an entry in the global `schedule_profiles` (default
   `default`). The editor selects one by id and name. A profile's internals (its section
-  boundaries, triggers and collision policy) arrive with the scheduler port (P5.2); until
-  then a profile is an id and a name.
+  boundaries, triggers and collision policy) arrived with the scheduler port (P5.2a; see
+  "Schedule profiles"); their editor arrives with P5.2b.
 - `adaptive_bulbs[]` — the room's adaptive bulbs, by id. **Adaptive-ness is not a flag on
   the bulb.** It lives in the module's own block, so the core bulb stays module-free and
   `app/core` never imports `app/modules`. Within an adaptive room each active (not
@@ -740,9 +759,8 @@ version-4 config rather than load an adaptive block it can't read.
 P5.1 builds everything needed to generate, reconcile and preview the adaptive plane: the
 `al_` artefacts (`app.modules.adaptive.generate`), the bridge-brightness fragment, and the
 `al_` deploy lane. What *fires* the scene automations (the scheduler and the runtime
-crossover loop) and what *writes* the almanac (the analyser and its publish) are P5.2's;
-until then nothing sets `sensor.al_almanac_<room>`, and every generated template tolerates
-its absence.
+crossover loop) and what *writes* the almanac (the analyser and its publish) are P5.2a's
+(see "The adaptive engine"); every generated template tolerates the almanac's absence.
 
 ### The cutover switch
 
@@ -761,10 +779,12 @@ root (`app/main.py`), **off until P6**:
   adaptive namespace nor its bridge-brightness provider. `core.generate.namespaces()` is
   `["lm"]`, every bridge takes the plain path, and the generated `lm_` lane is
   byte-identical to P5.0's (a test holds it to a golden file captured before P5.1). Nothing
-  generates, previews or writes `al_`.
+  generates, previews or writes `al_`, and the lifespan makes no adaptive runtime (P5.2a):
+  nothing fires a scene, raises a hold, publishes an almanac, or hooks a section or a guard
+  into the observer.
 - **On** (the tests, and P6): `al` is registered and generated, `core.deploy` reconciles it
-  as its own lane, the deploy preview shows its plan (read-only), and adaptive bulbs' bridges
-  carry the fragment.
+  as its own lane, the deploy preview shows its plan (read-only), adaptive bulbs' bridges
+  carry the fragment, and the lifespan starts the runtime.
 
 It is a constant, not an environment variable, so turning it on is a reviewed code change
 made with the cutover, never a deployment setting someone could set early (in a compose
@@ -917,19 +937,23 @@ attributes.<section>  (one per section id: sunrise, day, afternoon, sunset, nigh
 ### The bridge fragment
 
 The module registers a bridge-brightness provider (`core.switching`'s seam). For an
-adaptive bulb (listed in its adaptive room's `adaptive_bulbs`) it returns
-`{brightness: <template>}`; for every other bulb (switched-only, in a room that isn't
-adaptive, in Unassigned) it returns None, and that bulb's bridge stays on the plain path,
-byte for byte. The template reads the current section from `input_select.al_scene_<room>`
-and the bulb's unit's target from the almanac, so a hard switch brings an adaptive bulb up
-already right for the time of day. It must render a valid brightness on every path, since
-an invalid one fails the whole `light.turn_on` and the bulb wouldn't come on:
+adaptive bulb (listed in its adaptive room's `adaptive_bulbs`) it returns gated data
+(`GatedBrightness`, settled in P5.2a; see "The soft→bulb bridge"); for every other bulb
+(switched-only, in a room that isn't adaptive, in Unassigned) it returns None, and that
+bulb's bridge stays on the plain path, byte for byte. Both templates read the current
+section from `input_select.al_scene_<room>` and the bulb's unit's target from the almanac,
+so a hard switch brings an adaptive bulb up already right for the time of day:
 
-- a target 1..255: that;
-- anything else (no almanac, no section yet, nothing learned, `"off"`: a person turning on
-  a unit held off for the section is a power decision the soft switch owns): the bulb's
-  current brightness when it is on (kept as is), else 255, HA's full brightness. An off
-  bulb reports no brightness, so "as is" has nothing to keep; see "Open items".
+- the gate: does the unit have an on-target (1..255) for the section?
+- the data: `{brightness: <that target>}`, applied only when the gate says yes.
+
+Anything else (no almanac, no section yet, nothing learned, `"off"`: a person turning on a
+unit held off for the section is a power decision the soft switch owns) takes the plain
+`light.turn_on`, and the bulb comes on at its own last brightness, as a switched-only one
+does. (Until P5.2a the fragment had to render a brightness on every path, and an off bulb
+reports none to keep, so this case came on at 255: at 3 a.m., in a sleep section held off,
+at full brightness.) The data still renders without error when there is no target (it is
+rendered beside the gate, then not used).
 
 It sets no `transition`: the same bridge serves a hard switch, where a light fading in over
 the section's two-minute crossover transition would read as broken. A crossover that powers
@@ -962,6 +986,210 @@ The crossover report still counts only the `lm_` lane as Light Map's, so the liv
 system's `al_` automations stay flagged as foreign drivers; with the switch on, Light Map's
 own `al_` automations are flagged alike, being indistinguishable by name (P6 removes the
 old ones).
+
+---
+
+## The adaptive engine (settled in P5.2a)
+
+P5.2a builds what drives the plane P5.1 generated: the schedule profiles and the scheduler,
+the analyser, the almanac's store and publish, and the runtime loop. All of it is wired in
+by the composition root only with the cutover switch on (see "The cutover switch"); with it
+off nothing here runs. The read-only views over it, and the profile editor, are P5.2b's.
+
+### Schedule profiles
+
+A profile (`schedule_profiles[]`, selected by a room's `adaptive_config.schedule_profile`)
+says when each section starts, every day, ported from the predecessor's `schedule`:
+
+```
+{ id, name?, collision_policy: collapse | clamp, min_section_minutes (1..720),
+  sections: [ { id: <section>, name?, trigger, priority? } x 6, in canonical order ] }
+
+trigger = { type: clock, time: "HH:MM" }
+        | { type: sun, event: sunrise | sunset, offset_minutes? }      (-720..720)
+        | { type: earliest | latest, of: [trigger, trigger, ...] }     (two or more)
+```
+
+- **Priority** decides a collision: higher wins, and by default a clock trigger is 100 and
+  a sun one 50 (a fixed time states a fact about the household's routine; a sun-relative
+  one an assumption about daylight that the collision has just falsified). A composite is
+  as firm as its firmest component. Ties go to the section earlier in canonical order.
+- **Collisions.** A section conflicts with those already kept for the day in one of two
+  ways: *order* (a section later in canonical order has already started: a UK midsummer
+  sunset at 21:21 after night at 20:30) or *gap* (it starts within `min_section_minutes`
+  of the last, too soon for the crossover's transition). The loser is **collapsed**,
+  skipped for the day with its reason. Under `clamp` a gap conflict instead moves the later
+  section to start `min_section_minutes` after the one before, as long as that is still
+  within the day; one that can't fit collides as under `collapse`, and an order inversion
+  always collapses, since moving sunset later still leaves it after night.
+- A sun event that doesn't happen that day (polar day or night) collapses its section; an
+  offset that pushes a boundary out of the day is clamped to 00:00..23:59. So every
+  section that runs starts within its own day.
+- A section's `name` is accepted (the predecessor's profiles had one) and is the boundary's
+  name; the editor that sets it, and the scene select's display names, are P5.2b's.
+  `min_section_minutes` is at least 1: two sections starting at one instant would leave one
+  never in force.
+- **The standard schedule** (the predecessor's): sunrise = the earlier of sunrise and
+  05:30 (priority 100), day = sunrise + 3 h, afternoon = sunset − 3 h, sunset = sunset
+  (each 50), night = 20:30, sleep = 22:00 (each 100); `collapse`, 30 minutes.
+
+**Version 5.** P5.2a bumps the config to version 5. A version-4 profile was an id and a
+name that nothing read, so every one, `default` included, is backfilled with the standard
+schedule, keeping its id and name; anything already in it stays as written, for
+validation to report if it doesn't fit. `collision_policy` and `min_section_minutes` are
+filled with their defaults on every load when absent, but a version-5 profile must list its
+sections: there is no safe guess at someone's day. The cross-check refuses sections that
+aren't the six, once each, in canonical order. `learning` is fixed at the same time (all
+optional, defaults in code; see `docs/ARCHITECTURE.md`): version 4 had it as an open object
+that nothing wrote but `{}`. The bump is what makes an older Light Map refuse a version-5
+config.
+
+### The scheduler
+
+`app.modules.adaptive.scheduler` is the predecessor's, ported intact: pure computation (a
+profile, a date and a place in, the day's six boundaries out, each run or collapsed with
+its reason), testable offline across a whole year, which matters because its failure modes
+are seasonal. Two departures, each a day the predecessor got wrong (found by P5.2a's
+review): its clamp could move a section past midnight, even after the next day's first
+boundary, where it was reported as run but never in force (now it collapses instead, as
+above); and it compared times by the wall clock, so where the clocks go back across a
+boundary (Beirut, at midnight) the repeated hour read as before the boundary again, which a
+runtime polling it would answer by firing the previous section a second time (now it
+compares instants). Sun times are computed locally (`astral`) from HA's own location (latitude,
+longitude, elevation and time zone, from `/api/config`): HA's `sun.sun` only knows the next
+event, so it can't say when today's sunrise was, which catching up after a restart needs.
+
+It is **level-triggered**: `active_section_at` says which section is in force at a moment
+(looking back up to two days, since before the day's first boundary the last section of
+yesterday is still in force), and the runtime fires a crossover whenever that differs from
+what it last fired. Normal running, a start after downtime, a dropped connection and a
+clock change all take the same path.
+
+`tools/sweep.py` runs a year of days at five latitudes (the equator to Tromsø) for each
+profile, listing every collapse with its dates and reasons, and fails on an *unexpected*
+one: a section neither run nor collapsed with a reason, kept boundaries out of
+chronological or canonical order, two kept sections closer than the minimum, or one
+starting outside its day (the predecessor's clamp).
+
+### The analyser
+
+`app.modules.adaptive.analyser` is the predecessor's learning pipeline with the maths
+unchanged: the recency ladder, the confidence bands and their multipliers, the reactive
+weight, the post-reactive boost, the rolling weighted average, and the bootstrap and
+learning states (with the publish delay only once learning). Its `AnalyserFlags` are the
+predecessor's three, at its defaults, so it reproduces the predecessor exactly; every
+behavioural difference lives behind a flag. The tuning comes from the config's `learning`.
+
+**The one rework: per bulb, pooled per learning unit.** The store keeps readings per bulb;
+the analyser pools a unit's members at analysis time (`pool_unit`): a sample holds one
+reading per adaptive bulb, stability is judged per bulb, and a unit's daily brightness is
+the weighted mean over all its members' eligible readings together (Σ brightness × weight /
+Σ weight, across members and samples), its on-fraction likewise. A unit of one bulb is
+exactly the predecessor's per-group computation, which the tests hold it to: they run the
+predecessor's analyser (`tests/reference/`, verbatim) and this one on the same readings,
+under every combination of the flags, and require the same almanac.
+
+What the predecessor's store recorded that this one doesn't is derived, the same way:
+
+- **The day** a sample belongs to is its timestamp's date in HA's time zone (the runtime
+  passes the time in it), so a sleep section that crosses midnight splits across two days,
+  as before.
+- **Occupied** is a heartbeat whose occupancy is 1, or null in a room that had no presence
+  sensor configured (the predecessor: "no sensor means always occupied"). A configured
+  sensor with no usable state read as unoccupied there, and is excluded here. Which of the
+  two a null meant is recorded with the heartbeat (`presence_configured`, P5.2a), never
+  taken from the config at analysis time: judged by today's config, adding a sensor turned
+  every earlier heartbeat into "unoccupied", and the room fell back to bootstrap on a day of
+  data. A heartbeat recorded before that column existed is judged by the config as it is.
+- **Any light on** means any adaptive bulb of the room: a switched-only bulb is outside the
+  learner entirely (its readings never pool into a unit, and it neither opens a sample to
+  the lux target nor settles one).
+- A reading with no usable state (`is_on` null) is no reading for that bulb: the predecessor
+  could only record it as off. A heartbeat or reactive event with no section (recorded
+  before the runtime ran) is skipped. A reactive event counts when it changed an adaptive
+  bulb; one that changed nothing the learner learns is the predecessor's "phantom".
+
+`run(store, config, now=...)` analyses every adaptive room and returns the new snapshots:
+one row per unit per section, learned or not (see the storage model's `almanac`), and none
+for a room with no data in the lookback. The learned brightness is kept whatever the
+unit's mode: whether a unit is held off is the config's, resolved at publish, so turning it
+back to auto finds its target waiting. `tools/compare_analyser.py` runs it twice over the
+same input, legacy flags against the current, and prints both, from a copy of a config's
+archive (with HA's time zone, `--tz`, which files each reading under its day) or from the
+predecessor's wide heartbeat CSV.
+
+### The almanac
+
+`app.modules.adaptive.almanac` records the snapshots (insert-only, through
+`store.append_almanac`), reads the one in force (`latest`: per unit and section, the newest
+row whose `valid_from` has come, local date), and publishes it (`publish`) as
+`sensor.al_almanac_<room>` in exactly the contract above:
+
+- per section, `units` holds every current unit's target: `"off"` when the config holds the
+  unit off for the section (whether or not anything is learned), else its learned
+  brightness (1..255), else null;
+- `lux_target` is the learned one, else the section's `lux_target_seed` when above 0 (0 lux
+  is a sensor's floor: a target of 0 can't be met, and maintenance would dim every light
+  toward 1 chasing it), else null;
+  `lux_margin`, `max_step_pct` and `maintenance_enabled` are the config's scene matrix as
+  it is now, not as it was at the last pass, so a knob changed in the editor takes effect at
+  the next publish;
+- the state is the `valid_from` of the snapshot in force (`unknown` before the first),
+  so a stalled analyser shows as a date that stops moving; `friendly_name`, `mode` and
+  `days_analysed` ride along as attributes the automations ignore.
+
+### The runtime
+
+`app.modules.adaptive.runtime.AdaptiveRuntime` is thinner than the predecessor's loop,
+which also did the observing: core's observer does the heartbeats and the reactive
+detection, and the runtime plugs into it.
+
+- **Start.** It registers the section provider (the section it last fired for each
+  adaptive room, before its first crossover the scheduled one), the guard provider
+  (`input_boolean.al_active_<room>`, so a heartbeat waits out a crossover or a nudge and
+  their late transition steps are never learned) and its observation handler, then runs
+  its loop. Once HA answers it reads HA's location, and **adopts** each room's section from
+  its scene select: a room whose select already shows the section in force isn't fired
+  again, because re-firing the current scene at every restart would turn back on the soft
+  switches the user has turned off since. A room is adopted only once its select is there
+  showing a section; until then (HA still starting, whose REST API answers before every
+  integration has loaded, or the `al_` lane not deployed) nothing fires for it. A reconnect
+  (HA restarting) makes it read the location and adopt again. Each scene automation is
+  found by its `id` attribute, not an assumed entity id.
+- **Every 20 seconds** (`tick`) it works out each adaptive room's section from the clock and
+  its profile, and when it differs from the one fired, fires the room's
+  `al_scene_<room>_<section>` with `automation.trigger`, and sets its scene select once
+  the scene has run. The scene sets the select itself before it changes any light, so a
+  select showing a section means its scene started: setting it first, a restart between
+  that and a failed trigger's retry would adopt the section and never run its scene. The
+  trigger runs in the background: HA answers it only when the run, its transition and
+  settle included, is over. One HA didn't take is retried at the next tick (logged once);
+  one HA took but didn't answer in time is running (HA shields it from a dropped request)
+  and isn't retried, since a second run could turn back on what the user turned off since.
+  With no scene automation in HA, only the select is set (so the bridges and maintenance
+  read the right section), logged, and the room waits for its next section. A collapsed
+  section is logged once a day.
+- **Nightly**, at 00:15 local, or at the first tick after if it was down then (a pass
+  already in the store for the day counts), it runs the analyser in a worker thread and
+  records the snapshots.
+- **The publish is level-triggered too**: every tick it builds each adaptive room's
+  almanac (the snapshot in force, with the config) and publishes it when it differs from
+  what it last published. A unit turned off in the editor, a snapshot coming into force at
+  midnight, a new pass: each is a republish and nothing else is. A state set over REST
+  doesn't survive an HA restart, so a reconnect forgets what was published and the next
+  tick publishes everything again.
+- **A reactive event** in an adaptive room raises `input_boolean.al_hold_<room>`:
+  maintenance stands down for the rest of the section, and the next crossover's scene
+  lowers it. Not for an event whose window opened in the section before (a dimmer turned in
+  a section's last two minutes closes after the next scene lowered the hold, and would keep
+  maintenance out of a section the user never touched), and not once the runtime is
+  stopping. Any bulb of the room counts, a switched-only one too: maintenance holds the
+  room's lux, so it would dim the adaptive bulbs to undo a lamp the user just turned up. The
+  runtime never records or reclassifies an observation; that is core's.
+
+It only commands HA (services, the almanac's state) and reads what it can't get from the
+observer (the location, and the scene selects and automation ids once); it never reads a
+bulb or a sensor itself.
 
 ---
 
@@ -1002,7 +1230,8 @@ reading per bulb (long format) from a fresh read of HA's states:
   `lux` is 0, the floor, which the analyser keeps out of lux targets (P5). Null when no
   sensor is configured or available; `lux_sensors` counts the sensors the value came from.
 - `occupancy` is 1 if any presence sensor is on, 0 if none is, and null when none is
-  configured or available. Presence sensors are read as binary sensors (`on` is
+  configured or available; `presence_configured` (P5.2a) says which of the two a null is,
+  as it was when recorded. Presence sensors are read as binary sensors (`on` is
   occupied); a `person` or `device_tracker` reports `home`, which reads as not occupied. Recorded, not interpreted: what a room with no sensor means for
   learning (the predecessor treated it as always occupied) is the analyser's call.
 - `section` is whatever the module with sections reports for the room (adaptive's
@@ -1126,25 +1355,12 @@ the soft switch, like any other input to the switching plane.
 - **Per-bulb detail** (colour temperature) — deferred. Dimmability is settled (P5.0, "The
   adaptive editor"): a bulb HA reports as on/off only is switched-only even in an adaptive
   room, enforced by the editor; the config doesn't record it.
-- **Schedule profiles** — a profile is an id and a name until the scheduler port (P5.2)
-  fixes its sections, triggers and collision policy and adds their editor.
 - **Out-of-band power changes** — a bulb switched outside the plane (HA's UI, a vendor app,
   voice, or the live `ha-adaptive-light` during the parallel build) leaves its soft switch
   stale: the bridge only follows the soft, never the reverse. The next toggle may then
   first "turn off" a bulb that is already off. Whether to reflect a bulb's power back into
   its soft switch (and how, without that change re-triggering the bridge) is open; settle
   it before cutover.
-- **An unlearned adaptive bulb switched on** (P5.1) — the bridge fragment must render a
-  brightness on every path, and an off bulb reports none, so an adaptive bulb with no
-  target for the section comes on at 255 rather than at its own last brightness (the plain
-  path's). That is not only a matter of the first days after cutover: a unit held `"off"`
-  for a section (the usual setting for sleep) and any unit or section the analyser never
-  learns take the same path for good, so a hard switch pressed at 3 a.m. in a sleep section
-  held off brings the bulb up at full brightness. Settle it with P5.2, before cutover. The
-  likely fix is a seam change: let a provider also supply a condition under which the core
-  bridge applies its data, falling back to the plain `light.turn_on` (the bulb's own last
-  brightness); the alternative is a contract change, the almanac also publishing a
-  brightness for a person switching on a unit that has no target.
-- **Section display names** (P5.2) — the scene select's options are the canonical section
-  ids in P5.1, and every template reads its state as the section id. Custom display names
+- **Section display names** (P5.2b) — the scene select's options are the canonical section
+  ids (P5.1), and every template reads its state as the section id. Custom display names
   (the predecessor's) need the templates to map a name back to its id.

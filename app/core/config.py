@@ -49,7 +49,10 @@ Hard rules:
   and supplied at runtime from LM_HA_TOKEN or LM_HA_TOKEN_FILE. LM_HA_BASE_URL, when set,
   overrides `homeassistant.base_url` (see `connection`).
 - `version` is the schema version; the config is migrated forward on load.
-- A schedule profile with id `default` must always exist.
+- A schedule profile with id `default` must always exist. A profile lists the six sections,
+  once each, in canonical order (`SECTIONS`), each with the trigger that starts it every
+  day; the adaptive module's scheduler computes the boundaries (P5.2a). Version 5 filled
+  every earlier profile with the standard schedule (`standard_schedule`).
 - `adaptive_config` is required on a room when `adaptive` is true and forbidden when false.
 - HA Areas are the source of truth for room membership; the config's room snapshot is
   reconciled against them, never overwritten destructively by surprise: the reconcile is
@@ -87,7 +90,7 @@ log = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "config.schema.json"
 
-CURRENT_VERSION = 4
+CURRENT_VERSION = 5
 DEFAULT_PROFILE = "default"
 
 # The six fixed sections of the day, in canonical order (not necessarily chronological on a
@@ -115,6 +118,59 @@ SENSOR_DOMAINS: dict[str, tuple[str, ...]] = {
 
 # Light Map's own namespaces: the switching plane's and the adaptive module's.
 OWN_PREFIXES = ("lm_", "al_")
+
+
+# A schedule profile's collision settings when it doesn't say (P5.2a; the predecessor's).
+COLLISION_POLICIES = ("collapse", "clamp")
+DEFAULT_COLLISION_POLICY = "collapse"
+DEFAULT_MIN_SECTION_MINUTES = 30
+
+
+def standard_schedule() -> dict[str, Any]:
+    """The predecessor's six section boundaries, as a profile's fields (a fresh copy): what
+    version 5 gave every earlier profile, and what a new install's `default` starts with.
+
+    Sunrise is the earlier of sunrise and 05:30 (an early riser's lights come on at 05:30
+    in a northern winter, at sunrise in summer); day and afternoon follow the sun three
+    hours in from either end; sunset is the sun's; night and sleep are the household's
+    clock. A sun-relative boundary gives way in a collision (priority 50) to a fixed one
+    (100): a fixed time states a fact about the routine, while a collision has just
+    falsified the assumption about daylight a sun-relative one encodes.
+    """
+    return {
+        "sections": [
+            {
+                "id": "sunrise",
+                "priority": 100,
+                "trigger": {
+                    "type": "earliest",
+                    "of": [
+                        {"type": "sun", "event": "sunrise", "offset_minutes": 0},
+                        {"type": "clock", "time": "05:30"},
+                    ],
+                },
+            },
+            {
+                "id": "day",
+                "priority": 50,
+                "trigger": {"type": "sun", "event": "sunrise", "offset_minutes": 180},
+            },
+            {
+                "id": "afternoon",
+                "priority": 50,
+                "trigger": {"type": "sun", "event": "sunset", "offset_minutes": -180},
+            },
+            {
+                "id": "sunset",
+                "priority": 50,
+                "trigger": {"type": "sun", "event": "sunset", "offset_minutes": 0},
+            },
+            {"id": "night", "priority": 100, "trigger": {"type": "clock", "time": "20:30"}},
+            {"id": "sleep", "priority": 100, "trigger": {"type": "clock", "time": "22:00"}},
+        ],
+        "collision_policy": DEFAULT_COLLISION_POLICY,
+        "min_section_minutes": DEFAULT_MIN_SECTION_MINUTES,
+    }
 
 
 def scene_defaults(section: str) -> dict[str, Any]:
@@ -235,12 +291,29 @@ def _v3_to_v4(doc: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
+def _v4_to_v5(doc: dict[str, Any]) -> dict[str, Any]:
+    """P5.2a fixed a schedule profile's internals: its six sections, the trigger that starts
+    each, and its collision policy (and `learning`'s fields, which version 4 left open and
+    nothing filled but `{}`).
+
+    A version-4 profile was an id and a name that nothing read, so every one (`default`, and
+    any other a room selects) gets the standard schedule, keeping its id and name. Only what
+    is absent is filled: anything a profile already holds stays as written, for validation
+    to report if it doesn't fit, never silently replaced.
+    """
+    for profile in _dicts(doc.get("schedule_profiles")):
+        for key, value in standard_schedule().items():
+            profile.setdefault(key, value)
+    return doc
+
+
 # Each entry upgrades a document from version N to N + 1. The predecessor's config is
 # re-expressed by hand against this shape, not migrated (docs/DESIGN.md, "Data model").
 _MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {
     1: _v1_to_v2,
     2: _v2_to_v3,
     3: _v3_to_v4,
+    4: _v4_to_v5,
 }
 
 
@@ -301,7 +374,7 @@ def blank() -> dict[str, Any]:
         "system": {},
         "rooms": [],
         "unassigned": [],
-        "schedule_profiles": [{"id": DEFAULT_PROFILE, "name": "Default"}],
+        "schedule_profiles": [{"id": DEFAULT_PROFILE, "name": "Default", **standard_schedule()}],
         "learning": {},
     }
 
@@ -411,6 +484,11 @@ def apply_defaults(config: Mapping[str, Any]) -> dict[str, Any]:
     for bulb in _dicts(doc["unassigned"]):
         bulb.setdefault("hard_switches", [])
         bulb.setdefault("ignored", False)
+    for profile in _dicts(doc.get("schedule_profiles")):
+        # The collision settings have safe defaults; the sections don't (there is no safe
+        # guess at someone's day), so a profile without them is left for validation.
+        profile.setdefault("collision_policy", DEFAULT_COLLISION_POLICY)
+        profile.setdefault("min_section_minutes", DEFAULT_MIN_SECTION_MINUTES)
     return doc
 
 
@@ -503,12 +581,37 @@ def _describe(error: jsonschema.ValidationError) -> str:
         message = f"a schedule profile with id '{DEFAULT_PROFILE}' is required"
     elif error.validator == "not" and error.validator_value == {"required": ["turn"]}:
         message = "turn is only allowed when mode is press"
+    elif error.validator == "oneOf" and error.context:
+        message = _tagged_union(error) or message
     elif error.validator == "const" and list(error.absolute_path)[-2:] == ["source", "type"]:
         message = (
             "follow needs a state source: it tracks an entity's on/off, which an event or "
             "device trigger doesn't have"
         )
     return f"{where}: {message}"
+
+
+def _tagged_union(error: jsonschema.ValidationError, within: str = "") -> str | None:
+    """What is wrong with a value of a tagged union (a schedule trigger), or None when it
+    names no known shape. The stock message only says it fits none of the shapes; the
+    shape it meant is the one whose `type` matched, and that branch's own errors say what
+    is wrong with it ("time: '24:00' does not match ..."), a nested trigger's included."""
+    branches: dict[Any, list[jsonschema.ValidationError]] = {}
+    for sub in error.context or ():
+        branches.setdefault(sub.relative_schema_path[0], []).append(sub)
+    meant = [
+        errors
+        for errors in branches.values()
+        if not any(list(e.relative_path) == ["type"] for e in errors)
+    ]
+    if len(meant) != 1:
+        return None
+    parts = []
+    for sub in meant[0]:
+        where = "/".join(filter(None, [within, *(str(p) for p in sub.relative_path)]))
+        nested = _tagged_union(sub, where) if sub.validator == "oneOf" else None
+        parts.append(nested or f"{where or 'value'}: {sub.message}")
+    return "; ".join(parts)
 
 
 def cross_check(config: Mapping[str, Any]) -> None:
@@ -532,6 +635,17 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
     if DEFAULT_PROFILE not in profile_ids:
         problems.append(f"schedule_profiles: a profile with id '{DEFAULT_PROFILE}' is required")
     problems += _duplicates("schedule_profiles: duplicate profile id", profile_ids)
+    for profile in _dicts(doc.get("schedule_profiles", [])):
+        sections = [s.get("id") for s in _dicts(profile.get("sections", []))]
+        if sections != list(SECTIONS):
+            # Every section must start somewhere each day, and only once; the order is the
+            # canonical one so a profile reads the same way everywhere (the day's actual
+            # order is the scheduler's to work out).
+            found = ", ".join(map(str, sections)) or "none"
+            problems.append(
+                f"schedule profile '{profile.get('id')}': sections must be "
+                f"{', '.join(SECTIONS)}, once each and in that order, not {found}"
+            )
 
     problems += _duplicates("rooms: duplicate room id", [r.get("id") for r in rooms])
     problems += _duplicates(

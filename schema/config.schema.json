@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Light Map config",
   "description": "The committed config document. Everything downstream is a pure function of it; learned data (almanacs) is not stored here. See docs/ARCHITECTURE.md (Top-level config shape) and docs/DESIGN.md (Data model).",
-  "$comment": "Version 2 (P2) fixed hard_switch.source as a tagged union and added turn for presses; version 3 (P4.1) added bulb.ignored; version 4 (P5.0) fixed adaptive_config (adaptive_bulbs and the scene matrix); app/core/config.py migrates older versions forward. Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1, system as of P4 (the observer), adaptive_config as of P5.0; learning and the internals of schedule_profiles fill in with the analyser and the scheduler port (P5.2). Cross-references (ids unique within their scope; members, adaptive bulbs, scene columns and schedule_profile resolve; learning units partition the adaptive bulbs) are checked by app/core/config.py, not here.",
+  "$comment": "Version 2 (P2) fixed hard_switch.source as a tagged union and added turn for presses; version 3 (P4.1) added bulb.ignored; version 4 (P5.0) fixed adaptive_config (adaptive_bulbs and the scene matrix); version 5 (P5.2a) fixed schedule_profiles (sections, triggers, collision policy) and learning; app/core/config.py migrates older versions forward. Every part of the document is validated in depth as of P5.2a. Cross-references (ids unique within their scope; members, adaptive bulbs, scene columns and schedule_profile resolve; learning units partition the adaptive bulbs; a profile's sections are the six, once each, in canonical order) are checked by app/core/config.py, not here.",
   "type": "object",
   "required": ["version", "rooms", "schedule_profiles"],
   "additionalProperties": false,
@@ -49,8 +49,86 @@
       }
     },
     "learning": {
-      "description": "Adaptive analyser tuning. Field names are fixed when the analyser is ported (P5.2).",
-      "type": "object"
+      "description": "Adaptive analyser tuning (P5.2a). Every field is optional; the defaults (in app/modules/adaptive/analyser.py, not written into the document) are the predecessor's and reproduce its results.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lookback_days": {
+          "description": "How many days of observations a nightly pass reads. Default 21.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "publish_delay_days": {
+          "description": "A learned snapshot takes effect this many days after its newest day of data (the nightly pass, at 00:15, counts the day just begun), so a big swing can't land overnight. Ignored in bootstrap mode, so a fresh room comes alive on day two. Default 2.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "bootstrap_min_days": {
+          "description": "Days of data before the analyser leaves bootstrap mode for learning mode. Default 7.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "reactive_weight": {
+          "description": "A reactive event's weight relative to a heartbeat's. Default 5.",
+          "type": "number",
+          "minimum": 1
+        },
+        "post_reactive_boost": {
+          "description": "The weights of the next heartbeats after a reactive event, in order. Default [3, 2, 1.5].",
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 1
+          }
+        },
+        "recency_weights": {
+          "description": "A day's weight by its age, first match wins; max_age_days null is the catch-all. Default 3 days: 3, 7: 2, 14: 1, older: 0.5.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["max_age_days", "weight"],
+            "additionalProperties": false,
+            "properties": {
+              "max_age_days": {
+                "type": ["integer", "null"],
+                "minimum": 0
+              },
+              "weight": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "confidence": {
+          "description": "A day's confidence band for a section, from its settled weight (or any reactive event: high), and each band's multiplier on that day's contribution. Defaults: high above 30, medium from 10, multipliers 1.5 / 1.0 / 0.5.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "high_weight_threshold": {
+              "type": "number",
+              "minimum": 0
+            },
+            "medium_weight_threshold": {
+              "type": "number",
+              "minimum": 0
+            },
+            "high_multiplier": {
+              "type": "number",
+              "minimum": 0
+            },
+            "medium_multiplier": {
+              "type": "number",
+              "minimum": 0
+            },
+            "low_multiplier": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -494,7 +572,7 @@
       "additionalProperties": false,
       "properties": {
         "lux_target_seed": {
-          "description": "A manual seed for the section's lux target, or null (the default) to OBSERVE: the first crossover into the section measures the ambient lux and seeds the provisional almanac. Superseded by the learned target.",
+          "description": "A manual seed for the section's lux target, or null (the default) to OBSERVE: the lux target is learned from the heartbeats, from the first nightly pass on. Superseded by the learned target. 0 seeds nothing: a lux of 0 is a sensor's floor, a target maintenance could never reach.",
           "type": ["number", "null"],
           "minimum": 0
         },
@@ -567,9 +645,10 @@
       }
     },
     "schedule_profile": {
-      "description": "A reusable time-section schedule, selected by a room's adaptive_config by id. Until the scheduler port (P5.2) fixes its sections, triggers and collision policy, a profile is an id and a name (other fields are not yet checked).",
+      "description": "A reusable time-section schedule, selected by a room's adaptive_config by id (P5.2a; docs/DESIGN.md, 'Schedule profiles'). Version 5 backfilled every earlier profile with the standard schedule.",
       "type": "object",
-      "required": ["id"],
+      "required": ["id", "sections", "collision_policy", "min_section_minutes"],
+      "additionalProperties": false,
       "properties": {
         "id": {
           "$ref": "#/$defs/slug"
@@ -578,8 +657,113 @@
           "description": "Display name, freely editable; the editor shows it beside the id.",
           "type": "string",
           "minLength": 1
+        },
+        "sections": {
+          "description": "All six sections, once each, in canonical order (sunrise -> sleep), not necessarily the order they start in on a given day (app/core/config.py checks the order).",
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/profile_section"
+          }
+        },
+        "collision_policy": {
+          "description": "When computed boundaries collide (a UK midsummer sunset at 21:20 after night at 20:30, or a Nordic December where sunrise+3h overtakes sunset-3h). collapse (default): the lower-priority section is skipped for the day, honest about what happened. clamp: a section starting too soon after the last is moved to start min_section_minutes after it, keeping it alive at a time the user didn't ask for; an order inversion still collapses.",
+          "enum": ["collapse", "clamp"]
+        },
+        "min_section_minutes": {
+          "description": "The shortest a section may be: one starting sooner after the last collides. Keeps a two-minute section from firing a crossover with a two-minute transition that is overridden before it finishes. At least 1 (two sections at the same instant would leave one never in force). Default 30.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 720
         }
       }
+    },
+    "profile_section": {
+      "description": "When one section starts each day.",
+      "type": "object",
+      "required": ["id", "trigger"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/section"
+        },
+        "name": {
+          "description": "A display name for the section, as the predecessor's profiles had (accepted, and used as the boundary's name; the editor that sets it, and the scene select's display names, arrive with P5.2b).",
+          "type": "string",
+          "minLength": 1
+        },
+        "trigger": {
+          "$ref": "#/$defs/trigger"
+        },
+        "priority": {
+          "description": "Collision priority: higher wins. Default 100 for a clock trigger and 50 for a sun-relative one (a fixed time states a fact about the household's routine; a sun-relative one an assumption about daylight that a collision has already falsified), and a composite's firmest component's. Ties go to the section earlier in canonical order.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        }
+      }
+    },
+    "trigger": {
+      "description": "How a section's start is computed each day. Sun times are computed from HA's own location, so they agree with HA's sun integration.",
+      "oneOf": [
+        {
+          "title": "A fixed clock time",
+          "type": "object",
+          "required": ["type", "time"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "clock"
+            },
+            "time": {
+              "description": "Local wall-clock time, 24 h, in HA's time zone.",
+              "type": "string",
+              "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+            }
+          }
+        },
+        {
+          "title": "Sun-relative",
+          "type": "object",
+          "required": ["type", "event"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "sun"
+            },
+            "event": {
+              "description": "The astronomical event (not the section of that name).",
+              "enum": ["sunrise", "sunset"]
+            },
+            "offset_minutes": {
+              "description": "Signed, e.g. -180 for sunset minus three hours. Default 0.",
+              "type": "integer",
+              "minimum": -720,
+              "maximum": 720
+            }
+          }
+        },
+        {
+          "title": "The earliest or latest of several",
+          "description": "'Sunrise or 05:30, whichever is earlier'. A component that doesn't happen that day (no sunrise in a polar winter) is left out.",
+          "type": "object",
+          "required": ["type", "of"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": ["earliest", "latest"]
+            },
+            "of": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "$ref": "#/$defs/trigger"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }
