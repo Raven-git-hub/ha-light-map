@@ -1,4 +1,4 @@
-"""The frontend (the Map and Log tabs), pragmatically: static checks that always run (the
+"""The frontend (the Map, the Log, and the Config tab's adaptive editor), pragmatically: static checks that always run (the
 JS parses, every API call it makes is a route the app serves, the shell links each view),
 and headless-Chromium runs of the key interactions against the app over the fake HA, which
 are skipped where Node's Playwright and a Chromium aren't installed. No build step, no real
@@ -22,12 +22,13 @@ import uvicorn
 
 from app.core import config, deploy
 from app.main import create_app, router
-from tests.fakes import FakeHA, committed_config
+from tests.fakes import FakeHA, committed_config, scenes
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
 SCRIPT = Path(__file__).resolve().parent / "ui" / "map_ui.cjs"
 LOG_SCRIPT = Path(__file__).resolve().parent / "ui" / "log_ui.cjs"
+CONFIG_SCRIPT = Path(__file__).resolve().parent / "ui" / "config_ui.cjs"
 
 # `api("PUT", `/api/bulbs/${bulb.id}/hard_switches`, ...)`: the method and path of each call.
 API_CALL = re.compile(r'api\(\s*"(GET|POST|PUT|DELETE|PATCH)",\s*[`"](/api/[^`"]*)[`"]')
@@ -87,10 +88,19 @@ class StaticTest(unittest.TestCase):
 
     def test_the_shell_loads_the_map(self):
         html = (STATIC / "index.html").read_text(encoding="utf-8")
-        for asset in ("app.css", "map.css", "log.css", "app.js", "map.js", "log.js"):
+        for asset in (
+            "app.css",
+            "map.css",
+            "log.css",
+            "config.css",
+            "app.js",
+            "map.js",
+            "log.js",
+            "config.js",
+        ):
             self.assertIn(f'"{asset}"', html)
-        self.assertLess(html.index('src="app.js"'), html.index('src="map.js"'))
-        self.assertLess(html.index('src="app.js"'), html.index('src="log.js"'))
+        for view in ("map.js", "log.js", "config.js"):
+            self.assertLess(html.index('src="app.js"'), html.index(f'src="{view}"'))
         for tab in ("map", "now", "analysis", "almanac", "config", "log"):
             self.assertIn(f'href="#{tab}"', html)
 
@@ -104,7 +114,7 @@ class StaticTest(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_the_scripts_parse(self):
-        for script in [*STATIC.glob("*.js"), SCRIPT, LOG_SCRIPT]:
+        for script in [*STATIC.glob("*.js"), SCRIPT, LOG_SCRIPT, CONFIG_SCRIPT]:
             result = subprocess.run(
                 ["node", "--check", str(script)], capture_output=True, text=True
             )
@@ -184,6 +194,72 @@ class BrowserTest(unittest.TestCase):
             self.assertNotIn("lm_soft_kitchen_strip", ha.helpers["input_boolean"])
             self.assertIn("lm_soft_porch", ha.helpers["input_boolean"])
             self.assertEqual(ha.fired, [])  # deploying from the UI drove no bulb
+
+    def run_script(self, script, url, timeout=180):
+        shots = os.environ.get("LM_UI_SHOTS")  # a directory to keep screenshots in
+        result = subprocess.run(
+            ["node", str(script), url, *([shots] if shots else [])],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        lines = result.stdout.strip().splitlines()
+        if "Executable doesn't exist" in result.stdout + result.stderr:
+            self.skipTest("Playwright's Chromium is not installed")
+        self.assertTrue(lines, result.stderr)
+        report = json.loads(lines[-1])
+        self.assertTrue(report["ok"], json.dumps(report, indent=2) + result.stderr)
+        return report
+
+    def test_the_adaptive_editor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            doc = committed_config()
+            living = doc["rooms"][0]
+            # Two chandeliers adaptive in one unit; chandelier_3 (unavailable in HA) and the
+            # reading lamp switched-only.
+            living["adaptive_config"]["adaptive_bulbs"] = ["chandelier_1", "chandelier_2"]
+            living["adaptive_config"]["learning_units"] = [
+                {
+                    "id": "chandelier",
+                    "name": "Chandelier",
+                    "members": ["chandelier_1", "chandelier_2"],
+                }
+            ]
+            living["adaptive_config"]["scenes"] = scenes("chandelier")
+            config.save(path, doc)
+            ha = FakeHA()
+            # HA reports the reading lamp as on/off only: the editor locks it switched-only.
+            lamp = next(s for s in ha.states if s["entity_id"] == "light.reading_lamp")
+            lamp["attributes"]["supported_color_modes"] = ["onoff"]
+            app = create_app(ha=ha, config_path=path, verify_delay=0)
+            with serve(app) as url:
+                report = self.run_script(CONFIG_SCRIPT, url)
+            self.assertEqual(len(report["steps"]), 12)
+
+            # What the clicks saved, as the server has it.
+            living = json.loads(path.read_text())["rooms"][0]
+            block = living["adaptive_config"]
+            self.assertEqual(
+                block["adaptive_bulbs"], ["chandelier_1", "chandelier_2", "chandelier_3"]
+            )
+            self.assertEqual(
+                block["learning_units"],
+                [
+                    {
+                        "id": "living_all",
+                        "name": "Chandelier",
+                        "members": ["chandelier_1", "chandelier_2", "chandelier_3"],
+                    }
+                ],
+            )
+            self.assertEqual(block["scenes"]["night"]["units"], {"living_all": {"mode": "off"}})
+            self.assertEqual(block["scenes"]["sunset"]["transition_seconds"], 90)
+            config.load(path)  # what the editor saved loads
+            # Editing the adaptive config wrote nothing to HA and drove no bulb.
+            self.assertEqual(ha.writes, [])
+            self.assertEqual(ha.fired, [])
 
     def test_the_log(self):
         with tempfile.TemporaryDirectory() as directory:

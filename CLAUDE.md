@@ -85,6 +85,16 @@ observation, and no module's attention.
 `app/core` never imports from `app/modules`. Modules are wired in by the composition root,
 `app/main.py`.
 
+Adaptive-ness is not a flag on the core bulb: it is the `adaptive_bulbs` set inside the
+room's `adaptive_config` (P5.0). Within an adaptive room each active bulb is adaptive
+(listed, and in exactly one learning unit) or switched-only (not listed: the plain plane,
+on at its last brightness, needing no config or bridge change). The six sections are core's
+vocabulary (`core.config.SECTIONS`, the schema's `section` enum); the adaptive module takes
+them from there. The scene matrix's tuning knobs are per section, room-wide; `mode`
+(`auto`/`off`) is the only per-unit setting. Dimmability is a guard in the adaptive editor
+only (HA's `supported_color_modes` exactly `onoff` locks a bulb switched-only; unknown never
+locks); config checks never depend on HA.
+
 ## Layout and naming
 
 - Module names and paths follow "Repository layout" in `docs/ARCHITECTURE.md` exactly.
@@ -120,8 +130,9 @@ observation, and no module's attention.
 ```sh
 pip install -r requirements.txt
 python -m unittest                 # tests against fakes and fixtures; never a real HA
-                                   # (tests/test_ui.py drives the Map and the Log in headless
-                                   # Chromium when Node's Playwright is installed, else skips)
+                                   # (tests/test_ui.py drives the Map, the Log and the
+                                   # adaptive editor in headless Chromium when Node's
+                                   # Playwright is installed, else skips)
 python -c "import app.main"
 python -c "import json, jsonschema; jsonschema.Draft202012Validator.check_schema(json.load(open('schema/config.schema.json')))"
 python -c "import sqlite3; sqlite3.connect(':memory:').executescript(open('schema/storage.schema.sql').read())"
@@ -130,8 +141,9 @@ uvicorn app.main:app --port 8099   # then GET /healthz -> {"status":"ok"}
 
 ## Coexistence
 
-Until cutover (P6) Light Map is built beside the live `ha-adaptive-light`. P0–P4 touch only
-new HA artefacts, and the new bridges stay unbound (no hard switches; bridge not yet
+Until cutover (P6) Light Map is built beside the live `ha-adaptive-light`. P0–P5.0 touch
+only new HA artefacts (P5.0 adds none: the adaptive config and its editor generate and
+deploy nothing), and the new bridges stay unbound (no hard switches; bridge not yet
 authoritative). Don't cross that boundary early. Deploying must never drive a bulb: a soft
 switch is set to its bulb's state before its bridge goes live, and nothing in a deploy
 calls a light service.

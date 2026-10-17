@@ -1,0 +1,409 @@
+/* The Config tab: the adaptive rooms, and the per-room adaptive editor. Legible at phone
+   width: the bulbs table stacks into cards, and the scene matrix scrolls sideways inside
+   its own box (the section names stay put) rather than widening the page. */
+
+.adaptive-rooms,
+.adaptive-editor {
+  max-width: 72rem;
+}
+
+.adaptive-rooms h2 {
+  margin-top: 0;
+}
+
+.room-links {
+  margin: 0.5rem 0;
+  padding-left: 1.2rem;
+}
+
+.room-links li {
+  margin: 0.3rem 0;
+}
+
+.adaptive-rooms a,
+.adaptive-editor a {
+  color: var(--accent);
+}
+
+/* -- Header and save bar ------------------------------------------------------------- */
+
+.editor-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.editor-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+}
+
+.editor-head h2 {
+  margin: 0.25rem 0;
+  font-size: 1.2rem;
+}
+
+.editor-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.editor-bar .spacer {
+  flex: 1;
+}
+
+#editor-problems {
+  flex-basis: 100%;
+}
+
+#editor-problems:empty {
+  display: none;
+}
+
+#editor-problems .box {
+  margin: 0;
+}
+
+.intro {
+  max-width: 52rem;
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+/* -- Cards ---------------------------------------------------------------------------- */
+
+.editor-card {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.editor-card > h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.editor-card h4 {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.95rem;
+}
+
+.editor-card p {
+  margin: 0.35rem 0;
+}
+
+/* -- Sensors and profile -------------------------------------------------------------- */
+
+.sensors {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 0 1.5rem;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.4rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.2rem 0.15rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.sensor-add {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.profile select {
+  max-width: 24rem;
+}
+
+/* -- Tiers ---------------------------------------------------------------------------- */
+
+.bulb-tiers {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.bulb-tiers th,
+.bulb-tiers td {
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+  border-top: 1px solid var(--line);
+}
+
+.bulb-tiers thead th {
+  border-top: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.bulb-tier.adaptive > td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.bulb-cell .bulb-name {
+  display: block;
+  font-weight: 600;
+}
+
+.bulb-cell .entity {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.notes-cell > * {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.capability.locked {
+  color: var(--live);
+}
+
+.capability.unknown {
+  color: var(--muted);
+}
+
+.demoted {
+  color: var(--live);
+}
+
+.badge.lock {
+  color: #1b1200;
+  background: var(--live);
+}
+
+.segmented {
+  display: inline-flex;
+  white-space: nowrap;
+}
+
+.segmented button {
+  border-radius: 0;
+  padding: 0.25rem 0.6rem;
+}
+
+.segmented button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.segmented button:last-child {
+  border-radius: 0 6px 6px 0;
+  border-left: none;
+}
+
+.segmented button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.segmented button.mode-off.on {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.unit-select {
+  min-width: 10rem;
+  max-width: 16rem;
+}
+
+.learn-groups {
+  margin-top: 0.75rem;
+}
+
+.learn-group-row {
+  margin: 0.35rem 0;
+}
+
+/* -- Units ---------------------------------------------------------------------------- */
+
+.units {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 0.6rem;
+}
+
+.unit-card {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.unit-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.unit-id {
+  white-space: nowrap;
+}
+
+.unit-members {
+  color: var(--muted);
+}
+
+/* -- The scene matrix ----------------------------------------------------------------- */
+
+.matrix-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.scene-matrix {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 100%;
+}
+
+.scene-matrix th,
+.scene-matrix td {
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  white-space: nowrap;
+  border-top: 1px solid var(--line);
+}
+
+.scene-matrix thead th {
+  border-top: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel-2);
+}
+
+.scene-matrix .section-name,
+.scene-matrix .section-head {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--panel-2);
+  border-right: 1px solid var(--line);
+}
+
+.scene-matrix .knob-head:first-of-type,
+.scene-matrix td.knob-cell[data-knob="maintenance_enabled"] {
+  border-left: 1px solid var(--line);
+}
+
+input[type="number"].knob {
+  width: 6.5rem;
+  padding: 0.3rem 0.4rem;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+input.knob.invalid {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+/* -- Phone width ---------------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  #view {
+    padding: 0.75rem 0.75rem 3rem;
+  }
+
+  .editor-card {
+    padding: 0.6rem 0.65rem 0.8rem;
+  }
+
+  /* The bulbs table as one card per bulb, each cell labelled. */
+  .bulb-tiers thead {
+    display: none;
+  }
+
+  .bulb-tiers,
+  .bulb-tiers tbody,
+  .bulb-tiers tr,
+  .bulb-tiers td {
+    display: block;
+    width: 100%;
+  }
+
+  .bulb-tiers tr {
+    padding: 0.4rem 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .bulb-tiers td {
+    border-top: none;
+    padding: 0.2rem 0.25rem;
+  }
+
+  .bulb-tiers td.tier-cell::before,
+  .bulb-tiers td.unit-cell::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+
+  .bulb-tiers td.notes-cell:empty {
+    display: none;
+  }
+
+  .bulb-cell .entity {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .unit-select {
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .sensor-add input {
+    min-width: 0;
+  }
+
+  input[type="number"].knob {
+    width: 5rem;
+  }
+}

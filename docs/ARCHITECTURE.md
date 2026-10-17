@@ -132,9 +132,12 @@ app/
 static/              Vanilla JS and CSS, no build step; desktop-oriented, dark.
   index.html         Tab shell: Map, Now, Analysis, Almanac, Config, Log.
   app.css            The theme and the components every view shares.
-  app.js             The shell: tab router, API helper, DOM/notice/dialog helpers.
+  app.js             The shell: tab router (`#view/arg`), API helper, DOM/notice/dialog
+                     helpers, the leave guard for unsaved edits.
   map.css, map.js    The Map tab (P3). Each later view adds its own pair.
   log.css, log.js    The Log tab (P4): the event log, read-only.
+  config.css,        The Config tab (P5.0): the adaptive rooms, and the per-room adaptive
+  config.js          editor (`#config/<room>`), opened from the Map.
 schema/
   config.schema.json The config contract (see "Top-level config shape").
   storage.schema.sql SQLite DDL (see "Storage model").
@@ -144,9 +147,10 @@ tools/
   sweep.py           A year of section-boundary computations, checking for unexpected
                      collapses.
 tests/               Unit tests (stdlib unittest, `python -m unittest`) against fakes and
-                     fixtures; never a real HA. `test_ui.py` also drives the Map and the Log
-                     in headless Chromium (`tests/ui/map_ui.cjs`, `log_ui.cjs`, Node's
-                     Playwright) where that is installed, and is skipped where it isn't.
+                     fixtures; never a real HA. `test_ui.py` also drives the Map, the Log
+                     and the adaptive editor in headless Chromium (`tests/ui/map_ui.cjs`,
+                     `log_ui.cjs`, `config_ui.cjs`, Node's Playwright) where that is
+                     installed, and is skipped where it isn't.
 Dockerfile
 docker-compose.yml
 .env.example
@@ -219,8 +223,8 @@ Everything downstream is a pure function of this committed document. Learned dat
 is not stored here; it lives in the almanac store. Detailed field semantics are in
 `docs/DESIGN.md` ("Data model").
 
-- `version` — schema version (3 since P4.1, which added `ignored`; 2 since P2); the
-  container migrates forward on load.
+- `version` — schema version (4 since P5.0, which fixed `adaptive_config`; 3 since P4.1,
+  which added `ignored`; 2 since P2); the container migrates forward on load.
 - `homeassistant` — `base_url`, `access_token` (redacted from exports; never persisted),
   `verify_ssl`, `reconnect_backoff_seconds` (the WebSocket reconnect ladder, default
   `[1, 2, 5, 10, 30, 60]`; the last step repeats).
@@ -254,10 +258,21 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
     switch of its own: a hard switch bound to it acts on every member's per-bulb soft
     switch.
   - `adaptive_config` — the per-module block, **required when `adaptive` is true** and
-    forbidden when false: `{ lux_sensors[], presence_sensors[], schedule_profile,
-    learning_units[], scenes }`, where `learning_units[]` = `{ id (slug), name,
-    members (bulb ids) }` and `scenes` is the per-section matrix keyed by learning-unit id ×
-    section.
+    forbidden when false (P5.0; see `docs/DESIGN.md`, "The adaptive editor"):
+    - `lux_sensors[]` (`sensor.*`), `presence_sensors[]` (`binary_sensor.*` or
+      `input_boolean.*`): the room's sensors.
+    - `schedule_profile`: the id of a `schedule_profiles[]` entry (default `default`).
+    - `adaptive_bulbs[]` (bulb ids): the room's adaptive bulbs. Adaptive-ness lives here,
+      not on the bulb; every other active bulb of the room is switched-only (the plain
+      plane: on at its last brightness).
+    - `learning_units[]` = `{ id (slug), name, members (bulb ids) }`: a partition of
+      exactly the adaptive bulbs.
+    - `scenes`: the matrix over the six sections (`sunrise`, `day`, `afternoon`, `sunset`,
+      `night`, `sleep`): `scenes.<section>` = `{ lux_target_seed (null = observe),
+      lux_margin, max_step_pct, maintenance_enabled, transition_seconds, units: { <unit
+      id>: { mode: auto | off } } }`. The knobs are per section, room-wide; `mode` is the
+      only per-unit setting. Normalised on load to exactly the room's units × the six
+      sections (defaults filled, a removed unit's column dropped).
 
   `hard_switches[]` is the binding shape used **inside `bulbs[]` and `switching_groups[]`** —
   it is not a key on the room itself: `{ id, name, source, mode, turn? }`, `mode` ∈
@@ -296,9 +311,19 @@ un-ignored, it would loop), or an event source on an HA core event (`state_chang
 adds the one check that needs HA's state: no `toggle` on an HA group of bulbs Light Map
 drives.
 
-As of P4 the core sections (`homeassistant`, `system`, `rooms[]`, `unassigned[]`) are
-validated in depth; `learning`, `schedule_profiles` and `adaptive_config` fill in with the
-adaptive module (P5).
+For an adaptive room it checks that `adaptive_bulbs` are active bulbs of the room, that the
+learning units partition exactly the adaptive bulbs, that `scenes` covers every unit × all
+six sections with `mode` ∈ {`auto`, `off`} and no column for a unit the room doesn't have,
+that `schedule_profile` resolves, and that the sensor ids are well formed (their domain,
+and not Light Map's own `lm_`/`al_` entities). Whether a bulb can dim is not a config
+check: the config can't see HA, so the adaptive editor enforces it, from HA's
+`supported_color_modes`. The six sections are core's vocabulary (`core.config.SECTIONS`
+and the schema's `section` enum), so core validates the matrix without importing the
+module.
+
+As of P5.0 the core sections (`homeassistant`, `system`, `rooms[]`, `unassigned[]`) and
+`adaptive_config` are validated in depth; `learning` and the internals of
+`schedule_profiles` fill in with the analyser and the scheduler port (P5.2).
 
 ---
 
@@ -369,7 +394,7 @@ the query layer only; the archive keeps everything.
 
 ---
 
-## HTTP surface (P3, P4)
+## HTTP surface (P3, P4, P5.0)
 
 `app/main.py` serves the UI's API under `/api/` (JSON; an error is `{error, detail}`,
 with `problems` when there are several) beside `/healthz` and the static UI. The HA client
@@ -380,8 +405,8 @@ room with bulbs to observe.
 
 | | |
 | --- | --- |
-| Reads | `GET /api/status`, `/api/map`, `/api/config` (export, token-free), `/api/entities` (hard-switch source picker), `/api/log` (the event log, filtered by minimum level, category and room; P4) |
-| Config edits | `PUT /api/rooms/{room}/adaptive`, `PUT /api/bulbs/{bulb}/hard_switches`, `PUT /api/bulbs/{bulb}/ignored` (P4.1), `POST /api/rooms/{room}/groups`, `PUT`/`DELETE /api/rooms/{room}/groups/{group}` |
+| Reads | `GET /api/status`, `/api/map`, `/api/config` (export, token-free), `/api/entities` (hard-switch source picker), `/api/log` (the event log, filtered by minimum level, category and room; P4), `/api/rooms/{room}/adaptive_config` (the adaptive editor's view: the block, each active bulb's tier, unit and dimmability; P5.0) |
+| Config edits | `PUT /api/rooms/{room}/adaptive`, `PUT /api/rooms/{room}/adaptive_config` (P5.0), `PUT /api/bulbs/{bulb}/hard_switches`, `PUT /api/bulbs/{bulb}/ignored` (P4.1), `POST /api/rooms/{room}/groups`, `PUT`/`DELETE /api/rooms/{room}/groups/{group}` |
 | Area edits (HA first) | `POST /api/rooms`, `PUT /api/rooms/{room}/name`, `POST /api/bulbs/{bulb}/move/preview` then `/move` |
 | Previewed actions | `GET /api/sync/preview` then `POST /api/sync`; `GET /api/deploy/preview` then `POST /api/deploy`; `GET /api/areas/preview` then `POST /api/areas/deploy` |
 
@@ -392,9 +417,13 @@ room with bulbs to observe.
 - **Validate-then-write**, every edit; a move also checks its config before its HA write.
   A config on disk that doesn't load is never overwritten from the Map.
 - **Edits carry what they were made against.** Each edit of an existing bulb's hard switches
-  or ignored flag, group, or room's adaptive flag sends the `version` the Map showed as
-  `base`, and is refused (409 `edit_stale`) if it has changed since, so a stale tab never
-  silently reverts another edit, and an acknowledgement covers only what was shown.
+  or ignored flag, group, or room's adaptive flag or adaptive config sends the `version` the
+  view showed as `base`, and is refused (409 `edit_stale`) if it has changed since, so a
+  stale tab never silently reverts another edit, and an acknowledgement covers only what was
+  shown.
+- **The adaptive editor's read** reads HA's states once, for each active bulb's dimmability
+  (`supported_color_modes`); without HA it still answers, every capability unknown. Its
+  save never needs HA. Nothing in P5.0 writes HA.
 - **A Map edit commits only its own change** to the snapshot; whatever else HA changed waits
   for a reviewed sync.
 - **Coexistence.** An edit that makes a hard switch drive something new is refused (409
@@ -450,12 +479,21 @@ Parallel build in this repo; the live `ha-adaptive-light` keeps running untouche
   flag that sets an indicator or gadget LED aside from the plane.
 - **P5 — Adaptive module.** Port scheduler + analyser; learning units; almanac keyed by
   unit; scene + maintenance generation commanding soft switches; the Now / Analysis /
-  Almanac views and the adaptive room editor.
+  Almanac views and the adaptive room editor. In three steps:
+  - **P5.0 — Adaptive config + editor.** The `adaptive_config` shape (adaptive /
+    switched-only tiers, learning units, the section × unit scene matrix), config version
+    4, its cross-checks, and the dedicated per-room editor with the dimmability guard.
+    Generates and deploys nothing.
+  - **P5.1 — Adaptive generator.** The `al_` lane (scene, maintenance, watchdog) and the
+    bridge-brightness provider.
+  - **P5.2 — Engine and views.** The scheduler port (schedule-profile internals and their
+    editor, `tools/sweep.py`), the analyser, the almanac, the runtime loop, and the Now /
+    Analysis / Almanac tabs.
 - **P6 — Cutover.** Deploy against live HA; remove the old `al_*` system; re-express the
   house; start the almanac (fresh or re-ingested); decommission `ha-adaptive-light`. Staged,
   with the old repo kept deployable as rollback until Light Map has run clean for a few days.
 
-P0–P4 touch only new HA artefacts (soft switches, bridge automations, Area assignments) and
+P0–P5.0 touch only new HA artefacts (soft switches, bridge automations, Area assignments) and
 can coexist with the live adaptive system, as long as the new bridges stay unbound (no hard
 switches; bridge not yet authoritative) until cutover. That coexistence boundary is the main
 thing to get right during the parallel build. Deploying the plane never drives a bulb: each
@@ -474,10 +512,14 @@ system's `al_` ones among them) that already drive the same bulbs.
 - **Adaptive artefact prefix** — keep `al_` (recommended) or fold under `lm_al_`.
 - **Old-data re-ingest at cutover** — start the almanac fresh vs re-ingest the existing
   per-group CSV where a group maps cleanly to one bulb.
-- **Adaptive-config revisions** — the planned adjustments to the old Config view are not yet
-  specified; they shape P5.
-- **Per-bulb detail** (dimmable, colour-temp) — deferred; a non-dimmable bulb is
-  switching-only even in an adaptive room.
+- **Per-bulb detail** (colour temperature) — deferred. Dimmability is settled (P5.0): a
+  bulb HA reports as on/off only (`supported_color_modes` exactly `onoff`) is switched-only
+  even in an adaptive room, enforced by the adaptive editor rather than the config (which
+  can't see HA); a bulb whose capability is unknown (offline, attribute missing) is not
+  locked.
+- **Schedule-profile internals** — until the scheduler port (P5.2) a profile is an id and a
+  name, which a room's adaptive config selects; its sections, triggers and collision
+  policy, and their editor, arrive then.
 - **Module-interface formality** — how far to formalise the module seams now vs a clean
   internal boundary with adaptive as the only module until Presence Rules lands. So far the
   seams are code-level registries the composition root fills: `register_namespace`

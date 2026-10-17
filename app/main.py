@@ -11,7 +11,8 @@ in `app.modules`, so a module can be replaced or added without touching the trun
 seams are registries filled here: a module's namespace (`core.generate.register_namespace`),
 its bridge brightness (`core.switching.register_bridge_brightness`), and its observation
 (`Observer.subscribe`, `register_guard`, `register_section`). The core's own `lm` lane
-registers itself; no module is attached yet (Adaptive Light arrives in P5).
+registers itself; no module's engine is attached yet: Adaptive Light's config and its
+editor are in (P5.0), its generator arrives in P5.1 and its runtime in P5.2.
 
 The lifespan also opens the store (the CSV archive and its query layer, beside the config
 unless `system.data_dir` says otherwise) and starts the observer (P4), which subscribes to
@@ -19,7 +20,8 @@ HA's events once the config has a room with bulbs. Every config save tells the o
 re-read the config. Without HA, or with a data directory that can't be opened, the Map
 still serves, and `/api/status` says what is missing.
 
-The HTTP surface is the Map tab's (P3) and the Log tab's (P4). Everything under /api/
+The HTTP surface is the Map tab's (P3), the Log tab's (P4) and the adaptive editor's
+(the Config tab, P5.0). Everything under /api/
 answers JSON; an error is `{error, detail, ...}` with `problems` when there are several.
 Every request first passes the Host allowlist (`LM_ALLOWED_HOSTS`, plus `localhost` and
 `127.0.0.1`), which refuses a DNS-rebinding page; it is not authentication.
@@ -27,8 +29,11 @@ Every request first passes the Host allowlist (`LM_ALLOWED_HOSTS`, plus `localho
 - Reads: `GET /api/status`, `/api/map` (the Map's view of the committed config),
   `/api/config` (the config itself, token-free), `/api/entities` (HA entities a hard
   switch can take as its source), `/api/log` (the event log, newest first, by minimum
-  level, category and room).
+  level, category and room), `/api/rooms/{room}/adaptive_config` (the adaptive editor's
+  view of a room: its block, each active bulb's tier, unit and dimmability; the one read
+  of HA's states it makes never fails it).
 - Config edits, each validate-then-write: `PUT /api/rooms/{room}/adaptive`,
+  `PUT /api/rooms/{room}/adaptive_config` (the adaptive editor's save, P5.0),
   `PUT /api/bulbs/{bulb}/hard_switches`, `PUT /api/bulbs/{bulb}/ignored` (set a light that
   isn't a room bulb aside, or bring it back; P4.1), `POST /api/rooms/{room}/groups`,
   `PUT|DELETE /api/rooms/{room}/groups/{group}`. Each edit of something that exists
@@ -113,6 +118,9 @@ LOOPBACK_HOSTS = ("localhost", "127.0.0.1")
 # The entities the hard-switch picker offers as a state source. Anything else can still be
 # typed in; Light Map's own (`lm_`) entities are left out, as the config refuses them.
 SOURCE_DOMAINS = ("binary_sensor", "event", "input_boolean", "light", "switch")
+
+# The binary sensors the adaptive editor suggests as presence sensors.
+PRESENCE_CLASSES = ("motion", "occupancy", "presence")
 
 COEXISTENCE_WARNING = (
     "Binding a hard switch makes its bulbs live: once deployed, pressing it drives them "
@@ -228,6 +236,14 @@ class IgnoredFlag(BaseModel):
     base: str
 
 
+class AdaptiveConfigEdit(BaseModel):
+    # The whole block, checked by the config's own JSON Schema and cross-check when saved
+    # (one definition of its shape: schema/config.schema.json), and normalised by the
+    # defaults (the scene matrix reshaped to the units).
+    adaptive_config: dict[str, Any]
+    base: str
+
+
 class Move(BaseModel):
     room_id: str | None
 
@@ -310,18 +326,19 @@ def _record(
         log.exception("could not write to the event log")
 
 
-def _check_base(seen: str | None, current: str, what: str) -> None:
+def _check_base(seen: str | None, current: str, what: str, view: str = "the Map") -> None:
     """Refuse an edit made against a `version` other than the current one: another tab, or
-    a sync, changed the thing after the Map showed it. Edits replace whole lists (a bulb's
-    hard switches, a group's members), so saving the stale view would silently undo the
-    other change, and an acknowledgement or confirmation given for the old view would
-    cover what the user never saw."""
+    a sync, changed the thing after the Map (or the adaptive editor: `view`) showed it.
+    Edits replace whole lists (a bulb's hard switches, a group's members, a room's adaptive
+    config), so saving the stale view would silently undo the other change, and an
+    acknowledgement or confirmation given for the old view would cover what the user never
+    saw."""
     if seen != current:
         raise ApiError(
             409,
             "edit_stale",
-            f"{what} has changed since the Map showed it (in another tab, or by a sync): "
-            "reload the Map and make the edit again.",
+            f"{what} has changed since {view} showed it (in another tab, or by a sync): "
+            f"reload {view} and make the edit again.",
         )
 
 
@@ -367,10 +384,11 @@ def _commit(
     record: str,
     room_id: str | None = None,
     detail: Mapping[str, Any] | None = None,
+    category: str = "map",
 ) -> dict[str, Any]:
     """Validate a config edit, refuse it while it makes a hard switch drive something new
-    unless that is acknowledged, then save it and note it (`record`, with `detail`) in the
-    event log. Returns what it made live."""
+    unless that is acknowledged, then save it and note it (`record`, with `detail`, under
+    `category`) in the event log. Returns what it made live."""
     checked = config_mod.checked(after)
     live = inventory.going_live(before, checked)
     if live and not acknowledge:
@@ -380,7 +398,7 @@ def _commit(
     if live:
         record += " It makes a hard switch drive something new (acknowledged)."
         noted["going_live"] = live
-    _record(request, "map", record, room_id=room_id, detail=noted or None)
+    _record(request, category, record, room_id=room_id, detail=noted or None)
     return {"saved": True, "going_live": live}
 
 
@@ -477,6 +495,82 @@ def map_view(doc: Mapping[str, Any]) -> dict[str, Any]:
         "ignored": ignored,
         "live": {"bulbs": sorted(live), "hard_switches": len(targets)},
     }
+
+
+def adaptive_view(
+    doc: Mapping[str, Any],
+    room: Mapping[str, Any],
+    states: Mapping[str, Mapping[str, Any]] | None,
+    ha_error: str | None,
+) -> dict[str, Any]:
+    """The adaptive editor's view of one adaptive room (P5.0): its adaptive_config as
+    saved (normalised), the `version` a save sends back as `base`, and each active bulb
+    with its tier, its learning unit, its switching groups and its dimmability
+    (`inventory.bulb_capability`, from `states`: entity_id -> HA state, or None when HA
+    couldn't be read, `ha_error` saying why, which leaves every capability unknown and so
+    nothing locked). Also the room's switching groups ("learn as one unit"), the schedule
+    profiles to choose from, the sections, and sensor suggestions from the same states.
+
+    Bulbs come through `inventory.active_bulbs`: an ignored bulb is never offered."""
+    adaptive_config = room["adaptive_config"]
+    adaptive = set(adaptive_config.get("adaptive_bulbs", []))
+    unit_of = {m: u["id"] for u in adaptive_config.get("learning_units", []) for m in u["members"]}
+    groups = room.get("switching_groups", [])
+    bulbs = []
+    for home, bulb in inventory.active_bulbs(doc):
+        if home is None or home["id"] != room["id"]:
+            continue
+        if states is None:
+            capability = inventory.capability_unknown(f"Capability unknown: {ha_error}.")
+        else:
+            capability = inventory.bulb_capability(states.get(bulb["entity_id"]))
+        bulbs.append(
+            {
+                "id": bulb["id"],
+                "name": bulb["name"],
+                "entity_id": bulb["entity_id"],
+                "tier": "adaptive" if bulb["id"] in adaptive else "switched",
+                "unit": unit_of.get(bulb["id"]),
+                "groups": [g["id"] for g in groups if bulb["id"] in g["members"]],
+                "capability": capability,
+            }
+        )
+    return {
+        "room": {k: room[k] for k in ("id", "name", "ha_area_id")},
+        "version": room_version(room),
+        "adaptive_config": adaptive_config,
+        "sections": list(config_mod.SECTIONS),
+        "modes": list(config_mod.MODES),
+        "bulbs": bulbs,
+        "groups": [{k: g[k] for k in ("id", "name", "members")} for g in groups],
+        "schedule_profiles": [
+            {"id": p["id"], "name": p.get("name") or p["id"]}
+            for p in doc.get("schedule_profiles", [])
+        ],
+        "suggestions": _sensor_suggestions(states or {}),
+        "ha": {"available": states is not None, "error": ha_error},
+    }
+
+
+def _sensor_suggestions(states: Mapping[str, Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Entities to suggest as a room's lux and presence sensors, by what HA says they are.
+    Only suggestions: any entity id the config accepts can be typed."""
+    found: dict[str, list[dict[str, Any]]] = {"lux_sensors": [], "presence_sensors": []}
+    for entity_id, state in sorted(states.items()):
+        domain, _, object_id = entity_id.partition(".")
+        if object_id.startswith(config_mod.OWN_PREFIXES):
+            continue
+        attributes = state.get("attributes")
+        attributes = attributes if isinstance(attributes, Mapping) else {}
+        entry = {"entity_id": entity_id, "name": attributes.get("friendly_name") or entity_id}
+        if domain == "sensor" and (
+            attributes.get("device_class") == "illuminance"
+            or attributes.get("unit_of_measurement") in ("lx", "lux")
+        ):
+            found["lux_sensors"].append(entry)
+        elif domain == "binary_sensor" and attributes.get("device_class") in PRESENCE_CLASSES:
+            found["presence_sensors"].append(entry)
+    return found
 
 
 def _room(doc: Mapping[str, Any], room_id: str) -> Mapping[str, Any]:
@@ -716,8 +810,8 @@ async def rename_room(request: Request, room_id: str, body: RoomName) -> dict[st
 
 @router.put("/rooms/{room_id}/adaptive")
 async def set_adaptive(request: Request, room_id: str, body: AdaptiveFlag) -> dict[str, Any]:
-    """Flag a room adaptive (it gets a minimal adaptive_config; the editor arrives in P5)
-    or not. Unflagging a room whose adaptive_config holds anything is refused (409
+    """Flag a room adaptive (it gets a minimal adaptive_config, every bulb switched-only
+    until the adaptive editor says otherwise) or not. Unflagging a room whose adaptive_config holds anything is refused (409
     `confirm_required`, with what would be dropped) unless `discard_adaptive_config`; the
     `base` check makes that confirmation cover exactly what the Map listed."""
     async with _store(request).lock:
@@ -740,6 +834,99 @@ async def set_adaptive(request: Request, room_id: str, body: AdaptiveFlag) -> di
             record=f"{'Flagged' if body.adaptive else 'Unflagged'} {room['name']} as adaptive.",
             room_id=room_id,
         )
+
+
+def _adaptive_room(doc: Mapping[str, Any], room_id: str) -> Mapping[str, Any]:
+    room = _room(doc, room_id)
+    if room.get("adaptive") is not True:
+        raise ApiError(
+            409,
+            "not_adaptive",
+            f"{room['name']} isn't adaptive: tick Adaptive for it on the Map first.",
+        )
+    return room
+
+
+async def _editor_states(request: Request) -> tuple[dict[str, Any] | None, str | None]:
+    """HA's states by entity_id, read once, for the adaptive editor's dimmability; or None
+    and why not. Never fails the read: without HA the editor still works, with every
+    bulb's capability unknown (and so nothing locked). That includes an answer that isn't
+    a list of states (an empty body, a proxy's login page) and a failure the client didn't
+    wrap: the editor edits the config, and HA is only a hint for it."""
+    ha = request.app.state.ha
+    if ha is None:
+        return None, f"Home Assistant is not configured ({request.app.state.ha_error})"
+    try:
+        states = await ha.get_states()
+    except Exception as exc:  # noqa: BLE001 - whatever went wrong, the editor still serves
+        if not isinstance(exc, HAError):
+            log.warning("reading HA's states for the adaptive editor failed: %r", exc)
+        return None, f"Home Assistant could not be read ({str(exc) or type(exc).__name__})"
+    if not isinstance(states, list):
+        return None, "Home Assistant could not be read (its answer was not a list of states)"
+    found = {}
+    for state in states:
+        if isinstance(state, Mapping) and isinstance(state.get("entity_id"), str):
+            found[state["entity_id"]] = state
+    return found, None
+
+
+@router.get("/rooms/{room_id}/adaptive_config")
+async def get_adaptive_config(request: Request, room_id: str) -> dict[str, Any]:
+    """The adaptive editor's view of an adaptive room (`adaptive_view`). Reads HA's states
+    once, for each bulb's dimmability; writes nothing. 409 `not_adaptive` for a room that
+    isn't adaptive (there is no block to edit)."""
+    doc = _store(request).read()
+    room = _adaptive_room(doc, room_id)
+    states, ha_error = await _editor_states(request)
+    return adaptive_view(doc, room, states, ha_error)
+
+
+@router.put("/rooms/{room_id}/adaptive_config")
+async def save_adaptive_config(
+    request: Request, room_id: str, body: AdaptiveConfigEdit
+) -> dict[str, Any]:
+    """Replace an adaptive room's whole adaptive_config, from the adaptive editor (P5.0).
+
+    Made against the room's `version` as the editor showed it (`base`; 409 `edit_stale`
+    otherwise, so a stale editor never reverts another edit), validated before it is
+    written (the units must partition exactly the adaptive bulbs, the matrix cover them),
+    and recorded in the event log with what it changed. Never reads or writes HA: whether a
+    bulb can dim is the editor's guard, and the config can't see HA. It changes only the
+    config; nothing is generated or deployed (the adaptive generator arrives in P5.1).
+    """
+    async with _store(request).lock:
+        doc = _store(request).read()
+        room = _adaptive_room(doc, room_id)
+        what = f"{room['name']}'s adaptive config"
+        _check_base(body.base, room_version(room), what, "the editor")
+        proposed = config_mod.checked(
+            inventory.set_adaptive_config(doc, room_id, body.adaptive_config)
+        )
+        after = _room(proposed, room_id)
+        names = {b["id"]: b["name"] for b in room.get("bulbs", [])}
+        changes = inventory.adaptive_config_changes(
+            room["adaptive_config"], after["adaptive_config"], names
+        )
+        block = after["adaptive_config"]
+        summary = (
+            f"{len(block['adaptive_bulbs'])} adaptive bulb(s) in "
+            f"{len(block['learning_units'])} learning unit(s)"
+        )
+        result = _commit(
+            request,
+            doc,
+            proposed,
+            False,  # an adaptive config binds no hard switch, so makes nothing live
+            record=(
+                f"Saved the adaptive config of {room['name']}: {summary}"
+                + (f", {len(changes)} change(s)." if changes else "; nothing changed.")
+            ),
+            room_id=room_id,
+            detail={"changes": changes},
+            category="config",
+        )
+        return {**result, "changes": changes, "version": room_version(after)}
 
 
 # -- Bulbs -----------------------------------------------------------------------------

@@ -12,7 +12,7 @@ from unittest import mock
 from app.core import config
 from app.core.config import ConfigError
 from app.core.ha import HAError
-from tests.fakes import bulb, committed_config, v1_config, without_keys
+from tests.fakes import bulb, committed_config, scenes, v1_config, without_keys
 
 
 def problems_of(call, *args) -> list[str]:
@@ -206,7 +206,9 @@ class CrossCheckTest(unittest.TestCase):
         kitchen = doc["rooms"][1]
         kitchen["adaptive"] = True
         kitchen["adaptive_config"] = {
-            "learning_units": [{"id": "chandelier", "name": "Strip", "members": ["kitchen_strip"]}]
+            "adaptive_bulbs": ["kitchen_strip"],
+            "learning_units": [{"id": "chandelier", "name": "Strip", "members": ["kitchen_strip"]}],
+            "scenes": scenes("chandelier"),
         }
         config.cross_check(doc)
 
@@ -284,7 +286,9 @@ class MigrateAndDefaultsTest(unittest.TestCase):
                 "lux_sensors": [],
                 "presence_sensors": [],
                 "schedule_profile": "default",
+                "adaptive_bulbs": [],
                 "learning_units": [],
+                "scenes": scenes(),
             },
         )
 
@@ -314,7 +318,8 @@ class HardSwitchTest(unittest.TestCase):
     def test_a_version_1_config_migrates(self):
         old = v1_config()
         migrated = config.migrate(old)
-        self.assertEqual(migrated, committed_config())
+        # The defaults fill what version 4 added (the matrix), as on every load.
+        self.assertEqual(config.apply_defaults(migrated), committed_config())
         self.assertEqual(old["version"], 1)
         self.assertEqual(config.loads(v1_config()), config.loads(committed_config()))
 

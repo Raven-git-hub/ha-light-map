@@ -378,3 +378,18 @@ pre.json {
   display: table;
   width: 100%;
 }
+
+.adaptive-summary {
+  margin-top: 0.4rem;
+  font-size: 0.82rem;
+}
+
+.tier-tag {
+  margin-right: 0.5rem;
+  padding: 0 0.35rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}

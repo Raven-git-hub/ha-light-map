@@ -186,14 +186,23 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
       await page.click(`${popup} button.cancel`);
     });
 
-    await step("the adaptive checkbox and the P5 placeholder", async () => {
+    await step("the adaptive checkbox and the room's adaptive editor", async () => {
       await page.check('tbody[data-room="kitchen"] input.adaptive-flag');
       await page.waitForSelector('tbody[data-room="kitchen"] button.adaptive-config:not([disabled])');
+      // Flagged with nothing chosen: every bulb switched-only, so nothing changes.
+      assert.match(
+        await page.textContent('tbody[data-room="kitchen"] .adaptive-summary'),
+        /No adaptive bulbs yet: every bulb is switched-only/,
+      );
       await page.click('tbody[data-room="kitchen"] button.adaptive-config');
-      await page.waitForSelector(dialog("adaptive"));
-      assert.match(await page.textContent(dialog("adaptive")), /arrives in P5/);
-      await page.keyboard.press("Escape");
-      await page.waitForSelector(dialog("adaptive"), { state: "detached" });
+      await page.waitForSelector('#adaptive-editor[data-room="kitchen"] .scene-matrix');
+      assert.match(await page.textContent("#adaptive-editor h2"), /Adaptive config · Kitchen/);
+      assert.equal(
+        await page.getAttribute('#adaptive-editor tr[data-bulb="kitchen_strip"] .tier-switched', "aria-pressed"),
+        "true",
+      );
+      await page.click("#adaptive-editor a.back-to-map");
+      await page.waitForSelector("table.map-table");
       // Unticking a room whose adaptive config holds something asks first.
       await page.uncheck('tbody[data-room="living_room"] input.adaptive-flag');
       await page.waitForSelector(dialog("confirm"));

@@ -65,15 +65,16 @@ def living(doc):
 class SchemaTest(unittest.TestCase):
     def test_a_version_2_config_migrates_with_no_light_ignored(self):
         old = v2_config()
-        self.assertEqual(config.migrate(old), committed_config())
+        self.assertEqual(config.apply_defaults(config.migrate(old)), committed_config())
         self.assertNotIn("ignored", old["rooms"][0]["bulbs"][0])  # the input is untouched
         loaded = config.loads(v2_config())
-        self.assertEqual(loaded["version"], 3)
+        self.assertEqual(loaded["version"], config.CURRENT_VERSION)
         self.assertEqual({b["ignored"] for _, b in inventory._all_bulbs(loaded)}, {False})
 
     def test_a_bulb_without_the_flag_is_not_ignored(self):
-        doc = v2_config()
-        doc["version"] = config.CURRENT_VERSION
+        doc = committed_config()
+        for _, item in inventory._all_bulbs(doc):
+            del item["ignored"]
         loaded = config.loads(doc)
         self.assertFalse(bulb_of(loaded, "porch")["ignored"])
         self.assertEqual(len(inventory.active_bulbs(loaded)), 6)
@@ -107,7 +108,12 @@ class CrossCheckTest(unittest.TestCase):
             "ignored; an ignored bulb is in no switching group or learning unit",
             problems,
         )
-        self.assertEqual(len(problems), 2)
+        self.assertIn(
+            "room 'living_room': adaptive bulb 'chandelier_1' is ignored; an ignored bulb "
+            "can't be adaptive",
+            problems,
+        )
+        self.assertEqual(len(problems), 3)
 
     def test_an_ignored_bulb_with_hard_switches_is_refused(self):
         doc = committed_config()
