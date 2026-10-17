@@ -14,7 +14,8 @@
 // be adaptive. A bulb whose capability is unknown (offline) is never locked.
 //
 // Read from and written through /api (see app/main.py); every name is set as text, never
-// as markup. Nothing here writes HA: the adaptive automations arrive in P5.1.
+// as markup. Nothing here writes HA: the adaptive automations reach it only through the
+// adaptive lane's deploy, which waits for cutover (P6).
 
 "use strict";
 
@@ -388,7 +389,7 @@
       h(
         "p",
         { class: "muted intro" },
-        "Which of this room’s bulbs learn a brightness, how they pool into learning units, and what each section of the day does. Saving changes the config only: nothing reaches Home Assistant until the adaptive automations arrive (P5.1). A switched-only bulb keeps the plain switching plane: it comes on at its last brightness.",
+        "Which of this room’s bulbs learn a brightness, how they pool into learning units, and what each section of the day does. Saving changes the config only: nothing reaches Home Assistant until the adaptive automations are deployed, at cutover (P6). A switched-only bulb keeps the plain switching plane: it comes on at its last brightness.",
       ),
       view.ha.available
         ? null
@@ -985,7 +986,7 @@
     }
     const changes = result.changes.length;
     notify(
-      `Saved ${view.room.name}’s adaptive config${changes ? ` (${plural(changes, "change")})` : ""}. Nothing is deployed: the adaptive automations arrive in P5.1.`,
+      `Saved ${view.room.name}’s adaptive config${changes ? ` (${plural(changes, "change")})` : ""}. Nothing is deployed: the adaptive automations go live at cutover (P6).`,
       { kind: "ok", timeout: 8000 },
     );
     await load(roomId);

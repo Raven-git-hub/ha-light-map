@@ -1,5 +1,6 @@
-"""The P0 boundary: importing does no work, /healthz serves, and every module P4 leaves for
-a later phase still raises NotImplementedError rather than passing silently."""
+"""The P0 boundary: importing does no work, /healthz serves, and every module left for a
+later phase (P5.2: the scheduler, analyser, almanac store and publish, and the runtime) still
+raises NotImplementedError rather than passing silently."""
 
 import asyncio
 import importlib
@@ -25,12 +26,6 @@ STUBS = {
         "latest": (None, "r"),
         "record": (None, []),
         "publish": (None, "r", {}),
-    },
-    "app.modules.adaptive.generate": {
-        "scene_automations": ({}, {}),
-        "maintenance_automations": ({}, {}),
-        "watchdog_automations": ({},),
-        "generate": ({},),
     },
     "app.modules.adaptive.runtime": {"AdaptiveRuntime": (None, None, None, {})},
     "tools.sweep": {"main": ([],)},

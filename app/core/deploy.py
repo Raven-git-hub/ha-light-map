@@ -8,6 +8,13 @@ collection) helpers, written over the WebSocket; automations live in automations
 written through HA's config API. A failed or interrupted deploy is reconciled by the next
 one, which plans from whatever HA then holds.
 
+A lane owns the helper domains its generated package names (the switching plane's
+`input_boolean`; the adaptive lane's `input_boolean` and `input_select`, P5.1): a deploy
+reads, plans, verifies and summarises only those, so adding a domain for one lane changes
+nothing another lane reads or writes. Before writing, a lane's registered references
+(`core.generate.lane_references`: every bulb, source, soft switch or sensor its artefacts
+address) must all exist in HA.
+
 The order of a plan's steps is what keeps a deploy from driving anything:
 
 1. Helpers are created and updated first, so no automation references a missing one.
@@ -45,10 +52,12 @@ Hard rules:
   Area write compares it with the registry entry at the bulb's entity_id (so it never moves
   a different light), and nothing addresses it. A hard switch's device source is read only
   to check the device still exists.
-- During the parallel build (P0-P4) Light Map runs beside the live ha-adaptive-light, so
+- During the parallel build (P0-P5) Light Map runs beside the live ha-adaptive-light, so
   only new artefacts are deployed and the new bridges stay unbound (no hard switches; bridge
   not yet authoritative) until cutover (P6). Binding a hard switch in the config is the
-  step that makes a bridge authoritative; deploying alone never drives a bulb.
+  step that makes a bridge authoritative; deploying alone never drives a bulb. The `al_`
+  lane holds the live system's own names, so it isn't even registered until cutover (the
+  composition root's cutover switch); nothing here deploys a lane that isn't registered.
 """
 
 import asyncio
@@ -68,9 +77,10 @@ from app.core.inventory import InventoryError
 log = logging.getLogger(__name__)
 
 # The helper domains a lane may own. Each is a UI-managed storage collection with the same
-# list/create/update/delete commands; a module needing another (input_select, say) adds
-# it here.
-HELPER_DOMAINS = ("input_boolean",)
+# list/create/update/delete commands; a module needing another adds it here. A lane owns
+# only the domains its package names (see `lane_domains`): input_select is the adaptive
+# lane's scene select (P5.1), and the switching lane never reads or writes one.
+HELPER_DOMAINS = ("input_boolean", "input_select")
 
 # HA reloads a written automation in the background, so its entity can lag the write.
 VERIFY_ATTEMPTS = 5
@@ -104,10 +114,27 @@ class StalePreview(DeployError):
 # -- Reading ---------------------------------------------------------------------------
 
 
-async def fetch_live(ha: HAClient, prefix: str, *, expected: Iterable[str] = ()) -> dict[str, Any]:
+def lane_domains(desired: Mapping[str, Any]) -> list[str]:
+    """The helper domains a lane owns: those its generated package names (empty or not),
+    in HELPER_DOMAINS order. Reading only these keeps a lane from listing, and so from
+    ever planning a removal in, a domain it has never written: when input_select joined
+    HELPER_DOMAINS for the adaptive lane, the switching lane's reads and writes stayed
+    exactly what they were (and an HA without the input_select integration loaded, whose
+    `input_select/list` fails, still deploys the switching plane)."""
+    return [domain for domain in HELPER_DOMAINS if domain in desired]
+
+
+async def fetch_live(
+    ha: HAClient,
+    prefix: str,
+    *,
+    expected: Iterable[str] = (),
+    domains: Iterable[str] | None = None,
+) -> dict[str, Any]:
     """Return the artefacts currently in HA under one namespace prefix.
 
-    Each helper domain maps object id -> the stored fields (the item without its `id`);
+    `domains` are the helper domains to read (the lane's own, `lane_domains`; default all
+    of HELPER_DOMAINS). Each maps object id -> the stored fields (the item without its `id`);
     `automation` maps id -> stored config; `unloaded` lists the automations whose config
     is stored but which HA hasn't loaded (no entity, or an `unavailable` one); `unmanaged`
     lists the lane's automations that HA's config API can't see (defined in YAML outside
@@ -122,7 +149,8 @@ async def fetch_live(ha: HAClient, prefix: str, *, expected: Iterable[str] = ())
     re-synced to the bulb while the bridge might already be live.)
     """
     states = await ha.get_states()
-    live: dict[str, Any] = {domain: await _helpers(ha, domain, prefix) for domain in HELPER_DOMAINS}
+    domains = HELPER_DOMAINS if domains is None else tuple(domains)
+    live: dict[str, Any] = {domain: await _helpers(ha, domain, prefix) for domain in domains}
     entities = _automation_entities(states, prefix)
     automations: dict[str, Any] = {}
     unmanaged: list[str] = []
@@ -137,19 +165,25 @@ async def fetch_live(ha: HAClient, prefix: str, *, expected: Iterable[str] = ())
     live[AUTOMATION] = automations
     live["unloaded"] = [i for i in automations if entities.get(i, "unavailable") == "unavailable"]
     live["unmanaged"] = unmanaged
-    live["held"] = _held(states, live, prefix)
+    live["held"] = _held(states, live, prefix, domains)
     return live
 
 
-def _held(states: Sequence[Mapping[str, Any]], live: Mapping[str, Any], prefix: str) -> list[str]:
-    """The lane's helper entity ids that HA has as entities but not as UI-managed helpers
-    (a YAML input_boolean, say). Creating a helper under one of those ids would land it
-    under `<id>_2` instead, with every generated reference pointing at the other one."""
+def _held(
+    states: Sequence[Mapping[str, Any]],
+    live: Mapping[str, Any],
+    prefix: str,
+    domains: Sequence[str],
+) -> list[str]:
+    """The lane's helper entity ids (in the domains read) that HA has as entities but not
+    as UI-managed helpers (a YAML input_boolean, say). Creating a helper under one of those
+    ids would land it under `<id>_2` instead, with every generated reference pointing at
+    the other one."""
     held = []
     for state in states:
         domain, _, object_id = str(state.get("entity_id", "")).partition(".")
         known = live.get(domain, {})
-        if domain in HELPER_DOMAINS and in_lane(object_id, prefix) and object_id not in known:
+        if domain in domains and in_lane(object_id, prefix) and object_id not in known:
             held.append(f"{domain}.{object_id}")
     return sorted(held)
 
@@ -201,7 +235,8 @@ def plan(
 
     Returns `{prefix, desired, steps, warnings}`, `steps` in the order `apply` runs them
     (see the module docstring). Pure: nothing is read or written. Anything in `live`
-    outside the lane is ignored, so it can never be updated or removed. Raises
+    outside the lane, or in a helper domain `desired` doesn't name, is ignored, so it can
+    never be updated or removed. Raises
     DeployError, before anything is written, when a desired artefact can't be deployed as
     named.
     """
@@ -217,8 +252,8 @@ def plan(
     helper_writes: list[dict[str, Any]] = []
     helper_removes: list[dict[str, Any]] = []
     held = set(live.get("held", []))
-    for domain in HELPER_DOMAINS:
-        want: Mapping[str, Any] = desired.get(domain, {})
+    for domain in lane_domains(desired):
+        want: Mapping[str, Any] = desired[domain]
         have = {k: v for k, v in live.get(domain, {}).items() if in_lane(k, prefix)}
         for item_id, fields in want.items():
             # HA names a new helper by slugifying its name; ask for anything else and the
@@ -407,8 +442,8 @@ async def _mismatches(
     states = await ha.get_states()
     by_entity = {s.get("entity_id"): s for s in states}
     problems: list[str] = []
-    for domain in HELPER_DOMAINS:
-        want, have = desired.get(domain, {}), await _helpers(ha, domain, prefix)
+    for domain in lane_domains(desired):
+        want, have = desired[domain], await _helpers(ha, domain, prefix)
         for item_id, fields in want.items():
             entity_id = f"{domain}.{item_id}"
             if item_id not in have:
@@ -483,20 +518,21 @@ async def prepare(ha: HAClient, config: Mapping[str, Any], prefix: str) -> dict[
     """Validate, generate, read HA, and plan one namespace's deploy, writing nothing: the
     plan `deploy` would carry out (`summarise` it for a preview).
 
-    The config is validated and cross-checked first, and for the switching plane every
-    bulb and hard-switch source must exist in HA (a missing bulb means the snapshot is
-    stale: sync it first), and no toggle may take an HA group of its own bulbs as its
-    source. Raises ConfigError or DeployError.
+    The config is validated and cross-checked first, and everything the lane addresses
+    (its registered references: for the switching plane every bulb and hard-switch source,
+    for the adaptive lane every adaptive bulb, its soft switch and the room's sensors) must
+    exist in HA (a missing bulb means the snapshot is stale: sync it first), and no toggle
+    may take an HA group of its own bulbs as its source. Raises ConfigError or DeployError.
     """
     config_mod.validate(config)
     config_mod.cross_check(config)
     desired = generate_mod.generate(config, prefix)
-    mirrors = None
-    if prefix == switching.PREFIX:
-        await check_references(ha, switching.references(config))
-        mirrors = switching.bridge_mirrors(config)
+    references = generate_mod.lane_references(config, prefix)
+    if references is not None:
+        await check_references(ha, references)
+    mirrors = switching.bridge_mirrors(config) if prefix == switching.PREFIX else None
     expected = [automation["id"] for automation in desired.get(AUTOMATION, [])]
-    live = await fetch_live(ha, prefix, expected=expected)
+    live = await fetch_live(ha, prefix, expected=expected, domains=lane_domains(desired))
     return plan(prefix, desired, live, mirrors=mirrors)
 
 
@@ -506,8 +542,7 @@ async def check_references(ha: HAClient, references: Mapping[str, Mapping[str, s
     group whose members include a bulb the lane drives."""
     states = {s.get("entity_id"): s for s in await ha.get_states()}
     problems = [
-        f"{entity_id} ({who}) is not in Home Assistant"
-        + ("; sync the room snapshot first" if who.startswith("bulb") else "")
+        f"{entity_id} ({who}) is not in Home Assistant" + _missing_hint(entity_id, who)
         for entity_id, who in references["entities"].items()
         if entity_id not in states
     ]
@@ -536,13 +571,23 @@ async def check_references(ha: HAClient, references: Mapping[str, Mapping[str, s
         raise DeployError(problems)
 
 
+def _missing_hint(entity_id: str, who: str) -> str:
+    if who.startswith("bulb"):
+        return "; sync the room snapshot first"
+    if entity_id.startswith(switching.soft_entity("")):
+        # A module lane commands the soft switches, which the switching lane creates.
+        return "; deploy the switching plane first"
+    return ""
+
+
 def summarise(
     deploy_plan: Mapping[str, Any], report: Mapping[str, Mapping[str, str]] | None = None
 ) -> dict[str, Any]:
     """What a plan does, per kind: `created`, `updated`, `removed`, the soft switches it
     `sync`s before their bridges, and, given `apply`'s report, how those syncs went
-    (`synced`, `unsynced`). Without a report it is a preview."""
-    kinds = [*HELPER_DOMAINS, AUTOMATION]
+    (`synced`, `unsynced`). Without a report it is a preview. Only the lane's own helper
+    domains are listed."""
+    kinds = [*lane_domains(deploy_plan["desired"]), AUTOMATION]
     done: dict[str, dict[str, list[str]]] = {
         label: {kind: [] for kind in kinds} for label in ("created", "updated", "removed")
     }
@@ -638,12 +683,11 @@ async def crossover(ha: HAClient, config: Mapping[str, Any]) -> dict[str, Any]:
                 group_bulbs.setdefault(str(state.get("entity_id")), set()).add(bulb)
 
     desired = generate_mod.generate(config, switching.PREFIX)
-    helpers = {
-        domain: {i.get("id") for i in await ha.list_helpers(domain)} for domain in HELPER_DOMAINS
-    }
+    domains = lane_domains(desired)
+    helpers = {domain: {i.get("id") for i in await ha.list_helpers(domain)} for domain in domains}
     collisions = []
-    for domain in HELPER_DOMAINS:
-        for item_id in desired.get(domain, {}):
+    for domain in domains:
+        for item_id in desired[domain]:
             if f"{domain}.{item_id}" in by_entity and item_id not in helpers[domain]:
                 collisions.append(
                     f"{domain}.{item_id} is already in HA but isn't one of Light Map's "

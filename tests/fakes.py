@@ -16,6 +16,9 @@ The fixture house, as HA would report it:
 - sensor.living_room_lux: not a light.
 - switch.reading_relay, event.living_room_button: hard-switch sources, not lights.
 
+`adaptive_wired` turns the composition root's cutover switch on for a test: the adaptive
+module registered with the core's seams, in registries restored afterwards.
+
 FakeHA also keeps UI-managed helpers and automations.yaml, answers service calls on its
 helpers, and records every automation a state change would trigger (`fired`), matching
 state triggers the way HA does (`state_trigger_matches`), so a test can see whether a
@@ -31,8 +34,11 @@ import copy
 import itertools
 import json
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from unittest import mock
 
 AREAS: list[dict[str, Any]] = [
     {"area_id": "living_room", "name": "Living Room", "aliases": [], "floor_id": None},
@@ -329,6 +335,23 @@ def v1_config() -> dict[str, Any]:
     binding["source"] = "event.living_room_button"
     del binding["turn"]
     return doc
+
+
+@contextmanager
+def adaptive_wired() -> Iterator[None]:
+    """The cutover switch on, for the test inside: `app.main.wire_modules(adaptive=True)` with
+    the core's registries patched, so they are as they were afterwards (the live composition
+    root leaves the switch off until P6)."""
+    from app import main
+    from app.core import generate, switching
+
+    with (
+        mock.patch.dict(generate._GENERATORS),
+        mock.patch.dict(generate._REFERENCES),
+        mock.patch.dict(switching._BRIDGE_BRIGHTNESS),
+    ):
+        main.wire_modules(adaptive=True)
+        yield
 
 
 WRITES = (

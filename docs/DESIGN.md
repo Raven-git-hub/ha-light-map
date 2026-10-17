@@ -179,7 +179,8 @@ generator embeds that fragment in the bulb's bridge, inside the soft-on branch, 
 
 The fragment ships in the `lm` lane (it is part of the bridge), and only *reads* `al_`
 entities; the switching deployer still never writes one. The composition root registers
-the provider, as it registers the module's namespace (P5).
+the provider, as it registers the module's namespace (P5.1, both behind the cutover switch:
+see "The adaptive generator").
 
 **Firing only on a real flip.** The bridge triggers on its soft switch changing `off → on`
 or `on → off`, nothing else, so a soft restored at HA startup (no state → on), created,
@@ -596,7 +597,8 @@ land; so Esc, × and Cancel wait for the request to settle.
 P5 lands in three steps. **P5.0** is the adaptive per-room config and its editor: it
 generates and deploys nothing, and nothing new reaches HA. **P5.1** adds the adaptive
 generator (the `al_` lane, and the bridge-brightness fragment that brings an adaptive bulb
-on at its unit's target). **P5.2** ports the scheduler (with the schedule profile's
+on at its unit's target), behind the cutover switch (see "The adaptive generator").
+**P5.2** ports the scheduler (with the schedule profile's
 internal shape, its boundary editor and `tools/sweep.py`), the analyser, the almanac and
 the runtime loop, and adds the Now / Analysis / Almanac views.
 
@@ -710,6 +712,15 @@ every other edit: one made against an older version is refused (409 `edit_stale`
 editor reloads the room as it now is. The save is validate-then-write, and the event log
 records it with what changed. It changes only the config.
 
+The editor's `version` (settled in P5.1) is its own: the room's adaptive flag and block, as
+the Map's room `version` covers, plus the room's **active-bulb roster** (the ids of its
+bulbs that aren't ignored). A bulb ignored, moved out or synced in from another tab while
+the editor is open changes which bulbs the editor may offer without always touching the
+block (a switched-only bulb's doesn't), and the stale editor's save would then fail
+validation (an ignored bulb made adaptive: a 422 the user can't act on) rather than say
+the room changed. With the roster in the base it is a clean 409 `edit_stale`, and the
+editor reloads.
+
 **Version 4.** P5.0 bumps the config to version 4. A version-3 adaptive room gets
 `adaptive_bulbs` = its bulbs that are in its learning units (what a version-3 unit meant:
 those bulbs learn), and everything else defaulted. A version-3 `scenes` was an open object
@@ -721,6 +732,236 @@ A config holding one is refused with the problem named, to fix by hand, rather t
 migrated by a guess. A room that isn't adaptive has no block to migrate, so a house with no
 adaptive room loads exactly as before; the bump is what makes an older Light Map refuse a
 version-4 config rather than load an adaptive block it can't read.
+
+---
+
+## The adaptive generator (settled in P5.1)
+
+P5.1 builds everything needed to generate, reconcile and preview the adaptive plane: the
+`al_` artefacts (`app.modules.adaptive.generate`), the bridge-brightness fragment, and the
+`al_` deploy lane. What *fires* the scene automations (the scheduler and the runtime
+crossover loop) and what *writes* the almanac (the analyser and its publish) are P5.2's;
+until then nothing sets `sensor.al_almanac_<room>`, and every generated template tolerates
+its absence.
+
+### The cutover switch
+
+The adaptive lane keeps the predecessor's `al_` names, and those are the names the live
+`ha-adaptive-light` holds on the same HA until cutover. Even the helpers are named alike
+(`AL Active <room>`, `AL Hold <room>`, `AL Scene <room>`, as the predecessor names them from
+the room id), so an `al_` deploy against the live HA would adopt the old system's helpers,
+rewrite its scene and watchdog automations, and remove its `al_maintenance_` ones (the
+`al_` prefix is the lane's, and anything in a lane the config doesn't call for is removed).
+Light Map must not write `al_` to the live HA before P6.
+
+So the adaptive module is wired in behind one switch, `ADAPTIVE_ENABLED` in the composition
+root (`app/main.py`), **off until P6**:
+
+- **Off** (how it runs until cutover): the composition root registers neither the
+  adaptive namespace nor its bridge-brightness provider. `core.generate.namespaces()` is
+  `["lm"]`, every bridge takes the plain path, and the generated `lm_` lane is
+  byte-identical to P5.0's (a test holds it to a golden file captured before P5.1). Nothing
+  generates, previews or writes `al_`.
+- **On** (the tests, and P6): `al` is registered and generated, `core.deploy` reconciles it
+  as its own lane, the deploy preview shows its plan (read-only), and adaptive bulbs' bridges
+  carry the fragment.
+
+It is a constant, not an environment variable, so turning it on is a reviewed code change
+made with the cutover, never a deployment setting someone could set early (in a compose
+file or an `.env` copied from a guide). Tests turn it on in a scope of their own
+(`app.main.wire_modules(adaptive=True)` with the registries patched), never in the live
+composition root. Even on, the Map's deploy applies only the `lm_` lane: applying `al_`
+from the Map arrives with the cutover (P6), which removes the old system first.
+
+### The two-plane rework
+
+The predecessor drove bulbs directly: a crossover called `light.turn_on` with a brightness
+(which also powered a light on) or `light.turn_off` for a group held off, on HA group
+entities. Light Map's adaptive generator keeps its proven shape (guard, hold, scene select,
+almanac read, settle delay; maintenance on HA's own clock; the two watchdogs) and reworks
+the actuation to the two planes:
+
+- **Power goes through soft switches only.** At a crossover each learning unit's member
+  bulbs get the unit's power intent on their soft switches: `input_boolean.turn_on` for a
+  unit that is on this section, `input_boolean.turn_off` for a unit held off. The bridge
+  makes each bulb follow. Nothing in the `al_` lane calls `light.turn_off`, ever: "off for
+  a section" holds the soft off.
+- **Brightness is guarded and never powers a bulb on.** A member whose soft switch is
+  already on and whose bulb is on gets the new section's brightness pushed directly (its
+  soft doesn't change, so its bridge won't re-fire), guarded on both: a brightness command
+  on an off bulb would power it on. A member whose soft was off comes on through its
+  bridge, at the fragment's brightness. The push runs before the soft switches are turned
+  on, so a member the crossover powers on isn't also pushed.
+- **Nothing from the almanac is baked.** Not the targets, and not `mode` either: the
+  predecessor baked a unit held off as a `light.turn_off`, so that it held from the first
+  deploy; Light Map reads it from the almanac like everything else (the P5.2 publish writes
+  a held-off unit as `"off"`), so flipping a unit off for a section is a republish, never a
+  regeneration. The scene's `transition_seconds` is config, not almanac, and is baked.
+- **An absent or partial almanac leaves bulbs as they are.** No sensor, no row for the
+  section, no target for a unit: that unit's bulbs are not touched. The learner never
+  decides a light should be off; only an explicit `"off"` does.
+- Maintenance iterates **bulbs**, not units or groups: each adaptive bulb that is on (soft
+  on, bulb on, a brightness above 0) is nudged from its own brightness, brightness only.
+
+### Artefacts (per adaptive room, the `al_` lane)
+
+A room is generated for when it is adaptive (it has an `adaptive_config`), whether or not
+any bulb in it is adaptive yet: the guard, hold and scene select are the room's, and the
+section it is in is worth recording for the observer. Bulbs come through
+`core.inventory.active_bulbs`; an ignored bulb appears in none of it. Output is sorted by
+room, unit and bulb id, so it is byte-identical whatever order the config lists them in.
+
+- **Helpers.** `input_boolean.al_active_<room>` (the guard: raised while the lane's own
+  automations change the room's lights), `input_boolean.al_hold_<room>` (the maintenance
+  hold: the user intervened, stay out for the rest of the section; P5.2 raises it), and
+  `input_select.al_scene_<room>` (the section the room is in; its options are the six
+  canonical section ids, so its state *is* the section id; custom display names arrive
+  with P5.2's schedule editor). Each is named from the room id (`AL Active <room>`, ...),
+  because HA derives a network-created helper's id from its slugified name. The guard has
+  `initial: false`, so it is off whenever HA starts: no run survives a restart, and a guard
+  restored on would never change, so its watchdog (a state trigger, attached after the
+  restore) would never fire. The hold is restored: an intervention stands for the rest of
+  the section.
+- **The guard is shared, so the last run out lowers it.** A crossover is fired with
+  `automation.trigger`, which skips its conditions, so it can start while maintenance is
+  mid-run, and two crossovers can overlap. Each run that raises the guard lowers it at its
+  end only when none of the room's other guard-raising automations is running (HA's
+  `current` attribute on `automation.<id>`); otherwise the first to finish would lower it
+  while the other's fade still had minutes to go, and the rest of that fade (which carries
+  no context HA links to the run, past five seconds) would be recorded as a person at a
+  dimmer. An automation entity under another id reads as idle, which only takes the check
+  back to the predecessor's unconditional release.
+- **`al_scene_<room>_<section>`**, one per section: `triggers: []` and `conditions: []`
+  (fired by P5.2's runtime with `automation.trigger`, which skips conditions), mode
+  `single`. It raises the guard, clears the hold, sets the scene select to the section
+  (before any soft switch changes: the fragment reads it), reads the section's row of the
+  almanac, and for each unit branches on its target: a brightness turns the members' soft
+  switches on (after pushing the brightness to members already on), `"off"` turns them
+  off, anything else leaves them. Then it waits out the transition plus 30 seconds and
+  lowers the guard (last run out). A room with no learning unit changes no light, so it
+  skips the wait.
+- **`al_maint_<room>`** (the predecessor's `al_maintenance_<room>`), only for a room with
+  adaptive bulbs and a lux sensor: every `system.heartbeat_interval_minutes` on HA's own
+  clock (`time_pattern`; an hour is `minutes: 0`, since HA allows `/1`..`/59`), unless the
+  guard or the hold is raised. It reads the current section from the scene select and that
+  section's maintenance inputs from the almanac, compares the room's lux with the target
+  and margin, and when out of band raises the guard, nudges every adaptive bulb that is on
+  by at most `max_step_pct` of its brightness (1 to 10 steps, floored at 1: maintenance can
+  dim a light but never turn one off), waits out the 30-second transition, and lowers the
+  guard (last run out). Lux is the mean of the room's sensors reading above 0, as the
+  observer takes it; a reading of 0 is the sensor's floor, so with every sensor at 0 (or
+  none available) there is no measurement and no nudge, rather than a ramp toward full
+  brightness. Whether to nudge is decided in one template, and the step's fraction is read
+  from the row where it is used (held to (0, 1]): HA parses each variable's render back to
+  a value and keeps one that isn't a plain decimal (`1e-05`, `nan`) as a string, so a
+  number passed between variables could turn into text and fail the run after the guard
+  is up.
+- **`al_watchdog_guard_<room>`**: the guard on for too long (ten minutes, or longer for a
+  room whose longest crossover transition needs it) means a run died mid-way, and a stuck
+  guard silently stops maintenance and observation: release it and raise a persistent
+  notification. It also acts when automations are reloaded: a deploy that rewrites a scene
+  or the maintenance while it runs stops that run before it lowers the guard, so a guard
+  that no run holds any more is released then and there, quietly (a deploy's routine
+  aftermath, and the stuck timer would be lost if the watchdog itself was reloaded).
+  **`al_watchdog_stale_<room>`**: the scene select unchanged for ten hours (the longest
+  legitimate gap is sleep to sunrise) means the runtime is down: notify. A restart resets
+  its timer (a restored select doesn't change), so the runtime's own health after a
+  restart is P5.2's to report. There is no watchdog on the hold, which is meant to last the
+  rest of a section.
+
+Room names reach a notification's text with their braces turned to parentheses: HA renders
+service data as a template, and an Area name is free text.
+
+Each automation's `alias` is its id (so its entity is `automation.<id>`, which is what the
+runtime triggers and the guard's release reads), and its description says what it does in
+words. That holds for an automation HA registers new; one adopted by an update keeps its old
+entity id, so P6 removes the old system's automations before the `al_` lane's first deploy
+(each is then created fresh), and P5.2's runtime should find each by its `id` attribute
+rather than assume the entity id.
+
+### The almanac contract
+
+`sensor.al_almanac_<room>` is the seam between P5.1 (which reads it) and P5.2 (which
+publishes it, over REST, as a state with attributes). The generator reads only these
+attributes; anything else the publish adds (`friendly_name`, `mode`, `days_analysed`, ...)
+is ignored, and the state itself is never read.
+
+```
+attributes.<section>  (one per section id: sunrise, day, afternoon, sunset, night, sleep)
+  = {
+      units:               { <learning-unit id>: <target> }
+      lux_target:          number | null      null: no target yet, no maintenance
+      lux_margin:          number             the deadband either side of the target
+      max_step_pct:        number in (0, 1]   the largest single nudge
+      maintenance_enabled: true | false       only true enables maintenance
+    }
+
+<target> = an integer 1..255   on, at this brightness (HA's 0-255 scale)
+         | "off"               held off for this section (the unit's mode is off)
+         | null, or absent     nothing learned yet: leave the unit's bulbs as they are
+```
+
+- A target is the unit's **effective** target for the section: the P5.2 publish resolves
+  the config's `mode` into it (`off` publishes `"off"`), so the generated automations never
+  read the config's mode.
+- The unit targets sit under `units`, not beside the knobs: a unit id is a free slug, and
+  one called `lux_target` would otherwise collide with a knob. (The predecessor put group
+  ids and knobs in one mapping, and used 0 for off; `"off"` can never be mistaken for a
+  brightness, where a 0 pushed as one would turn a light off through a brightness command.)
+- **Read defensively, everywhere.** An absent sensor, an absent section, a row or a
+  `units` that isn't a mapping, an absent unit key, and any value that isn't one of the
+  three forms all read as "nothing learned yet". The scene leaves those bulbs as they are;
+  maintenance doesn't run without a row, a numeric `lux_target` and `maintenance_enabled:
+  true`; a missing `lux_margin` or `max_step_pct` takes the config's defaults (5, 0.04).
+
+### The bridge fragment
+
+The module registers a bridge-brightness provider (`core.switching`'s seam). For an
+adaptive bulb (listed in its adaptive room's `adaptive_bulbs`) it returns
+`{brightness: <template>}`; for every other bulb (switched-only, in a room that isn't
+adaptive, in Unassigned) it returns None, and that bulb's bridge stays on the plain path,
+byte for byte. The template reads the current section from `input_select.al_scene_<room>`
+and the bulb's unit's target from the almanac, so a hard switch brings an adaptive bulb up
+already right for the time of day. It must render a valid brightness on every path, since
+an invalid one fails the whole `light.turn_on` and the bulb wouldn't come on:
+
+- a target 1..255: that;
+- anything else (no almanac, no section yet, nothing learned, `"off"`: a person turning on
+  a unit held off for the section is a power decision the soft switch owns): the bulb's
+  current brightness when it is on (kept as is), else 255, HA's full brightness. An off
+  bulb reports no brightness, so "as is" has nothing to keep; see "Open items".
+
+It sets no `transition`: the same bridge serves a hard switch, where a light fading in over
+the section's two-minute crossover transition would read as broken. A crossover that powers
+a unit on therefore brings its bulbs straight to the target; one that changes the
+brightness of bulbs already on fades over the section's transition.
+
+### The `al_` deploy lane
+
+`core.deploy` reconciles `al_` exactly as it does `lm_`, in its own lane (create, update,
+remove, verify after every write), with two additions:
+
+- **`input_select` is a helper domain** (`deploy.HELPER_DOMAINS`), for the scene select.
+  A lane owns the helper domains its package names: each generator lists every domain it
+  writes, empty or not, and deploy reads, plans, verifies and summarises only those. So the
+  switching lane still reads and writes input_booleans alone, as before, and an `lm_`
+  input_select (which nothing makes) is no business of it.
+- **The `al_` prefix is reserved**, as `lm_` is: any UI-managed helper or automation in HA
+  whose id starts with `al_` is the lane's, and one the config doesn't call for is removed
+  (the predecessor's own `al_maintenance_` ones at cutover, but also, say, a user's
+  `input_boolean.al_fresco`). The preview lists every removal before anything is applied;
+  at P6, check it for anything that isn't the old system's.
+- **A lane checks its references.** A namespace is registered with what its artefacts
+  address in HA (`core.generate.register_namespace(..., references=...)`; the switching
+  lane's is `switching.references`), and a deploy is refused before writing if any is
+  missing. For `al_`: each adaptive bulb, its soft switch (so the switching plane must be
+  deployed first), and the room's lux and presence sensors (the deploy-time existence check
+  P5.0 promised for them).
+
+The crossover report still counts only the `lm_` lane as Light Map's, so the live old
+system's `al_` automations stay flagged as foreign drivers; with the switch on, Light Map's
+own `al_` automations are flagged alike, being indistinguishable by name (P6 removes the
+old ones).
 
 ---
 
@@ -893,3 +1134,17 @@ the soft switch, like any other input to the switching plane.
   first "turn off" a bulb that is already off. Whether to reflect a bulb's power back into
   its soft switch (and how, without that change re-triggering the bridge) is open; settle
   it before cutover.
+- **An unlearned adaptive bulb switched on** (P5.1) — the bridge fragment must render a
+  brightness on every path, and an off bulb reports none, so an adaptive bulb with no
+  target for the section comes on at 255 rather than at its own last brightness (the plain
+  path's). That is not only a matter of the first days after cutover: a unit held `"off"`
+  for a section (the usual setting for sleep) and any unit or section the analyser never
+  learns take the same path for good, so a hard switch pressed at 3 a.m. in a sleep section
+  held off brings the bulb up at full brightness. Settle it with P5.2, before cutover. The
+  likely fix is a seam change: let a provider also supply a condition under which the core
+  bridge applies its data, falling back to the plain `light.turn_on` (the bulb's own last
+  brightness); the alternative is a contract change, the almanac also publishing a
+  brightness for a person switching on a unit that has no target.
+- **Section display names** (P5.2) — the scene select's options are the canonical section
+  ids in P5.1, and every template reads its state as the section id. Custom display names
+  (the predecessor's) need the templates to map a name back to its id.

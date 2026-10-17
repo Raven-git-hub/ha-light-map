@@ -149,12 +149,18 @@ tools/
 tests/               Unit tests (stdlib unittest, `python -m unittest`) against fakes and
                      fixtures; never a real HA. `test_ui.py` also drives the Map, the Log
                      and the adaptive editor in headless Chromium (`tests/ui/map_ui.cjs`,
-                     `log_ui.cjs`, `config_ui.cjs`, Node's Playwright) where that is
-                     installed, and is skipped where it isn't.
+                     `log_ui.cjs`, `config_ui.cjs`, `lanes_ui.cjs`, Node's Playwright) where
+                     that is installed, and is skipped where it isn't. `ha_script.py` renders
+                     the generated Jinja and runs the generated automations against a fake
+                     state machine (P5.1; needs jinja2, from `requirements-dev.txt`, else
+                     those tests skip). `golden/` holds byte-exact generated output: `lm_only.yaml`
+                     (captured before P5.1: the cutover switch off must reproduce it) and
+                     `al_committed.yaml`.
 Dockerfile
 docker-compose.yml
 .env.example
 requirements.txt
+requirements-dev.txt   Test-only: jinja2, for the tests that render the generated templates.
 CLAUDE.md
 docs/
   ARCHITECTURE.md
@@ -384,17 +390,27 @@ the query layer only; the archive keeps everything.
   ever wanted, would be an HA light group of the member bulbs — a future enhancement, not a
   soft switch.) The soft switch's helper is named `LM Soft <bulb_id>`, because HA derives a
   network-created helper's id from its slugified name.
-- **Adaptive module:** keeps the recognizable `al_` names (`al_scene_`, `al_maint_`,
-  `al_active_`, `al_hold_`, `sensor.al_almanac_`, `al_watchdog_`), so the ported generator
-  barely changes.
+- **Adaptive module:** keeps the recognizable `al_` names, so the ported generator barely
+  changes: per adaptive room the helpers `input_boolean.al_active_<room>` (the guard),
+  `input_boolean.al_hold_<room>` (the maintenance hold) and `input_select.al_scene_<room>`
+  (the section the room is in), the automations `al_scene_<room>_<section>` (one per
+  section), `al_maint_<room>` (the predecessor's `al_maintenance_<room>`),
+  `al_watchdog_guard_<room>` and `al_watchdog_stale_<room>`, and the almanac
+  `sensor.al_almanac_<room>`, which P5.2 publishes and nothing deploys (its attribute
+  contract is in `docs/DESIGN.md`, "The almanac contract"). These are the names the live
+  `ha-adaptive-light` uses, which is why the lane stays behind the cutover switch (see
+  "Roadmap").
 - Deploy reconciles `lm_*`/`lm_soft_*` and `al_*` as **separate lanes** — the switching
   deployer never touches `al_*`, and vice versa. A prefix is reserved by registering its
   generator (`core.generate.register_namespace`); a name belongs to the longest registered
   prefix it starts with, so even an adaptive lane folded under `lm_al_` would stay its own.
+  A lane owns the helper domains its package names (`input_boolean` for `lm`; also
+  `input_select` for `al`, P5.1), and is registered with what its artefacts address in HA,
+  which a deploy checks before writing.
 
 ---
 
-## HTTP surface (P3, P4, P5.0)
+## HTTP surface (P3, P4, P5.0, P5.1)
 
 `app/main.py` serves the UI's API under `/api/` (JSON; an error is `{error, detail}`,
 with `problems` when there are several) beside `/healthz` and the static UI. The HA client
@@ -423,7 +439,14 @@ room with bulbs to observe.
   shown.
 - **The adaptive editor's read** reads HA's states once, for each active bulb's dimmability
   (`supported_color_modes`); without HA it still answers, every capability unknown. Its
-  save never needs HA. Nothing in P5.0 writes HA.
+  save never needs HA. Nothing in P5.0 writes HA. The editor's `version` also covers the
+  room's active-bulb roster (P5.1), so a bulb ignored in another tab while it is open makes
+  its save a 409 `edit_stale`, not a validation error.
+- **Module lanes in the deploy preview** (P5.1). With the cutover switch on, the deploy
+  preview also lists each module lane's plan (`modules`), read-only: `POST /api/deploy`
+  still applies the `lm_` lane alone, and applying `al_` from the Map arrives with the
+  cutover (P6). With the switch off (until P6) there is no such key, and `/api/status`
+  says which it is (`adaptive`).
 - **A Map edit commits only its own change** to the snapshot; whatever else HA changed waits
   for a reviewed sync.
 - **Coexistence.** An edit that makes a hard switch drive something new is refused (409
@@ -484,19 +507,32 @@ Parallel build in this repo; the live `ha-adaptive-light` keeps running untouche
     switched-only tiers, learning units, the section × unit scene matrix), config version
     4, its cross-checks, and the dedicated per-room editor with the dimmability guard.
     Generates and deploys nothing.
-  - **P5.1 — Adaptive generator.** The `al_` lane (scene, maintenance, watchdog) and the
-    bridge-brightness provider.
+  - **P5.1 — Adaptive generator.** The `al_` lane (scene, maintenance, watchdog), the
+    bridge-brightness provider, the almanac attribute contract, and the `al_` deploy lane
+    (`input_select` as a helper domain, per-lane reference checks), all behind the cutover
+    switch, which stays off.
   - **P5.2 — Engine and views.** The scheduler port (schedule-profile internals and their
     editor, `tools/sweep.py`), the analyser, the almanac, the runtime loop, and the Now /
     Analysis / Almanac tabs.
-- **P6 — Cutover.** Deploy against live HA; remove the old `al_*` system; re-express the
-  house; start the almanac (fresh or re-ingested); decommission `ha-adaptive-light`. Staged,
-  with the old repo kept deployable as rollback until Light Map has run clean for a few days.
+- **P6 — Cutover.** Deploy against live HA; remove the old `al_*` system; turn the cutover
+  switch on and add the `al_` lane's apply to the Map's deploy; re-express the house; start
+  the almanac (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old
+  repo kept deployable as rollback until Light Map has run clean for a few days.
 
-P0–P5.0 touch only new HA artefacts (soft switches, bridge automations, Area assignments) and
+P0–P5.1 touch only new HA artefacts (soft switches, bridge automations, Area assignments) and
 can coexist with the live adaptive system, as long as the new bridges stay unbound (no hard
 switches; bridge not yet authoritative) until cutover. That coexistence boundary is the main
-thing to get right during the parallel build. Deploying the plane never drives a bulb: each
+thing to get right during the parallel build.
+
+**The cutover switch** (P5.1). The adaptive lane's `al_` names are the ones the live
+`ha-adaptive-light` uses on the same HA, down to its helpers' names, so an `al_` deploy
+before cutover would adopt its helpers and rewrite or remove its automations. The adaptive
+module is therefore wired in by the composition root only when `ADAPTIVE_ENABLED`
+(`app/main.py`) is on, and it is **off until P6**: `core.generate.namespaces()` is `["lm"]`,
+no bridge-brightness provider is registered, the generated `lm_` lane is byte-identical to
+P5.0's, and nothing generates, previews or writes `al_`. It is a constant rather than an
+environment variable so that turning it on is a reviewed change made with the cutover,
+never a setting flipped early. Tests turn it on in their own scope. Deploying the plane never drives a bulb: each
 soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge
 fires only on its soft switch changing between `off` and `on`. Binding a hard switch in
 the config is the step that makes a bridge authoritative, so leave `hard_switches` empty
@@ -509,7 +545,9 @@ system's `al_` ones among them) that already drive the same bulbs.
 
 ## Open decisions
 
-- **Adaptive artefact prefix** — keep `al_` (recommended) or fold under `lm_al_`.
+- **Adaptive artefact prefix** — keep `al_` (recommended, and what P5.1 builds) or fold
+  under `lm_al_`. Folding would let the lane deploy beside the live system before
+  cutover, at the cost of renaming every name the predecessor's tooling and dashboards know.
 - **Old-data re-ingest at cutover** — start the almanac fresh vs re-ingest the existing
   per-group CSV where a group maps cleanly to one bulb.
 - **Per-bulb detail** (colour temperature) — deferred. Dimmability is settled (P5.0): a
@@ -558,6 +596,17 @@ system's `al_` ones among them) that already drive the same bulbs.
   stale, so the next toggle may first "turn off" a bulb that is already off. Whether the
   plane should reflect a bulb's power back into its soft switch, and how that would avoid
   re-triggering the bridge, is open; settle it before cutover.
+- **An adaptive bulb with no target switched on** (P5.1; settle with P5.2, before cutover) —
+  the bridge fragment must always render a brightness, and an off bulb reports none, so an
+  adaptive bulb whose unit has no target for the section comes on at 255, not at its own
+  last brightness. That includes, for good, a unit held off for a section (typically
+  sleep): a hard switch at 3 a.m. gives full brightness. A seam change (a provider
+  condition choosing between its data and the plain `light.turn_on`) would fix it; see
+  `docs/DESIGN.md`, "Open items".
+- **Crossover report after cutover** (P5.1) — the report counts only the `lm_` lane as Light
+  Map's, so the live system's `al_` automations are flagged; once Light Map's own `al_`
+  lane is live (P6) it is flagged alike, since the names are the same. P6 should count a
+  wired module lane as Light Map's once the old system is gone.
 
 ---
 

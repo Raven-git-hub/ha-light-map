@@ -29,8 +29,12 @@ The six sections are core's vocabulary (`SECTIONS`, from `core.config`, re-expor
 the module depends on core for them, never the reverse, so core can validate the scene
 matrix without importing the module.
 
-P5.0 fills only the config and its editor; the engine (generator P5.1; scheduler,
-analyser, almanac and runtime P5.2) is still stubbed and raises NotImplementedError.
+P5.0 fills the config and its editor; P5.1 the generator (`generate`: the `al_` artefacts,
+the bridge fragment, the lane's references) and the almanac's attribute contract
+(`almanac`). The composition root wires the generator in only while its cutover switch is
+on, which it isn't until P6: the `al_` names are the live ha-adaptive-light's own. The
+engine (scheduler, analyser, the almanac's store and publish, and the runtime, P5.2) is
+still stubbed and raises NotImplementedError.
 """
 
 from app.core.config import SECTIONS

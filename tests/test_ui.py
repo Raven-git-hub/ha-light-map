@@ -22,13 +22,14 @@ import uvicorn
 
 from app.core import config, deploy
 from app.main import create_app, router
-from tests.fakes import FakeHA, committed_config, scenes
+from tests.fakes import FakeHA, adaptive_wired, committed_config, scenes
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
 SCRIPT = Path(__file__).resolve().parent / "ui" / "map_ui.cjs"
 LOG_SCRIPT = Path(__file__).resolve().parent / "ui" / "log_ui.cjs"
 CONFIG_SCRIPT = Path(__file__).resolve().parent / "ui" / "config_ui.cjs"
+LANES_SCRIPT = Path(__file__).resolve().parent / "ui" / "lanes_ui.cjs"
 
 # `api("PUT", `/api/bulbs/${bulb.id}/hard_switches`, ...)`: the method and path of each call.
 API_CALL = re.compile(r'api\(\s*"(GET|POST|PUT|DELETE|PATCH)",\s*[`"](/api/[^`"]*)[`"]')
@@ -114,7 +115,7 @@ class StaticTest(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_the_scripts_parse(self):
-        for script in [*STATIC.glob("*.js"), SCRIPT, LOG_SCRIPT, CONFIG_SCRIPT]:
+        for script in [*STATIC.glob("*.js"), SCRIPT, LOG_SCRIPT, CONFIG_SCRIPT, LANES_SCRIPT]:
             result = subprocess.run(
                 ["node", "--check", str(script)], capture_output=True, text=True
             )
@@ -211,6 +212,22 @@ class BrowserTest(unittest.TestCase):
         report = json.loads(lines[-1])
         self.assertTrue(report["ok"], json.dumps(report, indent=2) + result.stderr)
         return report
+
+    def test_module_lanes_in_the_deploy_dialog(self):
+        # The cutover switch on, in this test's scope only (the live app keeps it off until
+        # P6): the dialog shows the al_ lane read-only and applies lm_ alone.
+        with tempfile.TemporaryDirectory() as directory, adaptive_wired():
+            path = Path(directory) / "config.json"
+            config.save(path, committed_config())
+            ha = FakeHA()
+            app = create_app(ha=ha, config_path=path, verify_delay=0)
+            with serve(app) as url:
+                report = self.run_script(LANES_SCRIPT, url)
+            self.assertEqual(len(report["steps"]), 2)
+            self.assertIn("lm_bridge_chandelier_1", ha.automations)
+            self.assertEqual([i for i in ha.automations if i.startswith("al_")], [])
+            self.assertNotIn("input_select", ha.helpers)
+            self.assertEqual(ha.fired, [])
 
     def test_the_adaptive_editor(self):
         with tempfile.TemporaryDirectory() as directory:

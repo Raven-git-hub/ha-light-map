@@ -102,7 +102,9 @@ locks); config checks never depend on HA.
 - HA names: `input_boolean.lm_soft_<bulb_id>` (per bulb only, none for an ignored bulb; a
   switching group has no HA entity), `lm_bridge_<bulb_id>`, `lm_hard_<hard_switch_id>` for
   the switching plane; the adaptive module keeps `al_scene_`, `al_maint_`, `al_active_`,
-  `al_hold_`, `sensor.al_almanac_`, `al_watchdog_`.
+  `al_hold_`, `sensor.al_almanac_`, `al_watchdog_` (the full list, and the almanac's
+  attribute contract, in `docs/DESIGN.md`, "The adaptive generator"). A lane owns the
+  helper domains its package names (`input_boolean`; `input_select` too for `al`).
 - Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`, `LM_CONFIG_PATH`
   (where the committed config lives; default `/data/config.json`), and `LM_ALLOWED_HOSTS`
   (the Host names the API answers besides `localhost` and `127.0.0.1`).
@@ -129,10 +131,13 @@ locks); config checks never depend on HA.
 
 ```sh
 pip install -r requirements.txt
+pip install -r requirements-dev.txt  # test-only (jinja2, for the adaptive template tests)
 python -m unittest                 # tests against fakes and fixtures; never a real HA
                                    # (tests/test_ui.py drives the Map, the Log and the
                                    # adaptive editor in headless Chromium when Node's
-                                   # Playwright is installed, else skips)
+                                   # Playwright is installed, else skips; the adaptive
+                                   # templates are rendered and run when jinja2, from
+                                   # requirements-dev.txt, is installed, else skip)
 python -c "import app.main"
 python -c "import json, jsonschema; jsonschema.Draft202012Validator.check_schema(json.load(open('schema/config.schema.json')))"
 python -c "import sqlite3; sqlite3.connect(':memory:').executescript(open('schema/storage.schema.sql').read())"
@@ -141,9 +146,18 @@ uvicorn app.main:app --port 8099   # then GET /healthz -> {"status":"ok"}
 
 ## Coexistence
 
-Until cutover (P6) Light Map is built beside the live `ha-adaptive-light`. P0–P5.0 touch
-only new HA artefacts (P5.0 adds none: the adaptive config and its editor generate and
-deploy nothing), and the new bridges stay unbound (no hard switches; bridge not yet
-authoritative). Don't cross that boundary early. Deploying must never drive a bulb: a soft
-switch is set to its bulb's state before its bridge goes live, and nothing in a deploy
-calls a light service.
+Until cutover (P6) Light Map is built beside the live `ha-adaptive-light`. P0–P5.1 touch
+only new HA artefacts (P5.0 and P5.1 add none to the live HA), and the new bridges stay
+unbound (no hard switches; bridge not yet authoritative). Don't cross that boundary early.
+Deploying must never drive a bulb: a soft switch is set to its bulb's state before its
+bridge goes live, and nothing in a deploy calls a light service.
+
+**The cutover switch.** The adaptive lane's `al_` names are the ones the live system uses on
+the same HA (even its helpers' names), so writing `al_` before P6 would adopt and rewrite or
+remove the old system's artefacts. The adaptive module is wired in by `app/main.py` only
+when `ADAPTIVE_ENABLED` is on, and it is **off until P6**: `core.generate.namespaces()` is
+`["lm"]`, no bridge-brightness provider is registered, and the generated `lm_` lane is
+byte-identical to P5.0's (held to `tests/golden/lm_only.yaml`). Never turn it on in the live
+composition root before cutover; tests turn it on in their own scope
+(`tests.fakes.adaptive_wired`). Even on, the Map's deploy applies only `lm_`; the `al_`
+plan is previewed read-only.
