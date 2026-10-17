@@ -17,21 +17,22 @@ Light Map is a ground-up rebuild of `ha-adaptive-light`.
 
 ## Status
 
-**P4: the observation core.** On top of P1's inventory (rooms from HA Areas, two-way sync),
-P2's switching plane (a soft switch `input_boolean.lm_soft_<bulb>` and a soft→bulb bridge per
-bulb, a hard→soft automation per hard-switch binding, deployed in their own `lm_` lane and
-verified) and P3's Map (the editor and the deploy surface, with every HA write previewed
-first), Light Map now watches the house: a heartbeat per room with a reading per bulb on a
-fixed cadence, reactive detection of manual brightness changes (the plane's own changes are
-never counted), and an event log, all archived to CSV with SQLite as a rebuildable query
-layer. The **Log** tab shows the event log. A light that isn't a room bulb (an indicator
-or gadget LED) can be ignored from the Map (P4.1): it gets no soft switch or bridge and
-is never observed, and the Map lists it apart so it can be brought back. Deploying never
-drives a bulb: each soft switch
-starts at its bulb's current state. Until cutover (P6) Light Map runs beside
-`ha-adaptive-light`; binding a hard switch makes its bulbs live, and the Map warns before
-saving one. The adaptive module and its views arrive in P5. See
-[docs/ROADMAP.md](docs/ROADMAP.md).
+**P5.0: the adaptive config and its editor.** On top of P1's inventory (rooms from HA Areas,
+two-way sync), P2's switching plane (a soft switch `input_boolean.lm_soft_<bulb>` and a
+soft→bulb bridge per bulb, a hard→soft automation per hard-switch binding, deployed in their
+own `lm_` lane and verified), P3's Map (the editor and the deploy surface, with every HA
+write previewed first) and P4's observation core (heartbeats per room with a reading per
+bulb, reactive detection of manual brightness changes, an event log in the **Log** tab, all
+archived to CSV with SQLite as a rebuildable query layer; P4.1 lets a light that isn't a
+room bulb be ignored), the first step of the Adaptive Light module is in. A room flagged
+adaptive on the Map opens a dedicated editor (the **Config** tab): its lux and presence
+sensors, its schedule profile, which of its bulbs are adaptive and which stay switched-only
+(a bulb Home Assistant reports as on/off only can't be made adaptive), how the adaptive
+bulbs pool into learning units, and the section × unit scene matrix. This phase only
+edits the config: the adaptive automations arrive in P5.1, the learner and its views in
+P5.2. Deploying never drives a bulb: each soft switch starts at its bulb's current state.
+Until cutover (P6) Light Map runs beside `ha-adaptive-light`; binding a hard switch makes
+its bulbs live, and the Map warns before saving one. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 To see what Light Map makes of your Home Assistant (read-only):
 

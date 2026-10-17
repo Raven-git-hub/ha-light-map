@@ -31,6 +31,17 @@ everything else: the cross-check refuses one that is a switching-group or learni
 member or carries hard switches, since with no soft switch none of them would act on
 anything.
 
+A room's `adaptive_config` (P5.0) is Adaptive Light's block, but its shape is checked here,
+with the rest of the document, so the config loads or doesn't as a whole. Adaptive-ness is
+the block's `adaptive_bulbs`, never a flag on the bulb, so core needs nothing from the
+module; the six sections are core's vocabulary (`SECTIONS`, mirrored by the schema's
+`section` enum), and the module takes them from here. The cross-check makes the learning
+units partition exactly the adaptive bulbs and the scene matrix cover exactly those units
+over the six sections; the defaults reshape the matrix to the current units on every load
+(`normalize_scenes`), so a unit removed anywhere leaves no orphan column. Whether a bulb can
+dim is not checked here: the config can't see HA, and nothing that decides whether it loads
+may depend on HA. The adaptive editor enforces it.
+
 Hard rules:
 
 - Config writes are validate-then-write, never the reverse.
@@ -76,8 +87,47 @@ log = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "config.schema.json"
 
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 DEFAULT_PROFILE = "default"
+
+# The six fixed sections of the day, in canonical order (not necessarily chronological on a
+# given day), as the schema's `section` enum lists them. Core's vocabulary, so the config can
+# validate the scene matrix without importing the adaptive module, which takes them from here.
+SECTIONS = ("sunrise", "day", "afternoon", "sunset", "night", "sleep")
+
+# A learning unit's setting for a section: `auto` learns; `off` holds the unit off for it.
+MODES = ("auto", "off")
+DEFAULT_MODE = "auto"
+
+# Sections whose lux readings sit at the sensor's noise floor, where maintenance can't work:
+# brightness there comes from the scene alone. (The predecessor first got this by an
+# arithmetic accident, a margin of 5 around a target of 3 making every reading in-band; it
+# made it explicit so it no longer depends on that arithmetic holding.)
+NO_MAINTENANCE_BY_DEFAULT = ("night", "sleep")
+
+# What a room's sensors may be. A lux sensor reports a number; a presence sensor must read
+# on/off, because the observer counts `on` as occupied: a person or device_tracker reports
+# `home`, which would read as unoccupied, always.
+SENSOR_DOMAINS: dict[str, tuple[str, ...]] = {
+    "lux_sensors": ("sensor",),
+    "presence_sensors": ("binary_sensor", "input_boolean"),
+}
+
+# Light Map's own namespaces: the switching plane's and the adaptive module's.
+OWN_PREFIXES = ("lm_", "al_")
+
+
+def scene_defaults(section: str) -> dict[str, Any]:
+    """A section's tuning knobs as a new matrix row gets them: the predecessor's defaults.
+    The knobs are per section, room-wide; `mode` is the only per-unit setting."""
+    return {
+        "lux_target_seed": None,  # observe
+        "lux_margin": 5,
+        "max_step_pct": 0.04,
+        "maintenance_enabled": section not in NO_MAINTENANCE_BY_DEFAULT,
+        "transition_seconds": 120,
+    }
+
 
 # The observer's settings (`system`), each optional. Tuning defaults, not structural ones,
 # so they are supplied when read (`system`) rather than written into the saved document:
@@ -151,11 +201,42 @@ def _v2_to_v3(doc: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
+def _v3_to_v4(doc: dict[str, Any]) -> dict[str, Any]:
+    """P5.0 fixed `adaptive_config`: `adaptive_bulbs` says which of an adaptive room's
+    bulbs are adaptive (the rest are switched-only), and `scenes` became the section x
+    unit matrix.
+
+    Version 3 had no tiers: a learning unit was the only thing that named a bulb for the
+    module, so the bulbs in a room's units become its adaptive bulbs (in room order), and
+    the rest switched-only. Nothing else is guessed: everything left out is filled by the
+    defaults, which make an empty block's room all switched-only, so a room flagged with no
+    units changes nothing in how any bulb behaves. A version-3 `scenes` was an open object
+    nothing wrote but `{}`; it goes on as it is, to be normalised like any other, and what
+    doesn't fit the new shape is left for validation to report rather than dropped. A room
+    that isn't adaptive has no block, so a house with no adaptive room only changes version.
+    """
+    for room in _dicts(doc.get("rooms")):
+        adaptive_config = room.get("adaptive_config")
+        if not isinstance(adaptive_config, dict) or "adaptive_bulbs" in adaptive_config:
+            continue
+        in_units = {
+            member
+            for unit in _dicts(adaptive_config.get("learning_units"))
+            for member in (unit.get("members") if isinstance(unit.get("members"), list) else [])
+            if isinstance(member, str)
+        }
+        adaptive_config["adaptive_bulbs"] = [
+            bulb["id"] for bulb in _dicts(room.get("bulbs")) if bulb.get("id") in in_units
+        ]
+    return doc
+
+
 # Each entry upgrades a document from version N to N + 1. The predecessor's config is
 # re-expressed by hand against this shape, not migrated (docs/DESIGN.md, "Data model").
 _MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {
     1: _v1_to_v2,
     2: _v2_to_v3,
+    3: _v3_to_v4,
 }
 
 
@@ -316,11 +397,85 @@ def apply_defaults(config: Mapping[str, Any]) -> dict[str, Any]:
             adaptive_config.setdefault("lux_sensors", [])
             adaptive_config.setdefault("presence_sensors", [])
             adaptive_config.setdefault("schedule_profile", DEFAULT_PROFILE)
+            # None adaptive, never all: the defaults can't see whether a bulb can dim, and a
+            # room just flagged adaptive must change nothing until its bulbs are chosen.
+            adaptive_config.setdefault("adaptive_bulbs", [])
             adaptive_config.setdefault("learning_units", [])
+            adaptive_config["scenes"] = normalize_scenes(
+                adaptive_config.get("scenes"), adaptive_config["learning_units"]
+            )
     for bulb in _dicts(doc["unassigned"]):
         bulb.setdefault("hard_switches", [])
         bulb.setdefault("ignored", False)
     return doc
+
+
+def normalize_scenes(scenes: Any, units: Any) -> Any:
+    """Return a room's scene matrix reshaped to exactly its learning units x the six
+    sections: every section, knob and unit cell present (a missing one takes its default,
+    `auto` for a cell), and the column of a unit the room no longer has dropped.
+
+    Units are removed in several places that don't touch the matrix (the editor, ignoring a
+    unit's last member, a sync taking its bulbs out of the room); reshaping it here, on
+    every load and save, is what keeps an orphan column from ever reaching the document, and
+    gives a new unit its column. Nothing else is fixed: a value of the wrong type, a mode
+    that isn't one, a misspelt section or knob stays where it is for validation to report,
+    since dropping it would silently undo what someone wrote. Canonical order (sections,
+    then knobs, then units in the room's unit order), so it is deterministic. Runs before
+    validation, so it leaves alone what it can't read.
+    """
+    if scenes is None:
+        scenes = {}
+    if not isinstance(scenes, dict) or not isinstance(units, list):
+        return scenes
+    unit_ids = list(dict.fromkeys(u["id"] for u in _dicts(units) if isinstance(u.get("id"), str)))
+    reshaped: dict[str, Any] = {}
+    for section in SECTIONS:
+        entry = scenes.get(section, {})
+        if not isinstance(entry, dict):
+            reshaped[section] = entry
+            continue
+        row: dict[str, Any] = {
+            knob: entry[knob] if knob in entry else default
+            for knob, default in scene_defaults(section).items()
+        }
+        cells = entry.get("units", {})
+        if isinstance(cells, dict):
+            row["units"] = {}
+            for unit_id in unit_ids:
+                cell = cells.get(unit_id)
+                if cell is None:
+                    cell = {"mode": DEFAULT_MODE}
+                elif isinstance(cell, dict):
+                    cell = {"mode": DEFAULT_MODE, **cell}
+                row["units"][unit_id] = cell
+        else:
+            row["units"] = cells
+        row |= {key: value for key, value in entry.items() if key not in row}
+        reshaped[section] = row
+    reshaped |= {key: value for key, value in scenes.items() if key not in reshaped}
+    return reshaped
+
+
+def non_default_scenes(scenes: Any) -> list[str]:
+    """The matrix's settings that differ from what a new row or cell gets: `<section>
+    <knob>` for a knob, `<section> <unit>: off` for a unit held off. What unflagging a room
+    would throw away from its scenes."""
+    if not isinstance(scenes, Mapping):
+        return []
+    found = []
+    for section in SECTIONS:
+        row = scenes.get(section)
+        if not isinstance(row, Mapping):
+            continue
+        for knob, default in scene_defaults(section).items():
+            if knob in row and row[knob] != default:
+                found.append(f"{section} {knob.replace('_', ' ')}")
+        cells = row.get("units")
+        for unit_id, cell in cells.items() if isinstance(cells, Mapping) else []:
+            if isinstance(cell, Mapping) and cell.get("mode", DEFAULT_MODE) != DEFAULT_MODE:
+                found.append(f"{section} {unit_id}: {cell.get('mode')}")
+    return found
 
 
 def validate(config: Mapping[str, Any]) -> None:
@@ -441,6 +596,20 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
         profile = adaptive_config.get("schedule_profile", DEFAULT_PROFILE)
         if profile not in profile_ids:
             problems.append(f"{where}: adaptive_config.schedule_profile '{profile}' does not exist")
+        problems += _sensor_problems(where, adaptive_config)
+        adaptive = [b for b in adaptive_config.get("adaptive_bulbs", []) if isinstance(b, str)]
+        for bulb_id in adaptive:
+            if bulb_id not in bulb_ids:
+                elsewhere = bulb_home.get(bulb_id)
+                detail = f"it is in {elsewhere}" if elsewhere else "no bulb has that id"
+                problems.append(
+                    f"{where}: adaptive bulb '{bulb_id}' is not a bulb in this room ({detail})"
+                )
+            elif bulb_id in ignored:
+                problems.append(
+                    f"{where}: adaptive bulb '{bulb_id}' is ignored; an ignored bulb can't be "
+                    "adaptive"
+                )
         units = list(_dicts(adaptive_config.get("learning_units", [])))
         problems += _duplicates(
             f"{where}: duplicate learning-unit id", [u.get("id") for u in units]
@@ -452,14 +621,97 @@ def _cross_check_problems(doc: Mapping[str, Any]) -> list[str]:
             )
             problems += _ignored_members(f"{where} learning unit '{unit.get('id')}'", unit, ignored)
             for member in unit.get("members", []):
-                # Learning units partition the room's bulbs: a bulb in two units would have
+                # Learning units partition the adaptive bulbs: a bulb in two units would have
                 # two learned targets for the same section.
                 if member in unit_of and unit_of[member] != unit.get("id"):
                     problems.append(
                         f"{where}: bulb '{member}' is in learning units '{unit_of[member]}' "
                         f"and '{unit.get('id')}'; a bulb belongs to at most one"
                     )
+                elif member in bulb_ids and member not in ignored and member not in adaptive:
+                    # A switched-only bulb keeps the plain plane; in a unit it would be both
+                    # left alone and driven to the unit's target.
+                    problems.append(
+                        f"{where} learning unit '{unit.get('id')}': member '{member}' is "
+                        "switched-only; list it in adaptive_bulbs, or take it out of the unit"
+                    )
                 unit_of.setdefault(member, unit.get("id"))
+        for bulb_id in adaptive:
+            if bulb_id in bulb_ids and bulb_id not in ignored and bulb_id not in unit_of:
+                # Its unit is what it learns into and what the scenes address it by.
+                problems.append(
+                    f"{where}: adaptive bulb '{bulb_id}' is in no learning unit; every "
+                    "adaptive bulb is in exactly one"
+                )
+        problems += _scene_problems(where, adaptive_config.get("scenes"), units)
+    return problems
+
+
+def _sensor_problems(where: str, adaptive_config: Mapping[str, Any]) -> list[str]:
+    """Sensor ids that can't be what they're listed as. Whether they exist in HA is a
+    deploy-time check: the config can't see HA."""
+    problems = []
+    for key, domains in SENSOR_DOMAINS.items():
+        label = key.removesuffix("s").replace("_", " ")
+        for entity_id in adaptive_config.get(key, []):
+            if not isinstance(entity_id, str):
+                continue
+            domain, _, object_id = entity_id.partition(".")
+            if object_id.startswith(OWN_PREFIXES):
+                problems.append(
+                    f"{where}: {label} {entity_id} is one of Light Map's own entities, not a "
+                    "sensor in the room"
+                )
+            elif domain not in domains:
+                expected = " or ".join(f"{d}.*" for d in domains)
+                why = (
+                    " (it must read on/off: a person or device_tracker reports home, which "
+                    "would always read as unoccupied)"
+                    if key == "presence_sensors"
+                    else " (an illuminance sensor)"
+                )
+                problems.append(f"{where}: {label} {entity_id} is not a {expected}{why}")
+    return problems
+
+
+def _scene_problems(where: str, scenes: Any, units: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The matrix must cover every learning unit in all six sections, with a mode each, and
+    nothing else: a column for a unit the room doesn't have would set a mode for nothing.
+
+    The defaults reshape a loaded matrix to fit (`normalize_scenes`), so this guards a
+    document that skipped them."""
+    if not isinstance(scenes, Mapping):
+        return [f"{where}: adaptive_config has no scenes"] if scenes is None else []
+    unit_ids = [u.get("id") for u in units if isinstance(u.get("id"), str)]
+    problems = [
+        f"{where} scenes: '{key}' is not a section ({', '.join(SECTIONS)})"
+        for key in scenes
+        if key not in SECTIONS
+    ]
+    for section in SECTIONS:
+        row = scenes.get(section)
+        if not isinstance(row, Mapping):
+            problems.append(f"{where} scenes: no entry for section '{section}'")
+            continue
+        cells = row.get("units")
+        cells = cells if isinstance(cells, Mapping) else {}
+        missing = [u for u in unit_ids if u not in cells]
+        if missing:
+            problems.append(
+                f"{where} scenes '{section}': no mode for learning unit(s) {', '.join(missing)}"
+            )
+        for unit_id, cell in cells.items():
+            if unit_id not in unit_ids:
+                problems.append(
+                    f"{where} scenes '{section}': '{unit_id}' is not a learning unit of the room"
+                )
+                continue
+            mode = cell.get("mode") if isinstance(cell, Mapping) else None
+            if mode not in MODES:
+                problems.append(
+                    f"{where} scenes '{section}' unit '{unit_id}': mode must be auto or off, "
+                    f"found {mode!r}"
+                )
     return problems
 
 
@@ -827,10 +1079,14 @@ def new_id(text: str, taken: Iterable[Any], fallback: str) -> str:
 
 def prune_members(room: dict[str, Any]) -> None:
     """Drop the switching-group and learning-unit members that aren't active bulbs of the
-    room (gone from it, or ignored), and every group or unit that leaves empty, in place.
+    room (gone from it, or ignored), and every group or unit that leaves empty, in place;
+    and the adaptive bulbs that aren't, so a bulb leaves its tier with its unit (every
+    adaptive bulb is in a unit, so `snapshot_changes` reports it through the unit). A
+    dropped unit's scene column goes with it (`normalize_scenes`, which every load and save
+    runs too), so what a sync or an ignore proposes is already a config that saves.
 
     The reconcile runs it on every room; `core.inventory.set_ignored` on the room of a bulb
-    it ignores.
+    it ignores. A bulb arriving in an adaptive room arrives switched-only.
     """
     bulb_ids = {bulb["id"] for bulb in _dicts(room.get("bulbs", [])) if not is_ignored(bulb)}
 
@@ -847,6 +1103,17 @@ def prune_members(room: dict[str, Any]) -> None:
     adaptive_config = room.get("adaptive_config")
     if isinstance(adaptive_config, dict) and "learning_units" in adaptive_config:
         adaptive_config["learning_units"] = keep(_dicts(adaptive_config["learning_units"]))
+    if not isinstance(adaptive_config, dict):
+        return
+    adaptive = adaptive_config.get("adaptive_bulbs")
+    if isinstance(adaptive, list):
+        adaptive_config["adaptive_bulbs"] = [
+            b for b in adaptive if isinstance(b, str) and b in bulb_ids
+        ]
+    if "scenes" in adaptive_config:
+        adaptive_config["scenes"] = normalize_scenes(
+            adaptive_config["scenes"], adaptive_config.get("learning_units", [])
+        )
 
 
 def snapshot_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:

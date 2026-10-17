@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Light Map config",
   "description": "The committed config document. Everything downstream is a pure function of it; learned data (almanacs) is not stored here. See docs/ARCHITECTURE.md (Top-level config shape) and docs/DESIGN.md (Data model).",
-  "$comment": "Version 2 (P2) fixed hard_switch.source as a tagged union and added turn for presses; version 3 (P4.1) added bulb.ignored; app/core/config.py migrates older versions forward. Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1, system as of P4 (the observer); learning, schedule_profiles and adaptive_config fill in with the adaptive module (P5). Cross-references (ids unique within their scope; members and schedule_profile resolve) are checked by app/core/config.py, not here.",
+  "$comment": "Version 2 (P2) fixed hard_switch.source as a tagged union and added turn for presses; version 3 (P4.1) added bulb.ignored; version 4 (P5.0) fixed adaptive_config (adaptive_bulbs and the scene matrix); app/core/config.py migrates older versions forward. Core sections (homeassistant, rooms, unassigned) are validated in depth as of P1, system as of P4 (the observer), adaptive_config as of P5.0; learning and the internals of schedule_profiles fill in with the analyser and the scheduler port (P5.2). Cross-references (ids unique within their scope; members, adaptive bulbs, scene columns and schedule_profile resolve; learning units partition the adaptive bulbs) are checked by app/core/config.py, not here.",
   "type": "object",
   "required": ["version", "rooms", "schedule_profiles"],
   "additionalProperties": false,
@@ -49,7 +49,7 @@
       }
     },
     "learning": {
-      "description": "Adaptive analyser tuning. Field names are fixed when the analyser is ported (P5).",
+      "description": "Adaptive analyser tuning. Field names are fixed when the analyser is ported (P5.2).",
       "type": "object"
     }
   },
@@ -430,11 +430,13 @@
       }
     },
     "adaptive_config": {
-      "description": "Adaptive Light's per-room block.",
+      "description": "Adaptive Light's per-room block (P5.0; docs/DESIGN.md, 'The adaptive editor'). Within the room each active bulb is adaptive (in adaptive_bulbs, and in exactly one learning unit) or switched-only (not listed: the plain switching plane, on at its last brightness). Every field is filled by app/core/config.py's defaults on load, and scenes is normalised there to exactly the room's units x the six sections.",
       "type": "object",
+      "required": ["lux_sensors", "presence_sensors", "schedule_profile", "adaptive_bulbs", "learning_units", "scenes"],
       "additionalProperties": false,
       "properties": {
         "lux_sensors": {
+          "description": "Illuminance sensors (sensor.*), averaged by the observer over those reading above 0. Existence in HA is a deploy-time check.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/entity_id"
@@ -442,6 +444,7 @@
           "uniqueItems": true
         },
         "presence_sensors": {
+          "description": "Entities that read on/off for occupancy (binary_sensor.* or input_boolean.*): occupied when any is on.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/entity_id"
@@ -449,24 +452,98 @@
           "uniqueItems": true
         },
         "schedule_profile": {
-          "description": "Id of an entry in schedule_profiles.",
+          "description": "Id of an entry in schedule_profiles. Default 'default'.",
           "$ref": "#/$defs/slug"
         },
+        "adaptive_bulbs": {
+          "description": "Ids of the room's adaptive bulbs: active (not ignored) bulbs of this room. Adaptive-ness lives here, not on the bulb. Default empty: a room just flagged adaptive has every bulb switched-only.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/slug"
+          },
+          "uniqueItems": true
+        },
         "learning_units": {
-          "description": "A free partition of the room's adaptive bulbs, independent of switching groups.",
+          "description": "A free partition of exactly the room's adaptive bulbs (every adaptive bulb in exactly one unit), independent of switching groups.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/learning_unit"
           }
         },
         "scenes": {
-          "description": "Per-section matrix keyed by learning-unit id x section: per unit per section, mode (auto/off) plus lux margin, maintenance flag, transition, max step. Shape is fixed in P5.",
-          "type": "object"
+          "description": "The scene matrix: one entry per section, all six. Each holds the section's room-wide tuning knobs and a mode per learning unit.",
+          "type": "object",
+          "required": ["sunrise", "day", "afternoon", "sunset", "night", "sleep"],
+          "propertyNames": {
+            "$ref": "#/$defs/section"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/scene_section"
+          }
+        }
+      }
+    },
+    "section": {
+      "description": "The six fixed sections of the day, in canonical order (not necessarily chronological on a given day). app/core/config.py's SECTIONS holds the same vocabulary, so core validates the scene matrix without importing the adaptive module.",
+      "enum": ["sunrise", "day", "afternoon", "sunset", "night", "sleep"]
+    },
+    "scene_section": {
+      "description": "One section of the scene matrix (the predecessor's scene_config, with its per-group map made per learning unit). The knobs are per section and room-wide; mode is the only per-unit setting. Learned values are not stored here.",
+      "type": "object",
+      "required": ["lux_target_seed", "lux_margin", "max_step_pct", "maintenance_enabled", "transition_seconds", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "lux_target_seed": {
+          "description": "A manual seed for the section's lux target, or null (the default) to OBSERVE: the first crossover into the section measures the ambient lux and seeds the provisional almanac. Superseded by the learned target.",
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "lux_margin": {
+          "description": "The deadband either side of the target. Default 5.",
+          "type": "number",
+          "minimum": 0
+        },
+        "max_step_pct": {
+          "description": "The largest single maintenance nudge, as a fraction of current brightness (0.04 is 4%). Default 0.04. Never 0: maintenance can dim a light to 1, but only a user turns one off.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "maintenance_enabled": {
+          "description": "Whether lux maintenance runs in this section. Default false for night and sleep (lux there sits at the sensor's noise floor), true elsewhere.",
+          "type": "boolean"
+        },
+        "transition_seconds": {
+          "description": "The crossover fade. Default 120.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "units": {
+          "description": "Keyed by learning-unit id: exactly the room's units (normalised on load: a new unit is added as auto, a removed unit's entry dropped).",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/slug"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/unit_scene"
+          }
+        }
+      }
+    },
+    "unit_scene": {
+      "description": "A learning unit's setting for one section.",
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "auto (default): learned, the unit's bulbs driven to its target. off: the unit is held off for the section (its soft switches commanded off; never a baked-in light.turn_off). Set here, by the user; the learner never decides it.",
+          "enum": ["auto", "off"]
         }
       }
     },
     "learning_unit": {
-      "description": "Bulbs that share one learned brightness target per section. The almanac key.",
+      "description": "Adaptive bulbs that share one learned brightness target per section. The almanac key; its id is unique within the room and kept when it is renamed.",
       "type": "object",
       "required": ["id", "name", "members"],
       "additionalProperties": false,
@@ -479,7 +556,7 @@
           "minLength": 1
         },
         "members": {
-          "description": "Bulb ids.",
+          "description": "Bulb ids: adaptive bulbs of the room, each in no other unit.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/slug"
@@ -490,12 +567,17 @@
       }
     },
     "schedule_profile": {
-      "description": "A reusable time-section schedule. Section fields arrive with the scheduler port (P5).",
+      "description": "A reusable time-section schedule, selected by a room's adaptive_config by id. Until the scheduler port (P5.2) fixes its sections, triggers and collision policy, a profile is an id and a name (other fields are not yet checked).",
       "type": "object",
       "required": ["id"],
       "properties": {
         "id": {
           "$ref": "#/$defs/slug"
+        },
+        "name": {
+          "description": "Display name, freely editable; the editor shows it beside the id.",
+          "type": "string",
+          "minLength": 1
         }
       }
     }

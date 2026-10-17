@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from app.core import config, deploy
 from app.core.ha import HAClient, HAError
 from app.main import bulb_version, create_app
-from tests.fakes import FakeHA, committed_config
+from tests.fakes import FakeHA, committed_config, scenes
 
 BUTTON = {
     "name": "Porch button",
@@ -353,7 +353,9 @@ class RoomTest(ApiCase):
                 "lux_sensors": [],
                 "presence_sensors": [],
                 "schedule_profile": "default",
+                "adaptive_bulbs": [],
                 "learning_units": [],
+                "scenes": scenes(),
             },
         )
         self.assertEqual(self.ha.calls, [])
@@ -365,7 +367,7 @@ class RoomTest(ApiCase):
             409,
             "confirm_required",
         )
-        self.assertIn("2 learning unit(s)", body["drops"])
+        self.assertIn("4 adaptive bulb(s) in 2 learning unit(s)", body["drops"])
         self.assert_unchanged(before)
         response = self.adaptive("living_room", False, discard_adaptive_config=True)
         self.assertEqual(response.status_code, 200, response.text)

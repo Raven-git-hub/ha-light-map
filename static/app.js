@@ -2,8 +2,14 @@
 // every view shares. Vanilla JS, no build step.
 //
 // A view registers itself with LM.view(name, render): map.js is the Map tab (P3), log.js
-// the Log (P4). Now, Analysis and Almanac arrive with the adaptive module (P5), and the
-// adaptive room editor (Config) with it; until then each shows a placeholder.
+// the Log (P4), config.js the Config tab (P5.0: the adaptive rooms and the per-room
+// adaptive editor). Now, Analysis and Almanac arrive with the adaptive engine (P5.2); until
+// then each shows a placeholder.
+//
+// A route is `#view` or `#view/arg` (`#config/living_room` opens that room's editor):
+// render(main, arg) gets the arg, decoded, or null. A view holding unsaved edits says so
+// with LM.protect(dirty): leaving it (a tab, a link, the back button) asks first, and so
+// does closing or reloading the page.
 
 "use strict";
 
@@ -199,15 +205,11 @@ const LM = (() => {
   // -- Router --------------------------------------------------------------------------
 
   const PLACEHOLDERS = {
-    now: ["Now", "The live state of each adaptive room. Arrives with the Adaptive Light module (P5)."],
-    analysis: ["Analysis", "What the learner made of each learning unit. Arrives with the Adaptive Light module (P5)."],
+    now: ["Now", "The live state of each adaptive room. Arrives with the Adaptive Light engine (P5.2)."],
+    analysis: ["Analysis", "What the learner made of each learning unit. Arrives with the Adaptive Light engine (P5.2)."],
     almanac: [
       "Almanac",
-      "The learned targets per learning unit and section. Arrives with the Adaptive Light module (P5).",
-    ],
-    config: [
-      "Config",
-      "The adaptive room editor arrives with the Adaptive Light module (P5). Rooms, bulbs, switching groups and hard switches are edited on the Map.",
+      "The learned targets per learning unit and section. Arrives with the Adaptive Light engine (P5.2).",
     ],
   };
 
@@ -215,19 +217,45 @@ const LM = (() => {
     views[name] = render;
   }
 
+  // The view on screen's unsaved-edit check, and the route it was shown for. Set by the
+  // view (protect), cleared by every route that leaves it.
+  let guard = null;
+  let shown = null;
+
+  function protect(dirty, what = "Your changes") {
+    guard = dirty ? { dirty, what } : null;
+  }
+
   async function route() {
-    const name = location.hash.slice(1) || "map";
+    const hash = location.hash || "#map";
+    if (guard && hash !== shown && guard.dirty()) {
+      const leave = await confirmBox(
+        "Leave without saving?",
+        [`${guard.what} haven’t been saved. Leaving drops them.`],
+        { confirm: "Leave", danger: true },
+      );
+      if (!leave) {
+        // Stay: put the address back without routing again (replaceState fires no
+        // hashchange), so the view and its draft are exactly as they were.
+        history.replaceState(null, "", shown);
+        return;
+      }
+    }
+    guard = null;
+    shown = hash;
+    const [name, ...rest] = hash.slice(1).split("/");
+    const arg = rest.length ? decodeURIComponent(rest.join("/")) : null;
     for (const tab of document.querySelectorAll(".tab")) {
-      if (tab.getAttribute("href") === `#${name}`) tab.setAttribute("aria-current", "page");
+      if (tab.getAttribute("href") === `#${name || "map"}`) tab.setAttribute("aria-current", "page");
       else tab.removeAttribute("aria-current");
     }
     const main = document.getElementById("view");
     main.replaceChildren();
     clearNotices();
-    const render = views[name];
+    const render = views[name || "map"];
     if (render) {
       try {
-        await render(main);
+        await render(main, arg);
       } catch (err) {
         fail(err);
       }
@@ -258,10 +286,16 @@ const LM = (() => {
   }
 
   window.addEventListener("hashchange", route);
+  window.addEventListener("beforeunload", (event) => {
+    if (guard?.dirty()) {
+      event.preventDefault();
+      event.returnValue = ""; // older browsers ask only when this is set
+    }
+  });
   document.addEventListener("DOMContentLoaded", () => {
     route();
     showStatus();
   });
 
-  return { h, fill, api, ApiError, notify, fail, clearNotices, dialog, footer, confirmBox, list, view, route };
+  return { h, fill, api, ApiError, notify, fail, clearNotices, dialog, footer, confirmBox, list, view, route, protect };
 })();

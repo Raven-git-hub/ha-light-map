@@ -18,8 +18,9 @@ house already runs its lights through hard and soft switches — which is really
   hard switches bind to it; the soft switch is the single source of truth for the light's
   power. Hard switches, modules, and the user act on the soft switch, never the bulb
   directly. A soft→bulb bridge makes the bulb follow.
-- **Adaptive plane (a module).** Owns *brightness when on* for the rooms flagged adaptive. It
-  no longer powers bulbs on and off — it commands the soft switch.
+- **Adaptive plane (a module).** Owns *brightness when on* for the adaptive bulbs of the
+  rooms flagged adaptive. It no longer powers bulbs on and off — it commands the soft
+  switch.
 
 The map is the foundation adaptive light sits on, and is useful on its own: a room never
 flagged adaptive still gets the full switching plane.
@@ -70,11 +71,12 @@ can be on or off independently; maintenance only ever nudges the ones that are o
    soft switch (on for an auto/learned unit, off for an "off for this section" unit); the
    soft→bulb bridge makes the bulb follow. "Off for a section" holds the soft switch off
    rather than baking a `light.turn_off` into the scene.
-5. **Learning units are a free partition.** Per adaptive room, the bulbs are partitioned into
-   learning units — each one or more bulbs sharing a brightness target — independent of the
-   switching groups. Default: every bulb its own unit; one click to "learn a switching group
-   as a single unit" for the aligned case; custom units (including across switching groups)
-   for the rest.
+5. **Learning units are a free partition.** Per adaptive room, the adaptive bulbs are
+   partitioned into learning units — each one or more bulbs sharing a brightness target —
+   independent of the switching groups. Default: a bulb made adaptive is its own unit; one
+   click to "learn a switching group as a single unit" for the aligned case; custom units
+   (including across switching groups) for the rest. Within an adaptive room a bulb may
+   also stay switched-only (settled in P5.0; see "The adaptive editor").
 6. **Soft switches are `input_boolean`s — pure power toggles.** Brightness never flows
    through the soft switch; it is applied to the bulb by the bridge and the crossover, guarded
    on soft-on. (See "Soft switch entity type".)
@@ -95,10 +97,12 @@ Everything downstream is a pure function of the committed document.
     of member bulbs plus its hard-switch bindings. It has no soft switch of its own: a hard
     switch bound to the group acts on each member's.
   - `adaptive_config` (required when `adaptive` is true, forbidden when false):
-    `{ lux_sensors[], presence_sensors[], schedule_profile, learning_units[], scenes }`.
-    `learning_units[]` = `{ id, name, members (bulb ids) }`; `scenes` is the per-section matrix
-    keyed by learning-unit id × section (per-unit, per-section `mode` auto/off, plus lux
-    margin, maintenance flag, transition, max step).
+    `{ lux_sensors[], presence_sensors[], schedule_profile, adaptive_bulbs[],
+    learning_units[], scenes }`. `adaptive_bulbs` lists the room's adaptive bulbs (the rest
+    are switched-only); `learning_units[]` = `{ id, name, members (bulb ids) }` partitions
+    exactly the adaptive bulbs; `scenes` is the matrix over the six sections: per section
+    the room-wide tuning knobs (lux target seed, lux margin, max step, maintenance flag,
+    transition) and a `mode` (auto/off) per learning unit. See "The adaptive editor".
 
   `hard_switches[]` is the binding shape used inside `bulbs[]` and `switching_groups[]` — not a
   key on the room. Shape: `{ id, name, source, mode, turn? }`: `source` is a tagged union
@@ -153,7 +157,8 @@ fragment the module supplies).
 
 The bridge is the only thing that powers a bulb on or off. On `soft → on` it turns the bulb
 on; for an adaptive bulb it applies the current section's learned brightness (the bulb's
-learning-unit target), for a plain bulb its last brightness. On `soft → off` it turns the
+learning-unit target), for a plain bulb (including a switched-only bulb in an adaptive room)
+its last brightness. On `soft → off` it turns the
 bulb off. So flipping any hard switch brings an adaptive light up already-correct for the
 time of day.
 
@@ -207,7 +212,8 @@ the bulb means units can be re-drawn later without losing history — consistent
 the archive, SQLite is a rebuildable query layer."
 
 Consequences: the almanac is keyed by learning-unit id; the scene matrix is keyed by
-learning-unit × section (auto/off per unit per section); at a crossover every member bulb of
+learning-unit × section (auto/off per unit per section; the tuning knobs are per section,
+room-wide); at a crossover every member bulb of
 a unit is driven to the same power intent and, if on, the same brightness. This is a moderate
 but clean extension of the ported analyser (per-group averaging over on-samples already
 exists; a unit is now a set of bulbs rather than a single entity), not a rewrite.
@@ -500,10 +506,13 @@ bulbs that aren't ignored, each by name and entity_id with Move and Ignore actio
 generated soft switch, which opens the hard-switch popup; a groups
 column (each group opens its popup; ADD makes one: name, members from the room's bulbs,
 hard switches); and the Adaptive Config button, enabled only while the room is adaptive,
-which opens a placeholder until the adaptive editor arrives (P5). Ticking ADAPTIVE writes a
-minimal `adaptive_config` (`{}`, filled by the defaults on save); unticking drops it (the
-schema forbids it on a room that isn't adaptive), so when it holds anything a user set the
-API refuses until the request confirms the loss (409 `confirm_required`, listing it).
+which opens the room's adaptive editor (P5.0; see "The adaptive editor"), with a line
+saying how many of its bulbs are adaptive, in how many learning units. Ticking ADAPTIVE
+writes a minimal `adaptive_config` (`{}`, filled by the defaults on save: every bulb
+starts switched-only, so ticking the box alone changes nothing in how any bulb behaves);
+unticking drops it (the schema forbids it on a room that isn't adaptive), so when it holds
+anything a user set the API refuses until the request confirms the loss (409
+`confirm_required`, listing it).
 
 **Live.** A bulb is live when a hard switch drives it, bound to it or to a group it is in:
 once deployed, pressing that switch drives the bulb through its bridge. During the
@@ -579,6 +588,126 @@ refused until it is fixed by hand.
 **A dialog stays open while its request runs.** Dismissed mid-save, it would drop the
 save's answer, and the Map would go on showing what was there before a write that did
 land; so Esc, × and Cancel wait for the request to settle.
+
+---
+
+## The adaptive editor (settled in P5.0)
+
+P5 lands in three steps. **P5.0** is the adaptive per-room config and its editor: it
+generates and deploys nothing, and nothing new reaches HA. **P5.1** adds the adaptive
+generator (the `al_` lane, and the bridge-brightness fragment that brings an adaptive bulb
+on at its unit's target). **P5.2** ports the scheduler (with the schedule profile's
+internal shape, its boundary editor and `tools/sweep.py`), the analyser, the almanac and
+the runtime loop, and adds the Now / Analysis / Almanac views.
+
+**The block.** A room's `adaptive_config`, present exactly when the room is adaptive:
+
+- `lux_sensors[]`, `presence_sensors[]` — the room's sensors (the observer already reads
+  them here). A lux sensor is a `sensor.*`. A presence sensor must read on/off: a
+  `binary_sensor.*` or an `input_boolean.*` (a `person` or `device_tracker` reports
+  `home`, which the observer would read as unoccupied, always). Neither may be one of
+  Light Map's own entities (`lm_`, `al_`). Whether they exist in HA is a deploy-time check.
+- `schedule_profile` — the id of an entry in the global `schedule_profiles` (default
+  `default`). The editor selects one by id and name. A profile's internals (its section
+  boundaries, triggers and collision policy) arrive with the scheduler port (P5.2); until
+  then a profile is an id and a name.
+- `adaptive_bulbs[]` — the room's adaptive bulbs, by id. **Adaptive-ness is not a flag on
+  the bulb.** It lives in the module's own block, so the core bulb stays module-free and
+  `app/core` never imports `app/modules`. Within an adaptive room each active (not
+  ignored) bulb is in one of two tiers:
+  - *adaptive* (listed): it learns, and from P5.1 comes on at its unit's learned
+    brightness and follows the scenes;
+  - *switched-only* (not listed): it keeps the plain switching plane, its bridge turning it
+    on at its last brightness exactly as in a room that isn't adaptive. It needs no config
+    and no change to the bridge.
+
+  An ignored bulb is in neither tier: the editor doesn't offer it, and the config can't
+  list it.
+- `learning_units[]` — `{ id, name, members }`, partitioning **exactly** the adaptive
+  bulbs: every member is an adaptive bulb of the room, and every adaptive bulb is in
+  exactly one unit. A bulb made adaptive in the editor starts in a unit of its own (its
+  bulb id as the unit id where that is free, its name as the unit's); "learn this switching
+  group as one unit" pools a group's members in one click (making them adaptive); a unit
+  may cross switching groups. Unit ids are unique within the room and key the almanac, so a
+  unit keeps its id when it is renamed.
+- `scenes` — the scene matrix over the six fixed sections (`sunrise`, `day`, `afternoon`,
+  `sunset`, `night`, `sleep`). It is the predecessor's `scenes` block with its per-group map
+  made per learning unit:
+
+  ```
+  scenes.<section> = {
+    lux_target_seed       null (default) = observe; else a seed for the section's lux target
+    lux_margin            deadband either side of the target (default 5)
+    max_step_pct          largest single maintenance nudge, a fraction in (0, 1] (default 0.04)
+    maintenance_enabled   default false for night and sleep, true elsewhere
+    transition_seconds    the crossover fade (default 120)
+    units: { <unit id>: { mode: auto | off } }      (default auto)
+  }
+  ```
+
+  **`mode` is the only per-unit setting; the tuning knobs are per section, room-wide.**
+  Earlier drafts of these docs called the knobs per-unit. That was a loosening of the
+  predecessor's shape, and it is corrected here: a unit's *target* is learned per section,
+  but how maintenance hunts for it (the deadband, the step, whether it runs at all near
+  the sensor's noise floor at night) is a property of the room's sensor at that time of
+  day. `auto` learns; `off` holds the unit's soft switches off for the section (P5.1).
+
+The section vocabulary is core's (`core.config.SECTIONS`, and the schema's `section` enum),
+so the config can validate the matrix without importing the module; the adaptive module
+takes its sections from there, never the reverse.
+
+**Normalised on every load and save.** `config.apply_defaults` fills the block's defaults
+and reshapes `scenes` to exactly the room's current units × the six sections: a missing
+section, knob or cell takes its default, and the column of a unit that no longer exists is
+dropped. Removing a unit anywhere (the editor, ignoring its last member, a sync that takes
+its bulbs out of the room) never leaves an orphan column, and a new unit arrives `auto` in
+every section. Anything else it doesn't recognise (a misspelt section or knob, a mode that
+isn't one) is left in place for validation to report, never silently dropped or fixed.
+Unlike `system`'s tuning, the scene defaults are written into the document: the matrix has
+to cover every unit and section, and the editor shows exactly what is saved.
+
+**Cross-checks** (core, without HA): `adaptive_bulbs` are active bulbs of the room; the units
+partition exactly the adaptive bulbs (no bulb in two units, no switched-only or foreign bulb
+in one, no adaptive bulb left out); `scenes` covers every unit × all six sections with `mode`
+∈ {`auto`, `off`}, and holds no column for a unit the room doesn't have; `schedule_profile`
+resolves; and the sensor ids are well formed (domain, not Light Map's own). `prune_members`
+(the reconcile, ignoring) drops a bulb from `adaptive_bulbs` as it drops it from its unit,
+which `snapshot_changes` reports through the unit, and reshapes the matrix itself, so what
+a sync or an ignore proposes is already a config that saves.
+
+**Dimmability is a UI-time guard only.** The config can't see HA, and its checks must not
+depend on it. The editor's read (`GET /api/rooms/{room}/adaptive_config`) reads each active
+bulb's state once and classifies it by `supported_color_modes`:
+
+- exactly `{onoff}` → **can't dim**: locked switched-only, can't join a unit, with a note
+  saying why. A bulb already adaptive is shown demoted in the editor's draft, with a note
+  that saving makes it switched-only.
+- the attribute missing, or the bulb `unavailable`, `unknown` or absent, or HA unreachable
+  → **capability unknown**: not locked, with a soft note. Locking on an outage would lock a
+  dimmer out because it happened to be offline.
+- anything else → dimmable.
+
+The save never consults HA, and works without it.
+
+**The editor is dedicated and per room.** The Map's "Adaptive config" button opens the room's
+editor in the main view (`#config/<room>`), with a way back to the Map. The Config tab
+(`#config`) lists the adaptive rooms, each opening the same editor: there is no global
+adaptive config. The editor works on a draft: the sensors (entity suggestions come from the
+same state read), the schedule profile, each active bulb's tier with the dimmability lock,
+the learning-unit partition, and the matrix (a row per section with its knobs, and an
+Auto/Off cell per unit). It asks before leaving with unsaved changes. Saving sends the whole
+block (`PUT /api/rooms/{room}/adaptive_config`) with the room's `version` as `base`, like
+every other edit: one made against an older version is refused (409 `edit_stale`), and the
+editor reloads the room as it now is. The save is validate-then-write, and the event log
+records it with what changed. It changes only the config.
+
+**Version 4.** P5.0 bumps the config to version 4. A version-3 adaptive room gets
+`adaptive_bulbs` = its bulbs that are in its learning units (what a version-3 unit meant:
+those bulbs learn), and everything else defaulted. A version-3 `scenes` was an open object
+that nothing wrote but `{}`: it is normalised like any other, and whatever in it doesn't fit
+the new shape is left for validation to report. A room that isn't adaptive has no block to
+migrate, so a house with no adaptive room loads exactly as before; the bump is what makes an
+older Light Map refuse a version-4 config rather than load an adaptive block it can't read.
 
 ---
 
@@ -719,8 +848,13 @@ never stops a start: with no store at all, the Map still serves.
 - **Switching group** (UI: "group soft switch") — a set of bulbs toggled together by a hard
   switch. Keeps the word "group". Despite the UI name it has no soft-switch entity: its hard
   switches act on the members' soft switches.
-- **Learning unit** — a set of bulbs the adaptive learner pools into one brightness target.
+- **Learning unit** — a set of adaptive bulbs the learner pools into one brightness target.
   The almanac key.
+- **Adaptive / switched-only** — the two tiers of an active bulb in an adaptive room: an
+  adaptive bulb learns and follows the scenes; a switched-only one keeps the plain
+  switching plane (on at its last brightness).
+- **Section** — one of the six fixed parts of the day (`sunrise`, `day`, `afternoon`,
+  `sunset`, `night`, `sleep`) the scene matrix and the almanac are keyed by.
 
 ---
 
@@ -733,12 +867,13 @@ the soft switch, like any other input to the switching plane.
 
 ## Open items
 
-- **Adaptive-config revisions** — the adaptive editor will be close to the predecessor's
-  Config view but with adjustments not yet specified; they shape P5.
 - **Old-data re-ingest at cutover** — start the almanac fresh vs re-ingest the predecessor's
   per-group CSV where a group maps cleanly to one bulb.
-- **Per-bulb detail** (dimmable, colour-temp) — deferred; a non-dimmable bulb is
-  switching-only even in an adaptive room.
+- **Per-bulb detail** (colour temperature) — deferred. Dimmability is settled (P5.0, "The
+  adaptive editor"): a bulb HA reports as on/off only is switched-only even in an adaptive
+  room, enforced by the editor; the config doesn't record it.
+- **Schedule profiles** — a profile is an id and a name until the scheduler port (P5.2)
+  fixes its sections, triggers and collision policy and adds their editor.
 - **Out-of-band power changes** — a bulb switched outside the plane (HA's UI, a vendor app,
   voice, or the live `ha-adaptive-light` during the parallel build) leaves its soft switch
   stale: the bridge only follows the soft, never the reverse. The next toggle may then

@@ -10,6 +10,9 @@ The fixture house, as HA would report it:
 - light.porch: in the registry, but neither it nor its device has an Area.
 - light.legacy_yaml: a YAML light with no unique_id, so no registry entry at all.
 - light.living_room_group: an HA light group (lists member entity_ids).
+- Dimmability (`supported_color_modes`, for the adaptive editor): the chandeliers, the
+  reading lamp and the kitchen strip dim; the counter lamp only switches on and off; the
+  porch light doesn't say; chandelier_3 is unavailable.
 - sensor.living_room_lux: not a light.
 - switch.reading_relay, event.living_room_button: hard-switch sources, not lights.
 
@@ -88,13 +91,30 @@ def _state(eid: str, name: str, state: str = "off", **attributes: Any) -> dict[s
     }
 
 
+# What each light can do (`supported_color_modes`), for the adaptive editor's dimmability
+# guard: the chandeliers and the strip take colour, the reading lamp only dims, the counter
+# lamp only switches (on/off only: can't be adaptive), the porch light doesn't say (the
+# attribute is missing: capability unknown), and the unavailable chandelier_3 reports
+# nothing (offline: capability unknown).
 STATES: list[dict[str, Any]] = [
-    _state("light.chandelier_1", "Chandelier 1", "on", brightness=128),
-    _state("light.chandelier_2", "Chandelier 2", "on", brightness=128),
+    _state(
+        "light.chandelier_1",
+        "Chandelier 1",
+        "on",
+        brightness=128,
+        supported_color_modes=["color_temp", "xy"],
+    ),
+    _state(
+        "light.chandelier_2",
+        "Chandelier 2",
+        "on",
+        brightness=128,
+        supported_color_modes=["color_temp", "xy"],
+    ),
     _state("light.chandelier_3", "Chandelier 3", "unavailable"),
-    _state("light.reading_lamp", "Reading lamp"),
-    _state("light.counter_lamp", "Counter lamp"),
-    _state("light.kitchen_strip", "Kitchen strip"),
+    _state("light.reading_lamp", "Reading lamp", supported_color_modes=["brightness"]),
+    _state("light.counter_lamp", "Counter lamp", supported_color_modes=["onoff"]),
+    _state("light.kitchen_strip", "Kitchen strip", supported_color_modes=["hs"]),
     _state("light.porch", "Porch"),
     _state("light.legacy_yaml", "Legacy YAML light"),
     _state(
@@ -164,11 +184,33 @@ def without_keys(doc: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
+SECTIONS = ("sunrise", "day", "afternoon", "sunset", "night", "sleep")
+
+
+def scenes(*unit_ids: str, **modes: str) -> dict[str, Any]:
+    """A scene matrix at the predecessor's defaults for these learning units, written out
+    (not taken from `config.scene_defaults`, so the fixture checks the defaults rather than
+    echoing them). `modes` sets a unit's mode in every section (`chandelier="off"`)."""
+    return {
+        section: {
+            "lux_target_seed": None,
+            "lux_margin": 5,
+            "max_step_pct": 0.04,
+            "maintenance_enabled": section not in ("night", "sleep"),
+            "transition_seconds": 120,
+            "units": {unit_id: {"mode": modes.get(unit_id, "auto")} for unit_id in unit_ids},
+        }
+        for section in SECTIONS
+    }
+
+
 def committed_config() -> dict[str, Any]:
     """A valid committed config for the fixture house, as of some earlier sync. Its bulbs
-    carry match keys; `without_keys` gives the P1-era equivalent."""
+    carry match keys; `without_keys` gives the P1-era equivalent. The living room is
+    adaptive, with every bulb adaptive in two learning units; `v3_config` gives it as
+    version 3 wrote it."""
     return {
-        "version": 3,
+        "version": 4,
         "homeassistant": {"base_url": "http://ha.local:8123", "verify_ssl": True},
         "system": {},
         "rooms": [
@@ -222,6 +264,12 @@ def committed_config() -> dict[str, Any]:
                     "lux_sensors": ["sensor.living_room_lux"],
                     "presence_sensors": [],
                     "schedule_profile": "evening",
+                    "adaptive_bulbs": [
+                        "chandelier_1",
+                        "chandelier_2",
+                        "chandelier_3",
+                        "reading_lamp",
+                    ],
                     "learning_units": [
                         {
                             "id": "chandelier",
@@ -230,7 +278,7 @@ def committed_config() -> dict[str, Any]:
                         },
                         {"id": "reading", "name": "Reading", "members": ["reading_lamp"]},
                     ],
-                    "scenes": {},
+                    "scenes": scenes("chandelier", "reading"),
                 },
             },
             {
@@ -248,9 +296,21 @@ def committed_config() -> dict[str, Any]:
     }
 
 
+def v3_config() -> dict[str, Any]:
+    """`committed_config` as P4.1 (schema version 3) wrote it: an adaptive config with no
+    `adaptive_bulbs` (a learning unit was what named a bulb for the module) and the open
+    `scenes` object nothing filled."""
+    doc = committed_config()
+    doc["version"] = 3
+    adaptive_config = doc["rooms"][0]["adaptive_config"]
+    del adaptive_config["adaptive_bulbs"]
+    adaptive_config["scenes"] = {}
+    return doc
+
+
 def v2_config() -> dict[str, Any]:
     """`committed_config` as P2-P4 (schema version 2) wrote it: bulbs with no `ignored`."""
-    doc = committed_config()
+    doc = v3_config()
     doc["version"] = 2
     for holder in [*doc["rooms"], {"bulbs": doc["unassigned"]}]:
         for item in holder["bulbs"]:

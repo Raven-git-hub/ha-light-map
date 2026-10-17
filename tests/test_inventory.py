@@ -447,7 +447,7 @@ class MapEditTest(unittest.TestCase):
         self.assertEqual(
             inventory.adaptive_config_content(doc["rooms"][0]),
             [
-                "2 learning unit(s)",
+                "4 adaptive bulb(s) in 2 learning unit(s)",
                 "lux sensors: sensor.living_room_lux",
                 "schedule profile 'evening'",
             ],

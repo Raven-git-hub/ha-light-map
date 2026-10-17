@@ -5,8 +5,10 @@
 // its name with the ADAPTIVE checkbox, its bulbs that aren't ignored (name, entity_id, Move
 // and Ignore, and the generated soft switch, which opens the hard-switch popup), its
 // switching groups (each opens the group popup; ADD makes one), and the Adaptive Config
-// button (a placeholder until the editor arrives in P5). An ignored light is in no row and
-// no picker: the server leaves it out of every room's bulbs.
+// button, which opens the room's adaptive editor (the Config tab, #config/<room>; P5.0)
+// with a line saying how many of its bulbs are adaptive; an adaptive bulb's row says so.
+// An ignored light is in no row and no picker: the server leaves it out of every room's
+// bulbs.
 //
 // Everything is read from and written through /api (see app/main.py). The rules the
 // server enforces are mirrored here so the user sees them before saving, never instead of
@@ -194,11 +196,14 @@
             {
               class: "adaptive-config",
               disabled: !room.adaptive,
-              title: room.adaptive ? "" : "Tick Adaptive first",
-              onclick: () => adaptivePlaceholder(room),
+              title: room.adaptive ? "Open this room’s adaptive editor" : "Tick Adaptive first",
+              onclick: () => {
+                location.hash = `#config/${encodeURIComponent(room.id)}`;
+              },
             },
             "Adaptive config",
           ),
+          room.adaptive ? h("div", { class: "muted adaptive-summary" }, adaptiveSummary(room)) : null,
         ),
       ),
     );
@@ -213,6 +218,19 @@
     }
     for (const bulb of room.bulbs) body.append(bulbRow(bulb, room));
     return body;
+  }
+
+  function adaptiveSummary(room) {
+    const bulbs = room.adaptive_config?.adaptive_bulbs?.length || 0;
+    const units = room.adaptive_config?.learning_units?.length || 0;
+    if (!bulbs) return "No adaptive bulbs yet: every bulb is switched-only.";
+    return `${plural(bulbs, "adaptive bulb")} in ${plural(units, "learning unit")}`;
+  }
+
+  // An adaptive bulb of an adaptive room (adaptive-ness lives in the room's adaptive
+  // config, not on the bulb).
+  function isAdaptiveBulb(bulb, room) {
+    return Boolean(room?.adaptive && room.adaptive_config?.adaptive_bulbs?.includes(bulb.id));
   }
 
   function unassignedBody(bucket) {
@@ -259,6 +277,9 @@
         "td",
         { class: "bulb-cell" },
         h("span", { class: "bulb-name" }, bulb.name),
+        isAdaptiveBulb(bulb, room)
+          ? h("span", { class: "tier-tag", title: "Adaptive: learns its brightness (see Adaptive config)" }, "adaptive")
+          : null,
         h("code", { class: "entity" }, bulb.entity_id),
         h(
           "button",
@@ -1218,32 +1239,6 @@
       if (err.error === "edit_stale") await reload();
       throw err;
     }
-  }
-
-  function adaptivePlaceholder(room) {
-    dialog(
-      `Adaptive config · ${room.name}`,
-      (close) =>
-        h(
-          "div",
-          { class: "adaptive-placeholder" },
-          h(
-            "div",
-            { class: "box" },
-            h(
-              "p",
-              {},
-              h("strong", {}, "The adaptive editor arrives in P5"),
-              " with the Adaptive Light module: lux and presence sensors, the schedule profile, learning units, and the section × unit scene matrix.",
-            ),
-            h("p", {}, "Until then the room is flagged adaptive with a minimal config, for the module to fill in."),
-          ),
-          h("h3", {}, "Current adaptive_config"),
-          h("pre", { class: "json" }, JSON.stringify(room.adaptive_config, null, 2)),
-          footer(h("button", { onclick: () => close() }, "Close")),
-        ),
-      { name: "adaptive" },
-    );
   }
 
   async function moveDialog(bulb, room) {
