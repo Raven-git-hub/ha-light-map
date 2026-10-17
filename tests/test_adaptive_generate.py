@@ -165,7 +165,13 @@ class ArtefactTest(unittest.TestCase):
         self.assertEqual(
             self.package["input_boolean"],
             {
-                "al_active_living_room": {"name": "AL Active living_room", "icon": al.GUARD_ICON},
+                # The guard starts off at every HA start (no run survives a restart); the
+                # hold is restored.
+                "al_active_living_room": {
+                    "name": "AL Active living_room",
+                    "initial": False,
+                    "icon": al.GUARD_ICON,
+                },
                 "al_hold_living_room": {"name": "AL Hold living_room", "icon": al.HOLD_ICON},
             },
         )
@@ -227,10 +233,22 @@ class ArtefactTest(unittest.TestCase):
         self.assertEqual(actions[2]["data"], {"option": "night"})
         self.assertIn("'sensor.al_almanac_living_room', 'night'", actions[3]["variables"]["units"])
         self.assertEqual(actions[-2], {"delay": {"seconds": 120 + al.SETTLE_SECONDS}})
-        self.assertEqual(actions[-1]["action"], "input_boolean.turn_off")
+        # The guard is lowered last, unless another of the room's runs still holds it.
+        release = actions[-1]
         self.assertEqual(
-            actions[-1]["target"], {"entity_id": "input_boolean.al_active_living_room"}
+            release["then"],
+            [
+                {
+                    "action": "input_boolean.turn_off",
+                    "target": {"entity_id": "input_boolean.al_active_living_room"},
+                }
+            ],
         )
+        holders = release["if"][0]["value_template"]
+        for other in [*(s for s in config.SECTIONS if s != "night"), None]:
+            name = f"al_scene_living_room_{other}" if other else "al_maint_living_room"
+            self.assertIn(f"state_attr('automation.{name}', 'current')", holders)
+        self.assertNotIn("al_scene_living_room_night'", holders)  # not itself
 
     def test_power_goes_only_through_soft_switches(self):
         softs = {switching.soft_entity(b) for b in ADAPTIVE}
@@ -314,7 +332,7 @@ class ArtefactTest(unittest.TestCase):
                 },
             ],
         )
-        nudges = [a for a in maint["actions"] if "if" in a]
+        nudges = [a for a in maint["actions"] if "if" in a and "alias" in a]
         self.assertEqual(
             [n["then"][0]["target"]["entity_id"] for n in nudges], [f"light.{b}" for b in ADAPTIVE]
         )
@@ -331,6 +349,9 @@ class ArtefactTest(unittest.TestCase):
         services = [a["action"] for a, _ in walk(maint["actions"])]
         self.assertEqual(services.count("input_boolean.turn_on"), 1)  # the guard, raised once
         self.assertNotIn("light.turn_off", services)
+        release = maint["actions"][-1]["if"][0]["value_template"]
+        self.assertNotIn("al_maint_living_room'", release)  # not itself
+        self.assertIn("'automation.al_scene_living_room_day', 'current'", release)
 
     def test_maintenance_cadence(self):
         doc = committed_config()
@@ -354,7 +375,7 @@ class ArtefactTest(unittest.TestCase):
         scene = automations["al_scene_living_room_day"]["actions"]
         # Guard, hold, section, guard: it changes no light, so there is nothing to wait out.
         self.assertEqual(
-            [a.get("action") for a in scene],
+            [a.get("action") or a["then"][0]["action"] for a in scene],
             [
                 "input_boolean.turn_on",
                 "input_boolean.turn_off",
@@ -362,6 +383,8 @@ class ArtefactTest(unittest.TestCase):
                 "input_boolean.turn_off",
             ],
         )
+        # With no maintenance, only the other scenes hold the guard.
+        self.assertNotIn("al_maint_", scene[-1]["if"][0]["value_template"])
         self.assertNotIn("al_maint_living_room", automations)
         self.assertIn("al_watchdog_guard_living_room", automations)
 
@@ -387,11 +410,13 @@ class ArtefactTest(unittest.TestCase):
                     "entity_id": "input_boolean.al_active_living_room",
                     "to": "on",
                     "for": {"minutes": 10},
-                }
+                    "id": "stuck",
+                },
+                {"trigger": "event", "event_type": "automation_reloaded", "id": "reloaded"},
             ],
         )
         self.assertEqual(guard["actions"][0]["action"], "input_boolean.turn_off")
-        self.assertEqual(guard["actions"][1]["action"], "persistent_notification.create")
+        self.assertEqual(guard["actions"][1]["then"][0]["action"], "persistent_notification.create")
         stale = self.automations["al_watchdog_stale_living_room"]
         self.assertEqual(
             stale["triggers"],
@@ -411,6 +436,17 @@ class ArtefactTest(unittest.TestCase):
         self.assertEqual(
             guard["triggers"][0]["for"], {"minutes": 16 + al.GUARD_WATCHDOG_MARGIN_MINUTES}
         )
+
+    def test_a_room_name_never_reaches_a_template(self):
+        # Notification data is rendered by HA as a template: an Area named with braces
+        # mustn't open one.
+        doc = committed_config()
+        living(doc)["name"] = "Den {{ states('lock.front') }} {% if x %}"
+        text = json.dumps(
+            [a["actions"] for a in al.generate(doc)["automation"] if "watchdog" in a["id"]]
+        )
+        self.assertIn("Den (( states('lock.front') )) (% if x %)", text)
+        self.assertNotIn("{{ states('lock.front')", text)
 
     def test_a_config_that_was_never_validated_is_refused(self):
         doc = committed_config()
@@ -765,16 +801,75 @@ class BehaviourTest(unittest.TestCase):
         self.ha.run(self.automations[f"al_maint_{ROOM}"])
         self.assertEqual(self.light("reading_lamp"), ("on", 200))
 
-    def test_the_watchdogs(self):
-        guard = self.automations["al_watchdog_guard_living_room"]
-        self.ha.set("input_boolean.al_active_living_room", "on")
-        self.ha.run(guard)
+    def test_maintenance_survives_numbers_ha_wont_parse(self):
+        # HA keeps a render that isn't a plain decimal (1e-05, nan, inf) as a string, so a
+        # number passed between variables can turn into text: maintenance reads each from
+        # the row where it uses it, and a tiny lux or step still runs to the end.
+        for name, lux, row, expected in (
+            ("a tiny step", "50", {**self.ROW, "max_step_pct": 1e-05}, 129),
+            ("a step of 'nan'", "50", {**self.ROW, "max_step_pct": "nan"}, 129),
+            ("a step of 'inf'", "50", {**self.ROW, "max_step_pct": "inf"}, 138),
+            ("a tiny lux", "0.00001", self.ROW, 133),
+            ("a tiny margin", "99.99", {**self.ROW, "lux_margin": 1e-05}, 133),
+        ):
+            with self.subTest(name):
+                self.assertTrue(self.maintain(lux, row))
+                self.assertEqual(self.light("chandelier_1"), ("on", expected))
+                self.assertEqual(self.ha.state("input_boolean.al_active_living_room"), "off")
+        # A row HA can't read back at all (a float nan in it: no literal) is no row: the
+        # run stops before raising the guard.
+        self.assertFalse(self.maintain("50", {**self.ROW, "max_step_pct": float("nan")}))
+        self.assertEqual(self.ha.calls, [])
+
+    def test_the_last_run_out_lowers_the_guard(self):
+        # A crossover fired while maintenance is mid-run (automation.trigger skips the
+        # scene's conditions): the scene finishes first, and leaves the guard to it.
+        self.publish({"day": {"units": {"chandelier": 90}}})
+        self.ha.set("automation.al_maint_living_room", "on", {"current": 1})
+        self.crossover("day")
+        self.assertEqual(self.ha.state("input_boolean.al_active_living_room"), "on")
+        # ...and a maintenance run that ends while a crossover still fades leaves it too.
+        self.assertTrue(self.maintain("50", self.ROW))
+        self.ha.set("automation.al_scene_living_room_day", "on", {"current": 1})
+        self.ha.set("input_boolean.al_active_living_room", "off")
+        self.ha.set("input_boolean.al_hold_living_room", "off")
+        self.assertTrue(self.ha.run(self.automations[f"al_maint_{ROOM}"]))
+        self.assertEqual(self.ha.state("input_boolean.al_active_living_room"), "on")
+        # With nothing else running, it is lowered (as in every other test).
+        self.ha.set("automation.al_scene_living_room_day", "on", {"current": 0})
+        self.ha.set("input_boolean.al_active_living_room", "off")
+        self.assertTrue(self.ha.run(self.automations[f"al_maint_{ROOM}"]))
         self.assertEqual(self.ha.state("input_boolean.al_active_living_room"), "off")
+
+    def test_the_guard_watchdog(self):
+        guard = self.automations["al_watchdog_guard_living_room"]
+        on = "input_boolean.al_active_living_room"
+        # Stuck on for its time: released, and said so.
+        self.ha.set(on, "on")
+        self.assertTrue(self.ha.run(guard, trigger={"id": "stuck"}))
+        self.assertEqual(self.ha.state(on), "off")
         self.assertEqual(
             self.ha.notifications[0]["notification_id"], "al_watchdog_guard_living_room"
         )
+        # Automations reloaded (a deploy cut a run short): a guard no run holds is released
+        # at once, quietly; one a run still holds is left to it.
+        self.setUp()
+        self.ha.set(on, "on")
+        self.ha.set("automation.al_scene_living_room_sunset", "on", {"current": 1})
+        self.assertFalse(self.ha.run(guard, trigger={"id": "reloaded"}))
+        self.assertEqual(self.ha.state(on), "on")
+        self.ha.set("automation.al_scene_living_room_sunset", "on", {"current": 0})
+        self.assertTrue(self.ha.run(guard, trigger={"id": "reloaded"}))
+        self.assertEqual(self.ha.state(on), "off")
+        self.assertEqual(self.ha.notifications, [])
+        # A guard already off is left alone.
+        self.assertFalse(self.ha.run(guard, trigger={"id": "stuck"}))
+        self.assertEqual(self.ha.calls[-1][0], "input_boolean.turn_off")
+        self.assertEqual(len(self.ha.calls), 1)
+
+    def test_the_stale_scene_watchdog(self):
         self.ha.run(self.automations["al_watchdog_stale_living_room"])
-        self.assertIn("has not changed section", self.ha.notifications[1]["message"])
+        self.assertIn("has not changed section", self.ha.notifications[0]["message"])
 
 
 if __name__ == "__main__":

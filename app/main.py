@@ -1218,7 +1218,9 @@ def _going_live(doc: Mapping[str, Any], deploy_plan: Mapping[str, Any]) -> list[
 async def _module_lanes(ha: HAClient, doc: Mapping[str, Any]) -> dict[str, Any]:
     """Each wired module lane's plan (or why it would be refused), read-only: nothing
     here is applied, and there is no fingerprint to apply it with. Empty while the cutover
-    switch is off, since no module lane is registered."""
+    switch is off, since no module lane is registered. A lane HA can't be read for is
+    shown as such: it must never cost the switching deploy its preview (and so its
+    fingerprint)."""
     lanes: dict[str, Any] = {}
     for prefix in generate_mod.namespaces():
         if prefix == switching.PREFIX:
@@ -1227,6 +1229,8 @@ async def _module_lanes(ha: HAClient, doc: Mapping[str, Any]) -> dict[str, Any]:
             lane_plan = await deploy.prepare(ha, doc, prefix)
         except (ConfigError, DeployError) as exc:
             lanes[prefix] = {"ready": False, "refused": exc.problems}
+        except HAError as exc:
+            lanes[prefix] = {"ready": False, "refused": [f"Home Assistant: {exc}"]}
         else:
             lanes[prefix] = {"ready": True, "refused": [], "plan": deploy.summarise(lane_plan)}
     return lanes

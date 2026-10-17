@@ -3,10 +3,14 @@ surface: off, nothing generates, previews or writes `al_`; on (the tests' own sc
 is reconciled as its own lane, verified after every write, and shown read-only beside the
 switching deploy, which still applies `lm_` alone."""
 
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 
 from app.core import config, deploy, generate
 from app.core.deploy import DeployError
+from app.core.ha import HAError
 from tests.fakes import STATES, FakeHA, adaptive_wired, committed_config
 from tests.test_api import ApiCase
 
@@ -185,7 +189,8 @@ class LaneTest(unittest.IsolatedAsyncioTestCase):
         summary = deploy.summarise(await deploy.prepare(ha, committed_config(), "al"))
         self.assertEqual(written_ids(ha, mark), [])
         self.assertEqual(summary["updated"]["input_select"], ["al_scene_living_room"])
-        self.assertEqual(summary["updated"]["input_boolean"], [])  # adopted as they are
+        # Its hold adopted as it is; its guard rewritten to start off at every HA start.
+        self.assertEqual(summary["updated"]["input_boolean"], ["al_active_living_room"])
         self.assertIn("al_scene_living_room_day", summary["updated"]["automation"])
         self.assertEqual(summary["removed"]["automation"], ["al_maintenance_living_room"])
 
@@ -270,6 +275,41 @@ class ApiSwitchOnTest(ApiCase):
         self.assertNotIn("fingerprint", lane)
         self.assertEqual(lane["plan"]["created"], {**ROOM_HELPERS, "automation": AL_AUTOMATIONS})
         self.assertFalse([i for i in self.ha.automations if i.startswith("al_")])
+
+    def test_a_lane_ha_cant_be_read_for_never_costs_the_switching_preview(self):
+        # The switching plane deployed, so the al_ lane gets as far as reading its helpers.
+        preview = self.client.get("/api/deploy/preview").json()
+        self.client.post("/api/deploy", json={"fingerprint": preview["fingerprint"]})
+        real = self.ha.list_helpers
+
+        async def failing(domain):
+            if domain == "input_select":
+                raise HAError("input_select/list failed: unknown command")
+            return await real(domain)
+
+        self.ha.list_helpers = failing
+        response = self.client.get("/api/deploy/preview")
+        self.assertEqual(response.status_code, 200, response.text)
+        preview = response.json()
+        self.assertTrue(preview["ready"])
+        self.assertIn("fingerprint", preview)
+        lane = preview["modules"]["lanes"]["al"]
+        self.assertFalse(lane["ready"])
+        self.assertTrue(any("input_select/list failed" in p for p in lane["refused"]))
+
+
+class DoctorWiringTest(unittest.TestCase):
+    def test_the_doctor_runs_under_the_composition_roots_wiring(self):
+        # Its lm_ preview must carry the bridges the app would deploy: once the cutover
+        # switch is on, a doctor that never wired the modules would read every adaptive
+        # bridge as one to rewrite.
+        result = subprocess.run(
+            [sys.executable, "-c", "import sys, tools.doctor; print('app.main' in sys.modules)"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.stdout.strip(), "True", result.stderr)
 
 
 if __name__ == "__main__":

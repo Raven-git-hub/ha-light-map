@@ -131,12 +131,13 @@ locks); config checks never depend on HA.
 
 ```sh
 pip install -r requirements.txt
+pip install -r requirements-dev.txt  # test-only (jinja2, for the adaptive template tests)
 python -m unittest                 # tests against fakes and fixtures; never a real HA
                                    # (tests/test_ui.py drives the Map, the Log and the
                                    # adaptive editor in headless Chromium when Node's
                                    # Playwright is installed, else skips; the adaptive
-                                   # templates are rendered and run when jinja2 is
-                                   # installed, a test-only dependency, else skip)
+                                   # templates are rendered and run when jinja2, from
+                                   # requirements-dev.txt, is installed, else skip)
 python -c "import app.main"
 python -c "import json, jsonschema; jsonschema.Draft202012Validator.check_schema(json.load(open('schema/config.schema.json')))"
 python -c "import sqlite3; sqlite3.connect(':memory:').executescript(open('schema/storage.schema.sql').read())"

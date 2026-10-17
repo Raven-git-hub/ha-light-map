@@ -28,6 +28,10 @@ if __package__ in (None, ""):
     # Run as a script (`python tools/doctor.py`): put the repo root on the path for `app`.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# The composition root wires the modules into the core's seams (behind its cutover switch),
+# so the lm_ preview below carries the bridges a deploy from the app would write: without
+# it, once the switch is on, every adaptive bulb's bridge would read as one to rewrite.
+import app.main  # noqa: E402,F401
 from app.core import config as config_mod  # noqa: E402
 from app.core import deploy, inventory, switching  # noqa: E402
 from app.core.ha import HAAuthError, HAClient, HAError  # noqa: E402

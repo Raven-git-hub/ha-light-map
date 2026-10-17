@@ -6,7 +6,8 @@ Emits only the `al_` namespace, per adaptive room (one with an `adaptive_config`
 not any of its bulbs is adaptive yet):
 
 - helpers: `input_boolean.al_active_<room>` (the guard, raised while the lane's own
-  automations change the room's lights), `input_boolean.al_hold_<room>` (the maintenance
+  automations change the room's lights; off at every HA start, and lowered by the last of
+  the room's runs to finish), `input_boolean.al_hold_<room>` (the maintenance
   hold: the user intervened, stay out for the rest of the section), and
   `input_select.al_scene_<room>` (the section the room is in; its options are the six
   canonical section ids, so its state is the section id). Each named from the room id,
@@ -15,8 +16,8 @@ not any of its bulbs is adaptive yet):
   with `automation.trigger`.
 - `al_maint_<room>`: lux maintenance on HA's own clock, for a room with adaptive bulbs and
   a lux sensor.
-- `al_watchdog_guard_<room>`, `al_watchdog_stale_<room>`: a guard stuck on, a scene select
-  not moving.
+- `al_watchdog_guard_<room>`, `al_watchdog_stale_<room>`: a guard stuck on (or left on by
+  a run a reload cut short), a scene select not moving.
 - the bridge fragment (`bridge_brightness`): the brightness an adaptive bulb's core bridge
   applies on soft-on, registered with `core.switching.register_bridge_brightness`.
 
@@ -264,6 +265,47 @@ def _light_brightness(entity_id: str) -> str:
     return f"state_attr({_literal(entity_id)}, 'brightness')"
 
 
+def _plain(text: str) -> str:
+    """Free text (a room's name, from its HA Area) made safe for a service call's data,
+    which HA renders as a template: without braces, a name can't open a Jinja tag."""
+    return text.replace("{", "(").replace("}", ")")
+
+
+def guard_holders(config: Mapping[str, Any], room: Mapping[str, Any]) -> list[str]:
+    """The ids of the room's automations that raise its guard: its scenes, and its
+    maintenance when it has one."""
+    holders = [scene_id(room["id"], section) for section in SECTIONS]
+    if maintenance_automations(config, room):
+        holders.append(maint_id(room["id"]))
+    return holders
+
+
+def _idle(holders: Sequence[str]) -> str:
+    """Jinja: is none of these automations running? HA counts an automation's runs in
+    progress in its `current` attribute; its entity is `automation.<id>` (alias = id). An
+    entity under another id reads as idle, which only takes the check back to the
+    predecessor's unconditional release."""
+    runs = ", ".join(
+        f"state_attr({_literal(f'automation.{holder}')}, 'current') | int(0)" for holder in holders
+    )
+    return f"[{runs}] | sum == 0"
+
+
+def _release_guard(room_id: str, others: Sequence[str]) -> dict[str, Any]:
+    """Lower the room's guard, unless another of its runs still holds it. The guard is one
+    boolean shared by every run in the room: a crossover fired (with automation.trigger,
+    which skips conditions) during a maintenance run, or a second crossover during a first,
+    would otherwise have the first run to finish lower it while the other's fade still had
+    minutes to go, and the rest of that fade, which carries no context HA links to the
+    run, would be recorded as a person at a dimmer. The last run out lowers it."""
+    return {
+        "if": [{"condition": "template", "value_template": f"{{{{ {_idle(others)} }}}}"}],
+        "then": [
+            {"action": "input_boolean.turn_off", "target": {"entity_id": guard_entity(room_id)}}
+        ],
+    }
+
+
 # -- The bridge fragment ---------------------------------------------------------------
 
 
@@ -316,7 +358,16 @@ def helpers(config: Mapping[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
     selects: dict[str, dict[str, Any]] = {}
     for room in adaptive_rooms(config):
         room_id = room["id"]
-        booleans[guard_id(room_id)] = {"name": guard_name(room_id), "icon": GUARD_ICON}
+        # The guard starts off whenever HA starts: no run survives a restart, and a guard
+        # restored on would never change, so its watchdog (a state trigger, attached after
+        # the restore) would never fire, and maintenance and observation would stay off
+        # until the next crossover. The hold is restored: a person's intervention stands
+        # for the rest of the section, restart or not.
+        booleans[guard_id(room_id)] = {
+            "name": guard_name(room_id),
+            "initial": False,
+            "icon": GUARD_ICON,
+        }
         booleans[hold_id(room_id)] = {"name": hold_name(room_id), "icon": HOLD_ICON}
         selects[scene_select_id(room_id)] = {
             "name": scene_select_name(room_id),
@@ -335,13 +386,18 @@ def scene_automations(config: Mapping[str, Any], room: Mapping[str, Any]) -> lis
     """Return a room's `al_scene_` automations, one per section crossover, in section
     order."""
     units = learning_units(config, room)
-    return [_scene(room, units, section) for section in SECTIONS]
+    holders = guard_holders(config, room)
+    return [_scene(room, units, section, holders) for section in SECTIONS]
 
 
 def _scene(
-    room: Mapping[str, Any], units: Sequence[Mapping[str, Any]], section: str
+    room: Mapping[str, Any],
+    units: Sequence[Mapping[str, Any]],
+    section: str,
+    holders: Sequence[str],
 ) -> dict[str, Any]:
     room_id = room["id"]
+    own = scene_id(room_id, section)
     transition = int(room["adaptive_config"]["scenes"][section]["transition_seconds"])
     actions: list[dict[str, Any]] = [
         {"action": "input_boolean.turn_on", "target": {"entity_id": guard_entity(room_id)}},
@@ -371,12 +427,10 @@ def _scene(
         actions += [_unit_action(unit, transition) for unit in units]
         actions.append({"delay": {"seconds": transition + SETTLE_SECONDS}})
     # A room with no unit changes no light, so it has nothing to wait out.
-    actions.append(
-        {"action": "input_boolean.turn_off", "target": {"entity_id": guard_entity(room_id)}}
-    )
+    actions.append(_release_guard(room_id, [h for h in holders if h != own]))
     return {
-        "id": scene_id(room_id, section),
-        "alias": scene_id(room_id, section),
+        "id": own,
+        "alias": own,
         "description": (
             f"Light Map adaptive crossover: {room['name']} enters {section}. Each learning "
             "unit's bulbs follow the almanac's target for the section, through their soft "
@@ -477,48 +531,42 @@ def maintenance_automations(
     # HA's time_pattern takes /1../59 for minutes: an hourly cadence is minute 0.
     every = {"minutes": 0} if interval >= 60 else {"minutes": f"/{interval}"}
     defaults = config_mod.scene_defaults(SECTIONS[0])
-    row = "row"
     variables = {
-        row: f"{{{{ {_row(room_id, _current_section(room_id))} }}}}",
-        "enabled": (
-            f"{{{{ {row} is mapping and "
-            f"{row}.get({_literal(almanac.MAINTENANCE_ENABLED)}) is sameas true }}}}"
-        ),
-        "lux_target": (
-            f"{{% set v = {row}.get({_literal(almanac.LUX_TARGET)}) if {row} is mapping "
-            "else none %}{{ v if v is number and v is not boolean else none }}"
-        ),
-        "lux_margin": (
-            f"{{{{ ({row}.get({_literal(almanac.LUX_MARGIN)}) if {row} is mapping else none) "
-            f"| float({defaults['lux_margin']}) }}}}"
-        ),
-        "max_step_pct": (
-            f"{{{{ ({row}.get({_literal(almanac.MAX_STEP_PCT)}) if {row} is mapping else none) "
-            f"| float({defaults['max_step_pct']}) }}}}"
-        ),
-        # The mean of the sensors reading above 0, as the observer takes it. A reading of
-        # 0 is the sensor's floor, not a measurement: with every sensor there (or none
-        # available) there is no lux, and no nudge, rather than a ramp toward full
-        # brightness under a sensor that reads 0 all night.
-        "lux": (
+        "row": f"{{{{ {_row(room_id, _current_section(room_id))} }}}}",
+        # Decided in one template, from the row: HA parses each variable's render back to
+        # a value, and keeps one it doesn't read as a plain decimal (1e-05, nan) as a
+        # string, so a number passed between variables could turn into text and fail the
+        # arithmetic that used it, part-way through a run.
+        #
+        # Lux is the mean of the sensors reading above 0, as the observer takes it. A
+        # reading of 0 is the sensor's floor, not a measurement: with every sensor there
+        # (or none available) there is no lux, and no nudge, rather than a ramp toward
+        # full brightness under a sensor that reads 0 all night.
+        "nudge": (
+            "{% set enabled = row is mapping and "
+            f"row.get({_literal(almanac.MAINTENANCE_ENABLED)}) is sameas true %}}"
+            f"{{% set target = row.get({_literal(almanac.LUX_TARGET)}) if row is mapping "
+            "else none %}"
+            f"{{% set margin = (row.get({_literal(almanac.LUX_MARGIN)}) if row is mapping "
+            f"else none) | float({defaults['lux_margin']}) %}}"
             f"{{% set vals = [{', '.join(_literal(s) for s in sensors)}] | map('states') "
             "| map('float', none) | reject('none') | select('gt', 0) | list %}"
-            "{{ (vals | sum / vals | count) if vals | count > 0 else none }}"
-        ),
-        "nudge": (
-            "{% if not enabled or lux_target is none or lux is none %}none"
-            "{% elif lux < lux_target - lux_margin %}up"
-            "{% elif lux > lux_target + lux_margin %}down"
-            "{% else %}none{% endif %}"
+            "{% if not enabled or target is not number or target is boolean or not vals %}"
+            "none"
+            "{% else %}{% set lux = vals | sum / vals | count %}"
+            "{% if lux < target - margin %}up"
+            "{% elif lux > target + margin %}down"
+            "{% else %}none{% endif %}{% endif %}"
         ),
     }
+    others = [scene_id(room_id, section) for section in SECTIONS]
     actions: list[dict[str, Any]] = [
         {"variables": variables},
         {"condition": "template", "value_template": "{{ nudge != 'none' }}"},
         {"action": "input_boolean.turn_on", "target": {"entity_id": guard_entity(room_id)}},
-        *[_nudge(bulb) for bulb in bulbs],
+        *[_nudge(bulb, defaults["max_step_pct"]) for bulb in bulbs],
         {"delay": {"seconds": MAINT_SETTLE_SECONDS}},
-        {"action": "input_boolean.turn_off", "target": {"entity_id": guard_entity(room_id)}},
+        _release_guard(room_id, others),
     ]
     return [
         {
@@ -544,15 +592,19 @@ def maintenance_automations(
     ]
 
 
-def _nudge(bulb: Mapping[str, Any]) -> dict[str, Any]:
+def _nudge(bulb: Mapping[str, Any], default_step_pct: float) -> dict[str, Any]:
     """One bulb's step toward the target. Only a bulb that is on (its soft switch and the
     bulb itself) with a brightness to step from: maintenance never powers a bulb on, and
-    floors at 1, so it can dim a light but never turn one off."""
+    floors at 1, so it can dim a light but never turn one off. The step's fraction is read
+    from the row here, where it is used, and held to (0, 1]."""
     light = bulb["entity_id"]
     current = _light_brightness(light)
     step = (
         f"{{% set b = {current} | int(0) %}}"
-        f"{{% set step = [[(b * max_step_pct) | int, 1] | max, {MAX_STEP}] | min %}}"
+        f"{{% set pct = (row.get({_literal(almanac.MAX_STEP_PCT)}) if row is mapping else none) "
+        f"| float({default_step_pct}) %}}"
+        "{% set pct = [[pct, 0] | max, 1] | min %}"
+        f"{{% set step = [[(b * pct) | int(0), 1] | max, {MAX_STEP}] | min %}}"
         "{% if nudge == 'up' %}{{ [b + step, 255] | min }}"
         "{% else %}{{ [b - step, 1] | max }}{% endif %}"
     )
@@ -591,11 +643,18 @@ def guard_watchdog_minutes(room: Mapping[str, Any]) -> int:
 def watchdog_automations(config: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Return the `al_watchdog_` automations: per adaptive room, a guard stuck on (released,
     and a persistent notification) and a scene select that hasn't moved (a notification).
-    There is none on the hold, which is meant to last the rest of a section."""
+    There is none on the hold, which is meant to last the rest of a section.
+
+    The guard's watchdog also acts when automations are reloaded: a deploy that rewrites a
+    scene or the maintenance while it runs stops that run before it lowers the guard. Then
+    a guard that no run holds any more is released at once (quietly: it is a deploy's
+    routine aftermath, not a fault), rather than on the stuck timer, which a reload of the
+    watchdog itself would have dropped."""
     found: list[dict[str, Any]] = []
     for room in adaptive_rooms(config):
-        room_id, name = room["id"], room["name"]
+        room_id, name = room["id"], _plain(room["name"])
         minutes = guard_watchdog_minutes(room)
+        holders = guard_holders(config, room)
         found.append(
             {
                 "id": watchdog_guard_id(room_id),
@@ -611,25 +670,39 @@ def watchdog_automations(config: Mapping[str, Any]) -> list[dict[str, Any]]:
                         "entity_id": guard_entity(room_id),
                         "to": "on",
                         "for": {"minutes": minutes},
-                    }
+                        "id": "stuck",
+                    },
+                    {"trigger": "event", "event_type": "automation_reloaded", "id": "reloaded"},
                 ],
-                "conditions": [],
+                "conditions": [
+                    {"condition": "state", "entity_id": guard_entity(room_id), "state": "on"},
+                    {
+                        "condition": "template",
+                        "value_template": (f"{{{{ trigger.id == 'stuck' or {_idle(holders)} }}}}"),
+                    },
+                ],
                 "actions": [
                     {
                         "action": "input_boolean.turn_off",
                         "target": {"entity_id": guard_entity(room_id)},
                     },
                     {
-                        "action": "persistent_notification.create",
-                        "data": {
-                            "notification_id": watchdog_guard_id(room_id),
-                            "title": "Light Map",
-                            "message": (
-                                f"The adaptive guard for {name} ({guard_entity(room_id)}) was "
-                                f"stuck on for {minutes} minutes and has been released: a "
-                                "scene or maintenance run probably stopped part-way."
-                            ),
-                        },
+                        "if": [{"condition": "trigger", "id": "stuck"}],
+                        "then": [
+                            {
+                                "action": "persistent_notification.create",
+                                "data": {
+                                    "notification_id": watchdog_guard_id(room_id),
+                                    "title": "Light Map",
+                                    "message": (
+                                        f"The adaptive guard for {name} "
+                                        f"({guard_entity(room_id)}) was stuck on for {minutes} "
+                                        "minutes and has been released: a scene or maintenance "
+                                        "run probably stopped part-way."
+                                    ),
+                                },
+                            }
+                        ],
                     },
                 ],
             }

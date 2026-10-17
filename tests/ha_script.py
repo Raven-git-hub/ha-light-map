@@ -3,8 +3,8 @@ to render the Jinja the generators emit and run the automations they build again
 state machine, so a test can see what a scene, a maintenance tick or a bridge would do.
 
 Never used by the app (which has no template engine: its Jinja is inert data). It needs
-jinja2, a test-only dependency: `AVAILABLE` is False without it, and the tests that run
-templates skip.
+jinja2, a test-only dependency (requirements-dev.txt): `AVAILABLE` is False without it, and
+the tests that run templates skip.
 
 What it copies from HA, closely, because the generated templates depend on it:
 
@@ -13,8 +13,9 @@ What it copies from HA, closely, because the generated templates depend on it:
 - The `int` and `float` filters are HA's forgiving ones: with a default, anything that
   doesn't convert gives the default; without one, it is a template error.
 - Results are parsed to native types as HA does (`literal_eval`, keeping the text when it
-  doesn't parse or parses to a string): a `variables` value or service data rendering
-  "128" is the int 128, "{'a': 1}" a dict, "none" the string "none".
+  doesn't parse or parses to a string, and a number only when the text is a plain decimal):
+  a `variables` value or service data rendering "128" is the int 128, "{'a': 1}" a dict,
+  "none" the string "none", and "1e-05" the string "1e-05".
 - A template condition is true only when it renders "true" (any case), as HA's is.
 - `light.turn_on` validates its data as HA's schema does: `brightness` must coerce to an
   int (HA clamps it to 0..255) and a brightness of 0 turns the light off; a data value
@@ -22,12 +23,14 @@ What it copies from HA, closely, because the generated templates depend on it:
 - A state change runs, at once, every automation whose state trigger matches it (the
   bridge a soft switch flips), with `tests.fakes.state_trigger_matches`.
 
-Not copied: time (a delay is recorded, not waited), run modes, and anything the generated
-automations don't use.
+Not copied: time (a delay is recorded, not waited), run modes and concurrency (a test that
+needs another run in progress sets that automation's `current` attribute), restarts, and
+anything the generated automations don't use.
 """
 
 import ast
 import copy
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -41,6 +44,10 @@ except ImportError:  # pragma: no cover - the template tests skip
 AVAILABLE = jinja2 is not None
 
 _NO_DEFAULT = object()
+
+# HA's own (homeassistant.helpers.template): a number is kept only when its text reads as a
+# plain decimal, so "1e-05", "nan" and "inf" stay strings.
+_IS_NUMERIC = re.compile(r"^[+-]?(?!0\d)\d*(?:\.\d*)?$")
 
 
 class TemplateError(Exception):
@@ -73,13 +80,19 @@ def _forgiving_float(value: Any, default: Any = _NO_DEFAULT) -> Any:
 
 
 def native(text: str) -> Any:
-    """HA's result parsing: a literal when the text is one (and isn't a string), else the
-    text itself."""
+    """HA's result parsing: a literal when the text is one (and isn't a string, or a number
+    written any way but as a plain decimal), else the text itself."""
     try:
         result = ast.literal_eval(text)
     except (ValueError, TypeError, SyntaxError, MemoryError):
         return text
     if isinstance(result, (str, complex)):
+        return text
+    if (
+        isinstance(result, (int, float))
+        and not isinstance(result, bool)
+        and not _IS_NUMERIC.match(text)
+    ):
         return text
     return result
 
@@ -167,11 +180,18 @@ class HA:
         raise AssertionError(f"condition {kind!r} isn't modelled")
 
     # Running
-    def run(self, automation: Mapping[str, Any], *, check_conditions: bool = True) -> bool:
-        """Run an automation as HA would on a trigger (`check_conditions`) or as
-        `automation.trigger` does (skipping them). Returns whether its actions ran to the
-        end (False if a condition stopped them)."""
-        variables: dict[str, Any] = {}
+    def run(
+        self,
+        automation: Mapping[str, Any],
+        *,
+        check_conditions: bool = True,
+        trigger: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Run an automation as HA would on a trigger (`check_conditions`; `trigger` is
+        what fired it, as the `trigger` variable) or as `automation.trigger` does (skipping
+        them). Returns whether its actions ran to the end (False if a condition stopped
+        them)."""
+        variables: dict[str, Any] = {"trigger": dict(trigger or {})}
         if check_conditions and not all(
             self.condition(c, variables) for c in automation.get("conditions", [])
         ):

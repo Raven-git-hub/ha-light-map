@@ -152,14 +152,15 @@ tests/               Unit tests (stdlib unittest, `python -m unittest`) against 
                      `log_ui.cjs`, `config_ui.cjs`, `lanes_ui.cjs`, Node's Playwright) where
                      that is installed, and is skipped where it isn't. `ha_script.py` renders
                      the generated Jinja and runs the generated automations against a fake
-                     state machine (P5.1; needs jinja2, a test-only dependency, else those
-                     tests skip). `golden/` holds byte-exact generated output: `lm_only.yaml`
+                     state machine (P5.1; needs jinja2, from `requirements-dev.txt`, else
+                     those tests skip). `golden/` holds byte-exact generated output: `lm_only.yaml`
                      (captured before P5.1: the cutover switch off must reproduce it) and
                      `al_committed.yaml`.
 Dockerfile
 docker-compose.yml
 .env.example
 requirements.txt
+requirements-dev.txt   Test-only: jinja2, for the tests that render the generated templates.
 CLAUDE.md
 docs/
   ARCHITECTURE.md
@@ -595,9 +596,11 @@ system's `al_` ones among them) that already drive the same bulbs.
   stale, so the next toggle may first "turn off" a bulb that is already off. Whether the
   plane should reflect a bulb's power back into its soft switch, and how that would avoid
   re-triggering the bridge, is open; settle it before cutover.
-- **An unlearned adaptive bulb switched on** (P5.1) — the bridge fragment must always render
-  a brightness, and an off bulb reports none, so an adaptive bulb with nothing learned for
-  the section comes on at 255, not at its own last brightness. A seam change (a provider
+- **An adaptive bulb with no target switched on** (P5.1; settle with P5.2, before cutover) —
+  the bridge fragment must always render a brightness, and an off bulb reports none, so an
+  adaptive bulb whose unit has no target for the section comes on at 255, not at its own
+  last brightness. That includes, for good, a unit held off for a section (typically
+  sleep): a hard switch at 3 a.m. gives full brightness. A seam change (a provider
   condition choosing between its data and the plain `light.turn_on`) would fix it; see
   `docs/DESIGN.md`, "Open items".
 - **Crossover report after cutover** (P5.1) — the report counts only the `lm_` lane as Light

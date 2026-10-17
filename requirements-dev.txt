@@ -1,0 +1,5 @@
+# Test-only dependencies, beside the app's own (requirements.txt). The app has no template
+# engine; jinja2 is here only so tests/ha_script.py can render the Jinja the generators emit,
+# as Home Assistant would, and run the automations they build. Without it those tests skip.
+-r requirements.txt
+jinja2>=3.1,<4
