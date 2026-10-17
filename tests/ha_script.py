@@ -19,7 +19,9 @@ What it copies from HA, closely, because the generated templates depend on it:
 - A template condition is true only when it renders "true" (any case), as HA's is.
 - `light.turn_on` validates its data as HA's schema does: `brightness` must coerce to an
   int (HA clamps it to 0..255) and a brightness of 0 turns the light off; a data value
-  that doesn't coerce fails the whole call (`ServiceError`).
+  that doesn't coerce fails the whole call (`ServiceError`). With no brightness, an off
+  light comes back at the brightness it had when it went off (`memory`; a bulb that never
+  had one comes on full), as HA's lights do.
 - A state change runs, at once, every automation whose state trigger matches it (the
   bridge a soft switch flips), with `tests.fakes.state_trigger_matches`.
 
@@ -116,6 +118,8 @@ class HA:
         self.automations = [copy.deepcopy(dict(a)) for a in automations]
         self.options = {k: list(v) for k, v in (options or {}).items()}
         self.calls: list[tuple[str, str, dict[str, Any], str]] = []
+        # Each light's brightness when it last went off, which a plain turn_on restores.
+        self.memory: dict[str, int] = {}
         self.delays: list[Any] = []
         self.notifications: list[dict[str, Any]] = []
         self.env = jinja2.Environment(undefined=jinja2.StrictUndefined)
@@ -260,19 +264,24 @@ class HA:
                     data = {**data, key: value}
             if "brightness" in data:
                 if min(max(data["brightness"], 0), 255) == 0:
-                    attributes["brightness"] = None
-                    self._change(entity_id, "off", attributes)
+                    self._light_off(entity_id, attributes)
                     return
                 attributes["brightness"] = min(data["brightness"], 255)
             elif attributes.get("brightness") is None:
-                attributes["brightness"] = 255  # a bulb with no memory comes on full
+                # Back at its level when it went off; a bulb with no memory comes on full.
+                attributes["brightness"] = self.memory.get(entity_id, 255)
             self._change(entity_id, "on", attributes)
         elif service == "light.turn_off":
             attributes = dict((self.states.get(entity_id) or {}).get("attributes") or {})
-            attributes["brightness"] = None
-            self._change(entity_id, "off", attributes)
+            self._light_off(entity_id, attributes)
         else:
             raise AssertionError(f"service {service} isn't modelled")
+
+    def _light_off(self, entity_id: str, attributes: dict[str, Any]) -> None:
+        if attributes.get("brightness"):
+            self.memory[entity_id] = attributes["brightness"]
+        attributes["brightness"] = None
+        self._change(entity_id, "off", attributes)
 
     def _change(self, entity_id: str, new: str, attributes: Mapping[str, Any] | None = None):
         old = self.state(entity_id)

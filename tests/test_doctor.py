@@ -93,6 +93,24 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("A deploy of the switching plane would be refused", out)
         self.assertIn("switch.reading_relay (hard switch 'reading_switch')", out)
 
+    def test_shows_todays_schedule_for_the_adaptive_rooms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config.save(path, committed_config())
+            ha = FakeHA()
+            code, out = self.run_doctor(ha, "--config", str(path))
+            self.assertEqual(ha.writes, [])
+            # The living room uses 'evening'; 'default' isn't used by an adaptive room.
+            self.assertIn("Schedule 'evening' today (", out)
+            self.assertNotIn("Schedule 'default'", out)
+            for section in ("sunrise", "day", "afternoon", "sunset", "night", "sleep"):
+                self.assertIn(f" {section}", out)
+            self.assertIn("20:30 night", out)
+            ha.location = {"time_zone": "Europe/London"}
+            code, out = self.run_doctor(ha, "--config", str(path))
+        self.assertEqual(code, 1)
+        self.assertIn("Sun-relative sections can't be computed", out)
+
     def test_warns_when_area_writes_will_be_refused(self):
         code, out = self.run_doctor(FakeHA(admin=False))
         self.assertEqual(code, 0)

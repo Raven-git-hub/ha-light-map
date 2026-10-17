@@ -127,11 +127,16 @@ _STREAMS: dict[str, tuple[_Column, ...]] = {
         "room_id:text!",
         "section:text!",
         "learning_unit_id:text!",
+        "brightness:int",
+        "on_fraction:real",
         "lux_target:real",
         "lux_margin:real",
         "maintenance_enabled:bool",
         "max_step_pct:real",
         "trust_weight:real",
+        "days_contributing:int",
+        "high_confidence_days:int",
+        "days_analysed:int",
         "valid_from:text",
         "mode:text",
     ),
@@ -166,6 +171,10 @@ _RANGES = {
     "lux_sensors": (0, None),
     "deferred_ms": (0, None),
     "window_seconds": (1, None),
+    "on_fraction": (0, 1),
+    "days_contributing": (0, None),
+    "high_confidence_days": (0, None),
+    "days_analysed": (0, None),
 }
 
 

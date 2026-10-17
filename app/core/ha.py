@@ -565,12 +565,21 @@ class HAClient:
             )
         return self._http
 
-    async def request(self, method: str, path: str, json: Any = None) -> Any:
-        """Send a REST request to the HA API and return the decoded response."""
+    async def request(
+        self, method: str, path: str, json: Any = None, *, timeout: float | None = None
+    ) -> Any:
+        """Send a REST request to the HA API and return the decoded response. `timeout`
+        replaces the client's for this request (HA answers a service call only when the
+        service has finished, which for some outlasts the default)."""
         if not path.startswith("/api/"):
             raise ValueError(f"not an HA API path: {path!r}")
         try:
-            response = await self._client().request(method, path, json=json)
+            response = await self._client().request(
+                method,
+                path,
+                json=json,
+                timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
+            )
         except httpx.HTTPError as exc:
             raise HAError(f"{method} {path} failed: {exc}") from exc
         if response.status_code in (401, 403):
@@ -620,11 +629,22 @@ class HAClient:
             json={"state": state, "attributes": dict(attributes)},
         )
 
-    async def call_service(self, domain: str, service: str, data: Mapping[str, Any]) -> Any:
-        """Call an HA service; returns the states it changed."""
+    async def call_service(
+        self,
+        domain: str,
+        service: str,
+        data: Mapping[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        """Call an HA service; returns the states it changed. HA answers when the service
+        has finished: `automation.trigger` waits for the whole run, delays included, so its
+        caller passes a `timeout` long enough for that."""
         if not (_SLUG.match(domain) and _SLUG.match(service)):
             raise ValueError(f"not a service: {domain!r}.{service!r}")
-        return await self.request("POST", f"/api/services/{domain}/{service}", json=dict(data))
+        return await self.request(
+            "POST", f"/api/services/{domain}/{service}", json=dict(data), timeout=timeout
+        )
 
     # -- Registries (WebSocket only) ---------------------------------------------------
 

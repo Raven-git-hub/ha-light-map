@@ -267,9 +267,12 @@ class ApiSwitchOnTest(ApiCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse([i for i in self.ha.automations if i.startswith("al_")])
         self.assertNotIn("input_select", self.ha.helpers)
-        # The adaptive bridges went out with the fragment, in the lm lane.
+        # The adaptive bridges went out with the gated fragment, in the lm lane.
         bridge = self.ha.automations["lm_bridge_chandelier_1"]
-        self.assertIn("brightness", bridge["actions"][0]["choose"][0]["sequence"][0]["data"])
+        gate, choice = bridge["actions"][0]["choose"][0]["sequence"]
+        self.assertIn("sensor.al_almanac_living_room", gate["variables"]["bridge_gate"])
+        self.assertIn("brightness", choice["then"][0]["data"])
+        self.assertNotIn("data", choice["else"][0])
         lane = self.client.get("/api/deploy/preview").json()["modules"]["lanes"]["al"]
         self.assertTrue(lane["ready"])
         self.assertNotIn("fingerprint", lane)

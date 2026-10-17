@@ -183,6 +183,85 @@ class BridgeBrightnessTest(unittest.TestCase):
                     committed_config(), providers={"al": self.provider(data)}
                 )
 
+    def test_a_gated_module_applies_its_data_only_when_its_gate_says_so(self):
+        gate = "{{ is_state('input_select.al_scene_living_room', 'day') }}"
+        level = "{{ state_attr('sensor.al_almanac_living_room', 'x') | int(0) }}"
+        supply = self.provider(
+            switching.GatedBrightness(when=gate, data={"transition": 2, "brightness": level})
+        )
+        bridges = switching.bridge_automations(committed_config(), providers={"al": supply})
+        on = self.on_branch(bridges, "chandelier_1")
+        self.assertEqual(
+            on["conditions"],
+            [
+                {
+                    "condition": "state",
+                    "entity_id": "input_boolean.lm_soft_chandelier_1",
+                    "state": "on",
+                }
+            ],
+        )
+        plain = {"action": "light.turn_on", "target": {"entity_id": "light.chandelier_1"}}
+        self.assertEqual(
+            on["sequence"],
+            [
+                # The gate and the data rendered in one step, so they read the same states.
+                {
+                    "variables": {
+                        "bridge_gate": gate,
+                        "bridge_brightness": level,
+                        "bridge_transition": 2,
+                    }
+                },
+                {
+                    "if": [{"condition": "template", "value_template": "{{ bridge_gate }}"}],
+                    "then": [
+                        {
+                            **plain,
+                            "data": {
+                                "brightness": "{{ bridge_brightness }}",
+                                "transition": "{{ bridge_transition }}",
+                            },
+                        }
+                    ],
+                    # The plain path: the bulb's own last brightness.
+                    "else": [plain],
+                },
+            ],
+        )
+        # The soft-off branch, and every bulb the module didn't claim, are untouched.
+        [choose] = by_id(bridges)["lm_bridge_chandelier_1"]["actions"]
+        self.assertEqual(
+            choose["choose"][1]["sequence"],
+            [{"action": "light.turn_off", "target": {"entity_id": "light.chandelier_1"}}],
+        )
+        self.assertEqual(
+            self.on_branch(bridges, "chandelier_2")["sequence"],
+            [{"action": "light.turn_on", "target": {"entity_id": "light.chandelier_2"}}],
+        )
+        self.assertIn(f'"{gate}"', generate.to_yaml(bridges))  # carried verbatim
+
+    def test_a_gate_keeps_every_guarantee(self):
+        # Its data may still set only brightness, and a gate must be a condition.
+        for fragment in (
+            switching.GatedBrightness("{{ true }}", {"entity_id": "light.other"}),
+            switching.GatedBrightness("{{ true }}", {"brightness": 10, "target": {}}),
+            switching.GatedBrightness("{{ true }}", {}),
+            switching.GatedBrightness("", {"brightness": 10}),
+            switching.GatedBrightness("  ", {"brightness": 10}),
+            switching.GatedBrightness(["{{ true }}"], {"brightness": 10}),
+        ):
+            with self.subTest(fragment=fragment), self.assertRaises(ValueError):
+                switching.bridge_automations(
+                    committed_config(), providers={"al": self.provider(fragment)}
+                )
+        # Ungated (no gate) is the same as a plain mapping.
+        same = [
+            switching.bridge_automations(committed_config(), providers={"al": self.provider(d)})
+            for d in ({"brightness": 9}, switching.GatedBrightness(None, {"brightness": 9}))
+        ]
+        self.assertEqual(same[0], same[1])
+
     def test_one_module_per_bulb(self):
         providers = {"al": self.provider({"brightness": 1}), "pr": self.provider({"brightness": 2})}
         with self.assertRaises(ValueError) as caught:

@@ -52,7 +52,19 @@ path. At most one module may claim a bulb. The data lands in the bridge's soft-o
 so it is guarded on soft-on by construction and can never power a bulb on by itself; a
 module can't retarget the bridge or touch its power. The provider must not bake almanac
 values in (it emits a template that reads them at runtime) and must render a valid value
-on every path, since an invalid one fails the whole `light.turn_on`.
+on every path it is applied, since an invalid one fails the whole `light.turn_on`.
+
+A provider may also gate its data (`GatedBrightness`, P5.2a): a condition template under
+which the bridge applies it, the plain `light.turn_on` (the bulb's own last brightness)
+otherwise. A module doesn't always have a brightness for a bulb it claims (Adaptive Light
+has none for a unit with nothing learned, or one held off for the section), and a bridge
+that had to render one anyway brought such a bulb up at 255: an off bulb reports no
+brightness to keep. The gate only chooses which of two `light.turn_on`s runs, both on the
+bridge's own target and both inside the soft-on branch, so the guarantees above hold. The
+gate and the data are rendered together, in one `variables` step, before the choice: apart,
+a republish landing between the two could leave the data with nothing valid to render for a
+gate that had just said yes, and the bulb wouldn't come on. So the data must render without
+error even when the gate is false (it is then rendered and not used).
 
 Hard rules:
 
@@ -77,6 +89,7 @@ Hard rules:
 
 import copy
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from app.core import inventory
@@ -90,10 +103,28 @@ SOFT_ICON = "mdi:light-switch"
 # the thing deciding power.
 BRIGHTNESS_KEYS = ("brightness", "brightness_pct", "transition")
 
-# (config, room or None for an Unassigned bulb, bulb) -> light.turn_on data, or None.
+
+@dataclass(frozen=True)
+class GatedBrightness:
+    """A provider's bridge data, applied on soft-on only when `when` (an HA condition
+    template, kept inert) renders true; otherwise the bulb takes the plain path and comes
+    on at its own last brightness. (`when` None: applied on every soft-on, as a plain
+    mapping is.)"""
+
+    when: str | None
+    data: Mapping[str, Any]
+
+
+# (config, room or None for an Unassigned bulb, bulb) -> light.turn_on data (applied on
+# every soft-on), gated data, or None (the plain path).
 BridgeBrightness = Callable[
-    [Mapping[str, Any], Mapping[str, Any] | None, Mapping[str, Any]], Mapping[str, Any] | None
+    [Mapping[str, Any], Mapping[str, Any] | None, Mapping[str, Any]],
+    Mapping[str, Any] | GatedBrightness | None,
 ]
+
+# The variables a gated bridge renders its gate and its data into, in one step.
+_GATE = "bridge_gate"
+_DATA = "bridge_{}"
 
 _BRIDGE_BRIGHTNESS: dict[str, BridgeBrightness] = {}
 
@@ -162,7 +193,9 @@ def _bridge_brightness(
     room: Mapping[str, Any] | None,
     bulb: Mapping[str, Any],
     providers: Mapping[str, BridgeBrightness],
-) -> dict[str, Any] | None:
+) -> GatedBrightness | None:
+    """The one claiming provider's data for a bulb, checked (`when` None when it is applied
+    on every soft-on), or None for the plain path."""
     claims = []
     for prefix in sorted(providers):
         data = providers[prefix](config, room, bulb)
@@ -176,6 +209,11 @@ def _bridge_brightness(
             f"{[prefix for prefix, _ in claims]}"
         )
     prefix, data = claims[0]
+    when = None
+    if isinstance(data, GatedBrightness):
+        when, data = data.when, data.data
+        if when is not None and (not isinstance(when, str) or not when.strip()):
+            raise ValueError(f"bulb '{bulb['id']}': '{prefix}' gated its data on {when!r}")
     if not isinstance(data, Mapping) or not data:
         raise ValueError(f"bulb '{bulb['id']}': '{prefix}' supplied no light.turn_on data")
     extra = sorted(set(data) - set(BRIGHTNESS_KEYS))
@@ -187,7 +225,7 @@ def _bridge_brightness(
     for key, value in data.items():
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             raise ValueError(f"bulb '{bulb['id']}': '{prefix}' set {key} to {value!r}")
-    return {key: data[key] for key in sorted(data)}
+    return GatedBrightness(when, {key: data[key] for key in sorted(data)})
 
 
 # -- Generation ------------------------------------------------------------------------
@@ -304,12 +342,34 @@ def _bindings(config: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return sorted(found, key=lambda binding: binding["id"])
 
 
-def _bridge(bulb: Mapping[str, Any], brightness: Mapping[str, Any] | None) -> dict[str, Any]:
+def _soft_on(light: str, brightness: GatedBrightness | None) -> list[dict[str, Any]]:
+    """The bridge's soft-on sequence: the plain `light.turn_on` (the bulb's last brightness),
+    or one carrying a module's data, on every soft-on or behind its gate."""
+    plain: dict[str, Any] = {"action": "light.turn_on", "target": {"entity_id": light}}
+    if brightness is None:
+        return [plain]
+    if brightness.when is None:
+        return [{**plain, "data": dict(brightness.data)}]
+    # The gate and every data value rendered in one step, so both read the same states (see
+    # "Bridge brightness" above); the choice and the call then use what was rendered.
+    variables = {_GATE: brightness.when}
+    variables.update({_DATA.format(key): value for key, value in brightness.data.items()})
+    data = {key: f"{{{{ {_DATA.format(key)} }}}}" for key in brightness.data}
+    return [
+        {"variables": variables},
+        {
+            "if": [{"condition": "template", "value_template": f"{{{{ {_GATE} }}}}"}],
+            "then": [{**plain, "data": data}],
+            # Nothing from the module for it now: on at its own last brightness, as a bulb
+            # no module claims comes on, never at a level the module had to make up.
+            "else": [plain],
+        },
+    ]
+
+
+def _bridge(bulb: Mapping[str, Any], brightness: GatedBrightness | None) -> dict[str, Any]:
     soft = soft_entity(bulb["id"])
     light = bulb["entity_id"]
-    turn_on: dict[str, Any] = {"action": "light.turn_on", "target": {"entity_id": light}}
-    if brightness:
-        turn_on["data"] = dict(brightness)
     return {
         "id": bridge_id(bulb["id"]),
         "alias": bridge_id(bulb["id"]),
@@ -334,7 +394,7 @@ def _bridge(bulb: Mapping[str, Any], brightness: Mapping[str, Any] | None) -> di
                 "choose": [
                     {
                         "conditions": [{"condition": "state", "entity_id": soft, "state": "on"}],
-                        "sequence": [turn_on],
+                        "sequence": _soft_on(light, brightness),
                     },
                     {
                         "conditions": [{"condition": "state", "entity_id": soft, "state": "off"}],

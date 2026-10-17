@@ -75,7 +75,10 @@ Presence Rules can be added without touching the trunk:
    setting bulb brightness guarded on soft-on, never by powering bulbs directly. That
    includes the bridge brightness: a module may supply the `light.turn_on` data the core
    bridge applies on soft-on for its bulbs (`core.switching.register_bridge_brightness`);
-   core embeds it in the soft-on branch and owns the target and the power.
+   core embeds it in the soft-on branch and owns the target and the power. A provider may
+   gate its data (`core.switching.GatedBrightness`): when the gate is false the bridge
+   takes the plain `light.turn_on` (the bulb's own last brightness). The gate only chooses
+   between two `light.turn_on`s on the bridge's target, both inside the soft-on branch.
 
 A module reads bulbs through `core.inventory.active_bulbs` (every bulb that isn't ignored,
 with its room), never `room["bulbs"]` directly: an ignored bulb (an indicator or gadget LED
@@ -146,8 +149,8 @@ uvicorn app.main:app --port 8099   # then GET /healthz -> {"status":"ok"}
 
 ## Coexistence
 
-Until cutover (P6) Light Map is built beside the live `ha-adaptive-light`. P0–P5.1 touch
-only new HA artefacts (P5.0 and P5.1 add none to the live HA), and the new bridges stay
+Until cutover (P6) Light Map is built beside the live `ha-adaptive-light`. P0–P5.2 touch
+only new HA artefacts (P5.0 to P5.2 add none to the live HA), and the new bridges stay
 unbound (no hard switches; bridge not yet authoritative). Don't cross that boundary early.
 Deploying must never drive a bulb: a soft switch is set to its bulb's state before its
 bridge goes live, and nothing in a deploy calls a light service.
@@ -156,8 +159,10 @@ bridge goes live, and nothing in a deploy calls a light service.
 the same HA (even its helpers' names), so writing `al_` before P6 would adopt and rewrite or
 remove the old system's artefacts. The adaptive module is wired in by `app/main.py` only
 when `ADAPTIVE_ENABLED` is on, and it is **off until P6**: `core.generate.namespaces()` is
-`["lm"]`, no bridge-brightness provider is registered, and the generated `lm_` lane is
-byte-identical to P5.0's (held to `tests/golden/lm_only.yaml`). Never turn it on in the live
+`["lm"]`, no bridge-brightness provider is registered, no adaptive runtime is made (nothing
+fires a scene, raises a hold, publishes an almanac, or registers a section or guard with the
+observer), and the generated `lm_` lane is byte-identical to P5.0's (held to
+`tests/golden/lm_only.yaml`). Never turn it on in the live
 composition root before cutover; tests turn it on in their own scope
 (`tests.fakes.adaptive_wired`). Even on, the Map's deploy applies only `lm_`; the `al_`
 plan is previewed read-only.
