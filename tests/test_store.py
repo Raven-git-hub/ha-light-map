@@ -143,6 +143,7 @@ class WriteTest(StoreCase):
                     "lux_sensors": 1,
                     "occupancy": 1,
                     "deferred_ms": 0,
+                    "presence_configured": None,
                 }
             ],
         )
@@ -166,6 +167,7 @@ class WriteTest(StoreCase):
                     "lux_sensors": "1",
                     "occupancy": "1",
                     "deferred_ms": "0",
+                    "presence_configured": "",
                 }
             ],
         )

@@ -203,6 +203,18 @@ class SubscriptionTest(ObserverCase):
 
 
 class HeartbeatTest(ObserverCase):
+    async def test_a_heartbeat_records_whether_presence_had_a_sensor(self):
+        await self.start()
+        self.config["rooms"][0]["adaptive_config"]["presence_sensors"] = ["binary_sensor.sofa"]
+        self.observer.reload()
+        await self.observer.heartbeat("living_room")
+        # A null occupancy now means the sensor had no usable state (it isn't in HA), not
+        # "no sensor": the learner tells the two apart by this, never by today's config.
+        self.assertEqual(
+            self.rows("SELECT presence_configured, occupancy FROM heartbeat"),
+            [{"presence_configured": 1, "occupancy": None}],
+        )
+
     async def test_one_heartbeat_per_room_and_one_reading_per_bulb(self):
         await self.start()
         recorded = await self.observer.tick()
@@ -230,6 +242,15 @@ class HeartbeatTest(ObserverCase):
                     "occupancy": None,
                     "deferred_ms": 0,
                 },
+            ],
+        )
+        # Whether a presence sensor was configured is recorded with each heartbeat: a null
+        # occupancy means "no sensor" or "no usable state", and only now can tell which.
+        self.assertEqual(
+            self.rows("SELECT room_id, presence_configured FROM heartbeat ORDER BY room_id"),
+            [
+                {"room_id": "kitchen", "presence_configured": 0},
+                {"room_id": "living_room", "presence_configured": 0},
             ],
         )
         self.assertEqual(

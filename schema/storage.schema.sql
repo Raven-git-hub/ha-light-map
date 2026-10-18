@@ -8,8 +8,8 @@
 --
 -- Readings are per bulb, long format (heartbeat + bulb_reading, reactive_event +
 -- reactive_change), which is what pooling into learning units needs. The almanac is
--- insert-only snapshots keyed by learning unit, so history comes for free; its columns are
--- finalised with the analyser (P5).
+-- insert-only snapshots keyed by learning unit, so history comes for free; its columns were
+-- finalised with the analyser (P5.2a).
 --
 -- Conventions: ts columns are ISO-8601 UTC text with microseconds (one fixed format, so
 -- they sort as text); booleans are 0/1 integers.
@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS heartbeat (
     lux_sensors INTEGER NOT NULL DEFAULT 0,  -- how many sensors lux came from
     occupancy   INTEGER CHECK (occupancy IN (0, 1)),  -- NULL: no presence sensor available
     deferred_ms INTEGER NOT NULL DEFAULT 0,  -- how long the tick waited for a guard
+    -- Whether the room had a presence sensor configured (P5.2a; NULL: recorded before). A
+    -- null occupancy means "no sensor, always occupied" when 0 and "the sensor had no
+    -- usable state" when 1, and only the time of recording can say which.
+    presence_configured INTEGER CHECK (presence_configured IN (0, 1)),
     UNIQUE (room_id, ts)
 );
 CREATE INDEX IF NOT EXISTS heartbeat_room_ts ON heartbeat (room_id, ts);
@@ -72,21 +76,34 @@ CREATE TABLE IF NOT EXISTS reactive_change (
     UNIQUE (reactive_event_id, bulb_id)
 );
 
--- Insert-only learned snapshots, keyed by learning unit. Never updated in place.
+-- Insert-only learned snapshots, keyed by learning unit. Never updated in place. One row
+-- per unit per section per nightly pass (P5.2a), learned or not, so the newest row in force
+-- for a unit and section always comes from the newest pass in force. ts is when the pass
+-- ran; valid_from the local date (YYYY-MM-DD) it takes effect. brightness is the unit's
+-- learned brightness (NULL: nothing learned), whatever its auto/off mode: the mode is the
+-- config's, resolved when the almanac is published. lux_target is the room's, the same on
+-- every unit's row; lux_margin, maintenance_enabled and max_step_pct are the config's knobs
+-- when the pass ran, for the record. mode is the analyser's state: bootstrap or learning.
 CREATE TABLE IF NOT EXISTS almanac (
-    id                  INTEGER PRIMARY KEY,
-    ts                  TEXT    NOT NULL,
-    room_id             TEXT    NOT NULL,
-    section             TEXT    NOT NULL,
-    learning_unit_id    TEXT    NOT NULL,
-    lux_target          REAL,
-    lux_margin          REAL,
-    maintenance_enabled INTEGER CHECK (maintenance_enabled IN (0, 1)),
-    max_step_pct        REAL,
-    trust_weight        REAL,
-    valid_from          TEXT,
-    mode                TEXT
+    id                      INTEGER PRIMARY KEY,
+    ts                      TEXT    NOT NULL,
+    room_id                 TEXT    NOT NULL,
+    section                 TEXT    NOT NULL,
+    learning_unit_id        TEXT    NOT NULL,
+    brightness              INTEGER CHECK (brightness BETWEEN 0 AND 255),
+    on_fraction             REAL    CHECK (on_fraction BETWEEN 0 AND 1),
+    lux_target              REAL,
+    lux_margin              REAL,
+    maintenance_enabled     INTEGER CHECK (maintenance_enabled IN (0, 1)),
+    max_step_pct            REAL,
+    trust_weight            REAL,
+    days_contributing       INTEGER,
+    high_confidence_days    INTEGER,
+    days_analysed           INTEGER,
+    valid_from              TEXT,
+    mode                    TEXT
 );
+CREATE INDEX IF NOT EXISTS almanac_room_valid ON almanac (room_id, valid_from);
 CREATE INDEX IF NOT EXISTS almanac_room_unit ON almanac (room_id, learning_unit_id, ts);
 
 CREATE TABLE IF NOT EXISTS event_log (

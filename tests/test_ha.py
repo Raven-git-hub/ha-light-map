@@ -103,6 +103,17 @@ class RestTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_a_call_can_wait_longer_than_the_default(self):
+        # automation.trigger is answered only when the run (its delays too) is over.
+        client = self.client(lambda r: httpx.Response(200, json=[]))
+        await client.call_service("automation", "trigger", {"entity_id": "automation.a"})
+        await client.call_service(
+            "automation", "trigger", {"entity_id": "automation.a"}, timeout=210
+        )
+        default, longer = (r.extensions["timeout"] for r in self.requests)
+        self.assertEqual(default["read"], ha_mod.DEFAULT_TIMEOUT)
+        self.assertEqual(longer["read"], 210)
+
     async def test_ids_in_paths_are_checked_before_sending(self):
         client = self.client(lambda r: httpx.Response(200))
         for call in (
@@ -423,7 +434,6 @@ class WebSocketTest(unittest.IsolatedAsyncioTestCase):
         await self.server.wait_closed()
         with self.assertRaises(HAError):
             await self.client(timeout=2).connect()
-
 
 
 EVENT = {

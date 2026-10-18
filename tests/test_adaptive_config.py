@@ -1,5 +1,6 @@
 """The adaptive per-room config and its editor (P5.0): the version-4 shape and its
-migration, the cross-checks (adaptive bulbs, the partition into learning units, the scene
+migration, the schedule profiles and the analyser's tuning (version 5, P5.2a), the
+cross-checks (adaptive bulbs, the partition into learning units, the scene
 matrix, sensors, the schedule profile), the matrix's normalisation (orphan columns dropped,
 new units and sections filled), the dimmability guard, and the editor's API (its read, with
 HA's capability per bulb; its save, validate-then-write against the room's version).
@@ -16,7 +17,16 @@ from app import main
 from app.core import config, inventory
 from app.core.config import ConfigError
 from app.core.ha import HAError
-from tests.fakes import STATES, committed_config, light, scenes, v2_config, v3_config
+from tests.fakes import (
+    STATES,
+    committed_config,
+    light,
+    scenes,
+    schedule,
+    v2_config,
+    v3_config,
+    v4_config,
+)
 from tests.test_api import ApiCase
 
 
@@ -97,8 +107,8 @@ class VocabularyTest(unittest.TestCase):
 class MigrationTest(unittest.TestCase):
     def test_version_3_migrates_to_4(self):
         old = v3_config()
-        migrated = config.migrate(old)
-        self.assertEqual(migrated["version"], 4)
+        migrated = config._v3_to_v4(copy.deepcopy(old))
+        self.assertEqual(config.migrate(old)["version"], config.CURRENT_VERSION)
         self.assertEqual(old["version"], 3)  # the input is untouched
         self.assertNotIn("adaptive_bulbs", block(old))
         # A version-3 unit was what named a bulb for the module: its bulbs are adaptive.
@@ -122,7 +132,10 @@ class MigrationTest(unittest.TestCase):
         living(old)["adaptive"] = False
         del living(old)["adaptive_config"]
         migrated = config.migrate(old)
-        self.assertEqual({**migrated, "version": 3}, old)
+        # Version 5 fills the profiles (each version-4 profile was an id and a name).
+        self.assertEqual(
+            {**migrated, "version": 3, "schedule_profiles": old["schedule_profiles"]}, old
+        )
         self.assertEqual(config.loads(old)["rooms"], migrated["rooms"])
 
     def test_a_room_just_flagged_in_version_3_stays_all_switched_only(self):
@@ -173,7 +186,197 @@ class MigrationTest(unittest.TestCase):
         from unittest import mock
 
         with mock.patch.object(config, "CURRENT_VERSION", 3):
+            self.assertIn("newer Light Map", problems_of(config.migrate, v4_config())[0])
+
+    def test_an_older_light_map_refuses_version_5(self):
+        from unittest import mock
+
+        with mock.patch.object(config, "CURRENT_VERSION", 4):
             self.assertIn("newer Light Map", problems_of(config.migrate, committed_config())[0])
+
+
+class ScheduleProfileTest(unittest.TestCase):
+    """Version 5 (P5.2a): a schedule profile's sections, triggers and collision policy, and
+    the analyser's tuning (`learning`)."""
+
+    def test_version_4_backfills_every_profile_with_the_standard_schedule(self):
+        old = v4_config()
+        loaded = config.loads(old)
+        self.assertEqual(old["schedule_profiles"][1], {"id": "evening"})  # input untouched
+        self.assertEqual(loaded, committed_config())
+        default, evening = loaded["schedule_profiles"]
+        self.assertEqual(default, {"id": "default", "name": "Default", **schedule()})
+        self.assertEqual(evening, {"id": "evening", **schedule()})  # no name invented
+
+    def test_the_standard_schedule_is_the_predecessors(self):
+        self.assertEqual(config.standard_schedule(), schedule())
+        # A fresh copy each time: a caller filling a profile can't change the next one.
+        config.standard_schedule()["sections"].clear()
+        self.assertEqual(len(config.standard_schedule()["sections"]), 6)
+
+    def test_the_real_minimal_default_profile_survives(self):
+        # Exactly what P5.1's blank() wrote, and so what a house with no adaptive room holds.
+        v4_blank = {
+            "version": 4,
+            "homeassistant": {"verify_ssl": True},
+            "system": {},
+            "rooms": [],
+            "unassigned": [],
+            "schedule_profiles": [{"id": "default", "name": "Default"}],
+            "learning": {},
+        }
+        loaded = config.loads(v4_blank)
+        self.assertEqual(loaded["version"], 5)
+        self.assertEqual(
+            loaded["schedule_profiles"], [{"id": "default", "name": "Default", **schedule()}]
+        )
+        self.assertEqual(config.loads(config.blank()), loaded)
+
+    def test_what_a_version_4_profile_held_is_kept_or_reported_never_replaced(self):
+        old = v4_config()
+        old["schedule_profiles"][1]["collision_policy"] = "clamp"
+        old["schedule_profiles"][1]["min_section_minutes"] = 20
+        evening = config.loads(old)["schedule_profiles"][1]
+        self.assertEqual(
+            (evening["collision_policy"], evening["min_section_minutes"]), ("clamp", 20)
+        )
+        self.assertEqual(evening["sections"], schedule()["sections"])
+        old = v4_config()
+        old["schedule_profiles"][1]["sections"] = "evenings"
+        self.assertTrue(
+            any("schedule_profiles/1/sections" in p for p in problems_of(config.loads, old))
+        )
+
+    def test_the_collision_settings_default_but_the_sections_dont(self):
+        doc = committed_config()
+        del doc["schedule_profiles"][1]["collision_policy"]
+        del doc["schedule_profiles"][1]["min_section_minutes"]
+        evening = config.loads(doc)["schedule_profiles"][1]
+        self.assertEqual(
+            (evening["collision_policy"], evening["min_section_minutes"]), ("collapse", 30)
+        )
+        doc = committed_config()
+        del doc["schedule_profiles"][1]["sections"]
+        problems = problems_of(config.loads, doc)
+        self.assertTrue(any("'sections' is a required property" in p for p in problems), problems)
+
+    def test_the_sections_are_the_six_once_each_in_canonical_order(self):
+        doc = committed_config()
+        sections = doc["schedule_profiles"][0]["sections"]
+        sections[0], sections[1] = sections[1], sections[0]
+        problems = problems_of(config.loads, doc)
+        self.assertTrue(any("schedule profile 'default': sections must be" in p for p in problems))
+        doc = committed_config()
+        doc["schedule_profiles"][0]["sections"][5] = copy.deepcopy(
+            doc["schedule_profiles"][0]["sections"][4]
+        )
+        self.assertTrue(problems_of(config.loads, doc))
+        doc = committed_config()
+        doc["schedule_profiles"][0]["sections"].pop()
+        self.assertTrue(problems_of(config.loads, doc))
+
+    def test_a_trigger_must_be_one_of_the_four_shapes(self):
+        bad = [
+            {"type": "clock", "time": "25:00"},
+            {"type": "clock", "time": "7:30"},
+            {"type": "sun", "event": "noon"},
+            {"type": "sun", "event": "sunset", "offset_minutes": 800},
+            {"type": "sun", "event": "sunset", "offset_minutes": 1.5},
+            {"type": "earliest", "of": [{"type": "clock", "time": "05:30"}]},
+            {"type": "latest", "of": [{"type": "clock", "time": "05:30"}, {"type": "x"}]},
+            {"type": "clock", "time": "05:30", "event": "sunrise"},
+        ]
+        for trigger in bad:
+            with self.subTest(trigger):
+                doc = committed_config()
+                doc["schedule_profiles"][0]["sections"][4]["trigger"] = trigger
+                problems = problems_of(config.loads, doc)
+                self.assertTrue(any("schedule_profiles/0/sections/4" in p for p in problems))
+        doc = committed_config()
+        doc["schedule_profiles"][0]["sections"][4]["trigger"] = {
+            "type": "latest",
+            "of": [
+                {"type": "clock", "time": "20:30"},
+                {
+                    "type": "earliest",
+                    "of": [{"type": "sun", "event": "sunset"}, {"type": "clock", "time": "23:00"}],
+                },
+            ],
+        }
+        config.loads(doc)
+
+    def test_priority_and_policy_are_checked(self):
+        for path, value in (
+            (("sections", 0, "priority"), 1001),
+            (("sections", 0, "priority"), -1),
+            (("collision_policy",), "shuffle"),
+            (("min_section_minutes",), -5),
+        ):
+            with self.subTest(path):
+                doc = committed_config()
+                target = doc["schedule_profiles"][0]
+                for part in path[:-1]:
+                    target = target[part]
+                target[path[-1]] = value
+                self.assertTrue(problems_of(config.loads, doc))
+
+    def test_a_section_may_carry_a_name_and_the_minimum_is_a_minute(self):
+        doc = committed_config()
+        doc["schedule_profiles"][0]["sections"][0]["name"] = "Early"
+        self.assertEqual(config.loads(doc)["schedule_profiles"][0]["sections"][0]["name"], "Early")
+        doc["schedule_profiles"][0]["min_section_minutes"] = 0
+        # Two sections at one instant would leave one never in force.
+        self.assertTrue(any("min_section_minutes" in p for p in problems_of(config.loads, doc)))
+
+    def test_a_bad_trigger_names_what_is_wrong(self):
+        for trigger, expected in (
+            (
+                {"type": "clock", "time": "24:00"},
+                "sections/4/trigger: time: '24:00' does not match",
+            ),
+            ({"type": "sun", "event": "noon"}, "trigger: event: 'noon' is not one of"),
+            (
+                {
+                    "type": "latest",
+                    "of": [{"type": "clock", "time": "05:30"}, {"type": "clock", "time": "5:30"}],
+                },
+                "trigger: of/1/time: '5:30' does not match",
+            ),
+            ({"type": "earliest", "of": [{"type": "clock", "time": "05:30"}]}, "of: "),
+        ):
+            with self.subTest(trigger):
+                doc = committed_config()
+                doc["schedule_profiles"][0]["sections"][4]["trigger"] = trigger
+                problems = problems_of(config.loads, doc)
+                self.assertTrue(any(expected in p for p in problems), problems)
+
+    def test_learning_is_checked_and_every_field_optional(self):
+        doc = committed_config()
+        doc["learning"] = {
+            "lookback_days": 14,
+            "publish_delay_days": 0,
+            "bootstrap_min_days": 3,
+            "reactive_weight": 4.5,
+            "post_reactive_boost": [2, 1.5],
+            "recency_weights": [
+                {"max_age_days": 7, "weight": 2},
+                {"max_age_days": None, "weight": 0},  # older days don't count
+            ],
+            "confidence": {"high_weight_threshold": 20, "low_multiplier": 0.25},
+        }
+        self.assertEqual(config.loads(doc)["learning"], doc["learning"])
+        for key, value in (
+            ("lookback_days", 0),
+            ("reactive_weight", 0.5),
+            ("recency_weights", [{"max_age_days": 3}]),
+            ("recency_weights", []),
+            ("confidence", {"high": 1}),
+            ("lookbak_days", 21),
+        ):
+            with self.subTest(key):
+                doc = committed_config()
+                doc["learning"] = {key: value}
+                self.assertTrue(problems_of(config.loads, doc))
 
 
 class CrossCheckTest(unittest.TestCase):

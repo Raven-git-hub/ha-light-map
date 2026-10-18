@@ -11,14 +11,18 @@ in `app.modules`, so a module can be replaced or added without touching the trun
 seams are registries filled here: a module's namespace (`core.generate.register_namespace`),
 its bridge brightness (`core.switching.register_bridge_brightness`), and its observation
 (`Observer.subscribe`, `register_guard`, `register_section`). The core's own `lm` lane
-registers itself. Adaptive Light's config and editor are in (P5.0) and so is its generator
-(P5.1), but the generator is wired in only by the cutover switch, `ADAPTIVE_ENABLED`, which
-is off until P6 (see `wire_modules`); its runtime arrives in P5.2.
+registers itself. Adaptive Light's config and editor are in (P5.0), and so are its generator
+(P5.1) and its engine (P5.2a), but the module is wired in only by the cutover switch,
+`ADAPTIVE_ENABLED`, which is off until P6 (see `wire_modules`): its generator and bridge
+brightness here, and its runtime (which hooks into the observer: the section, the guard,
+the observations) in the lifespan, only when the module is wired.
 
 The lifespan also opens the store (the CSV archive and its query layer, beside the config
 unless `system.data_dir` says otherwise) and starts the observer (P4), which subscribes to
-HA's events once the config has a room with bulbs. Every config save tells the observer to
-re-read the config. Without HA, or with a data directory that can't be opened, the Map
+HA's events once the config has a room with bulbs, and, with the adaptive module wired in,
+its runtime (`app.modules.adaptive.runtime`: crossovers, the nightly analysis, the
+almanac's publish). Every config save tells the observer to re-read the config (the runtime
+re-reads it every tick). Without HA, or with a data directory that can't be opened, the Map
 still serves, and `/api/status` says what is missing.
 
 The HTTP surface is the Map tab's (P3), the Log tab's (P4) and the adaptive editor's
@@ -74,7 +78,8 @@ Hard rules:
   refused (409 `coexistence`) until the request acknowledges it (`acknowledge_live`).
   The adaptive lane's `al_` names are the live system's own, so the adaptive module stays
   unwired (`ADAPTIVE_ENABLED` off) until cutover: nothing generates, previews or writes
-  `al_`, and the switching plane's output is exactly P5.0's.
+  `al_`, no adaptive runtime runs (nothing fires a scene or publishes an almanac), and the
+  switching plane's output is exactly P5.0's.
 - The HA token never reaches the config or a response.
 - What changes HA or the config is recorded in the event log; a log entry that can't be
   written never fails the action it records.
@@ -107,6 +112,7 @@ from app.core.inventory import InventoryError, NotFound
 from app.core.observe import Observer
 from app.core.store import LEVELS, Store
 from app.modules.adaptive import generate as adaptive_generate
+from app.modules.adaptive.runtime import AdaptiveRuntime
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +128,9 @@ log = logging.getLogger(__name__)
 # registered, so `core.generate.namespaces()` is ["lm"], every bridge takes the plain path,
 # and the generated `lm_` lane is byte-identical to P5.0's (tests/golden/lm_only.yaml).
 # On: `al` is generated, reconciled as its own lane by `core.deploy`, and previewed
-# (read-only) beside the switching deploy, and adaptive bulbs' bridges read the almanac.
+# (read-only) beside the switching deploy, adaptive bulbs' bridges read the almanac, and the
+# lifespan starts the adaptive runtime (crossovers, the nightly analysis, the almanac's
+# publish; P5.2a). Off, no runtime is made at all.
 #
 # A constant, not an environment variable: turning it on is a reviewed change made with the
 # cutover, never a deployment setting that could be set early. Tests turn it on in a scope
@@ -677,7 +685,9 @@ def status(request: Request) -> dict[str, Any]:
         ),
         "coexistence": COEXISTENCE_NOTE,
         # Whether the cutover switch has wired the adaptive lane in (off until P6).
-        "adaptive": {"wired": adaptive_generate.PREFIX in generate_mod.namespaces()},
+        "adaptive": {"wired": adaptive_wired_in()},
+        # Its runtime, only when there is one.
+        **({"adaptive_runtime": state.runtime.status()} if state.runtime is not None else {}),
     }
 
 
@@ -1399,7 +1409,9 @@ def wire_modules(*, adaptive: bool = ADAPTIVE_ENABLED) -> None:
     the cutover switch (off until P6: nothing is registered, and the core runs exactly as
     in P5.0). `adaptive=True` registers Adaptive Light's `al` namespace (its generator and
     what it addresses in HA) and its bridge brightness; the registries are the process's,
-    so a test does it with them patched (`tests.fakes.adaptive_wired`)."""
+    so a test does it with them patched (`tests.fakes.adaptive_wired`). The module's
+    observation seam needs the observer, which exists only in the lifespan: there, a wired
+    module (`adaptive_wired_in`) gets its runtime."""
     if adaptive:
         generate_mod.register_namespace(
             adaptive_generate.PREFIX,
@@ -1412,6 +1424,12 @@ def wire_modules(*, adaptive: bool = ADAPTIVE_ENABLED) -> None:
 
 
 wire_modules()
+
+
+def adaptive_wired_in() -> bool:
+    """Whether the adaptive module is wired in (the cutover switch, or a test's own
+    wiring): the one signal the lifespan's runtime and `/api/status` both follow."""
+    return adaptive_generate.PREFIX in generate_mod.namespaces()
 
 
 # -- The app ---------------------------------------------------------------------------
@@ -1547,6 +1565,7 @@ def create_app(
             log.warning("the store did not open, so nothing is observed: %s", exc)
             data = None
         observer = None
+        runtime = None
         if not (ha is None if observe is None else observe):
             app.state.observer_reason = "observation is off for this app"
         elif app.state.ha is None:
@@ -1556,10 +1575,21 @@ def create_app(
         else:
             observer = Observer(app.state.ha, data, app.state.store.read)
             app.state.observer = observer
+            if adaptive_wired_in():
+                # Only with the module wired in (the cutover switch, off until P6): the
+                # runtime fires the al_ scenes and publishes the almanac, which are the live
+                # ha-adaptive-light's own names. Hooked in before the observer starts, so
+                # its first subscription already waits on the adaptive guards.
+                runtime = AdaptiveRuntime(app.state.ha, observer, data, app.state.store.read)
+                app.state.runtime = runtime
+                await runtime.start()
             await observer.start()
         try:
             yield
         finally:
+            if runtime is not None:
+                app.state.runtime = None
+                await runtime.stop()
             if observer is not None:
                 app.state.observer = None
                 await observer.stop()
@@ -1583,6 +1613,7 @@ def create_app(
     app.state.data_error = "not opened yet"
     app.state.observer = None
     app.state.observer_reason = "not started yet"
+    app.state.runtime = None  # the adaptive runtime, only with the module wired in
     app.state.allowed_hosts = hosts
     # Outermost, so a request for an unknown Host reaches nothing, static files included.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False)

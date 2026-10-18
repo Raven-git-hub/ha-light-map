@@ -33,9 +33,9 @@ class SchemaTest(unittest.TestCase):
             config.validate(doc)
             config.cross_check(doc)
 
-    def test_minimal_document_validates_after_defaults(self):
+    def test_minimal_document_validates_after_migration_and_defaults(self):
         doc = config.apply_defaults(
-            {"version": 1, "rooms": [], "schedule_profiles": [{"id": "default"}]}
+            config.migrate({"version": 1, "rooms": [], "schedule_profiles": [{"id": "default"}]})
         )
         config.validate(doc)
 

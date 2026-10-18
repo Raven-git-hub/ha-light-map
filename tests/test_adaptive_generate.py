@@ -98,16 +98,26 @@ class CutoverSwitchTest(unittest.TestCase):
                 generate.generate(committed_config(), "al"), al.generate(committed_config())
             )
         bridges = by_id(lm["automation"])
+        plain = {}
         for bulb_id in ["kitchen_strip", "porch"]:
-            on = bridges[f"lm_bridge_{bulb_id}"]["actions"][0]["choose"][0]["sequence"][0]
+            [on] = bridges[f"lm_bridge_{bulb_id}"]["actions"][0]["choose"][0]["sequence"]
             self.assertNotIn("data", on, bulb_id)
         for bulb_id in ADAPTIVE:
-            on = bridges[f"lm_bridge_{bulb_id}"]["actions"][0]["choose"][0]["sequence"][0]
-            self.assertEqual(list(on["data"]), ["brightness"])
-            self.assertIn("sensor.al_almanac_living_room", on["data"]["brightness"])
-        # Only those bridges' data differs from the switch-off output.
+            soft_on = bridges[f"lm_bridge_{bulb_id}"]["actions"][0]["choose"][0]
+            gate, choice = soft_on["sequence"]
+            self.assertEqual(list(gate["variables"]), ["bridge_gate", "bridge_brightness"])
+            for value in gate["variables"].values():
+                self.assertIn("sensor.al_almanac_living_room", value)
+            [with_target] = choice["then"]
+            [without] = choice["else"]
+            self.assertEqual(with_target["data"], {"brightness": "{{ bridge_brightness }}"})
+            self.assertNotIn("data", without)
+            plain[bulb_id] = without
+        # Only those bridges' soft-on step differs from the switch-off output: put the plain
+        # turn_on back, and it is P5.0's byte for byte.
         for bulb_id in ADAPTIVE:
-            del bridges[f"lm_bridge_{bulb_id}"]["actions"][0]["choose"][0]["sequence"][0]["data"]
+            soft_on = bridges[f"lm_bridge_{bulb_id}"]["actions"][0]["choose"][0]
+            soft_on["sequence"] = [plain[bulb_id]]
         self.assertEqual(generate.to_yaml({"lm": lm}), (GOLDEN / "lm_only.yaml").read_text())
         # And off again afterwards: the test's wiring is its own.
         self.assertEqual(generate.namespaces(), ["lm"])
@@ -479,18 +489,25 @@ class BridgeProviderTest(unittest.TestCase):
         room, found = inventory.find_bulb(doc, bulb_id)
         return al.bridge_brightness(doc, room, found)
 
-    def test_an_adaptive_bulb_gets_a_template_and_nothing_else(self):
-        data = self.provide(committed_config(), "chandelier_2")
-        self.assertEqual(list(data), ["brightness"])
-        self.assertLessEqual(set(data), set(switching.BRIGHTNESS_KEYS))
-        template = data["brightness"]
-        for read in (
-            "states('input_select.al_scene_living_room')",
-            "state_attr('sensor.al_almanac_living_room'",
-            "get('chandelier')",
-            "state_attr('light.chandelier_2', 'brightness')",
-        ):
-            self.assertIn(read, template)
+    def test_an_adaptive_bulb_gets_a_gated_template_and_nothing_else(self):
+        fragment = self.provide(committed_config(), "chandelier_2")
+        self.assertIsInstance(fragment, switching.GatedBrightness)
+        self.assertEqual(list(fragment.data), ["brightness"])
+        self.assertLessEqual(set(fragment.data), set(switching.BRIGHTNESS_KEYS))
+        for template in (fragment.when, fragment.data["brightness"]):
+            for read in (
+                "states('input_select.al_scene_living_room')",
+                "state_attr('sensor.al_almanac_living_room'",
+                "get('chandelier')",
+            ):
+                self.assertIn(read, template)
+            # Nothing made up from the bulb's own state any more: with no target, the
+            # bridge's plain turn_on brings it back at its own level.
+            self.assertNotIn("light.chandelier_2", template)
+        # And no made-up level to fall back on: when the gate is false the data is rendered
+        # but not used, so its fallback is 0, never a brightness like 255.
+        self.assertTrue(fragment.data["brightness"].endswith("{{ t | int(0) }}"))
+        self.assertNotIn("255", fragment.data["brightness"])
 
     def test_every_other_bulb_keeps_the_plain_path(self):
         doc = with_switched_only(committed_config())
@@ -513,7 +530,20 @@ class BridgeProviderTest(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(on["sequence"][0]["target"], {"entity_id": "light.reading_lamp"})
+        # The gate only chooses between two turn_ons, both on the bridge's own target and
+        # both inside the soft-on branch; the provider's data is all that differs.
+        gate, choice = on["sequence"]
+        self.assertEqual(list(gate), ["variables"])
+        [with_target], [without] = choice["then"], choice["else"]
+        for turn_on in (with_target, without):
+            self.assertEqual(turn_on["action"], "light.turn_on")
+            self.assertEqual(turn_on["target"], {"entity_id": "light.reading_lamp"})
+        self.assertEqual(set(with_target) - set(without), {"data"})
+        off = by_id(bridges)["lm_bridge_reading_lamp"]["actions"][0]["choose"][1]
+        self.assertEqual(
+            off["sequence"],
+            [{"action": "light.turn_off", "target": {"entity_id": "light.reading_lamp"}}],
+        )
 
         def also(config_, room, bulb_):
             return {"brightness": 1} if bulb_["id"] == "reading_lamp" else None
@@ -660,63 +690,99 @@ class BehaviourTest(unittest.TestCase):
         self.assertEqual(self.light("chandelier_2"), ("off", None))
         self.assertEqual(self.ha.state("input_boolean.lm_soft_chandelier_2"), "off")
 
-    def test_the_bridge_renders_a_valid_brightness_on_every_path(self):
+    def test_the_bridge_applies_a_target_and_otherwise_takes_the_plain_path(self):
         bridge = by_id(self.ha.automations)["lm_bridge_chandelier_2"]
+        target = {"day": {"units": {"chandelier": 140}}}
+        # (case, the select, the almanac's rows, the brightness it comes on at, data sent).
+        # Chandelier 2 is off, and was at 60 when it went off.
         cases = [
-            ("no almanac, bulb off", None, None, "off", 255),
-            ("no almanac, bulb on", None, None, "on", 77),
-            ("a target", "day", {"day": {"units": {"chandelier": 140}}}, "off", 140),
-            ("a float target", "day", {"day": {"units": {"chandelier": 140.6}}}, "off", 140),
+            ("a target", "day", target, 140, {"brightness": 140}),
+            (
+                "a float target",
+                "day",
+                {"day": {"units": {"chandelier": 140.6}}},
+                140,
+                {"brightness": 140},
+            ),
+            ("the lowest", "day", {"day": {"units": {"chandelier": 1}}}, 1, {"brightness": 1}),
+            (
+                "the highest",
+                "day",
+                {"day": {"units": {"chandelier": 255}}},
+                255,
+                {"brightness": 255},
+            ),
+            ("no almanac", None, None, 60, {}),
             (
                 "held off: a person's power decision",
                 "day",
                 {"day": {"units": {"chandelier": "off"}}},
-                "off",
-                255,
+                60,
+                {},
             ),
-            ("nothing learned", "day", {"day": {"units": {"chandelier": None}}}, "on", 77),
-            (
-                "another section's row only",
-                "night",
-                {"day": {"units": {"chandelier": 140}}},
-                "off",
-                255,
-            ),
-            (
-                "the select unavailable",
-                "unavailable",
-                {"day": {"units": {"chandelier": 140}}},
-                "off",
-                255,
-            ),
-            ("the select missing", None, {"day": {"units": {"chandelier": 140}}}, "off", 255),
-            ("an odd row", "day", {"day": ["chandelier"]}, "off", 255),
-            ("out of range", "day", {"day": {"units": {"chandelier": 999}}}, "off", 255),
+            ("nothing learned", "day", {"day": {"units": {"chandelier": None}}}, 60, {}),
+            ("another section's row only", "night", target, 60, {}),
+            ("the select unavailable", "unavailable", target, 60, {}),
+            ("the select missing", None, target, 60, {}),
+            ("an odd row", "day", {"day": ["chandelier"]}, 60, {}),
+            ("an odd units", "day", {"day": {"units": ["chandelier"]}}, 60, {}),
+            ("out of range", "day", {"day": {"units": {"chandelier": 999}}}, 60, {}),
+            ("zero", "day", {"day": {"units": {"chandelier": 0}}}, 60, {}),
+            ("a boolean", "day", {"day": {"units": {"chandelier": True}}}, 60, {}),
+            ("a number as text", "day", {"day": {"units": {"chandelier": "140"}}}, 60, {}),
         ]
-        for name, section, rows, bulb_state, expected in cases:
+        for name, section, rows, expected, sent in cases:
             with self.subTest(name):
                 self.setUp()
                 self.ha.set("input_select.al_scene_living_room", section)
                 if rows is not None:
                     self.publish(rows)
-                self.ha.set(
-                    "light.chandelier_2",
-                    bulb_state,
-                    {"brightness": 77 if bulb_state == "on" else None},
-                )
+                self.ha.memory["light.chandelier_2"] = 60
                 self.ha.set("input_boolean.lm_soft_chandelier_2", "on")
                 self.assertTrue(self.ha.run(bridge))
                 self.assertEqual(self.light("chandelier_2"), ("on", expected))
                 [(service, entity_id, data, by)] = self.ha.calls
                 self.assertEqual((service, by), ("light.turn_on", "lm_bridge_chandelier_2"))
-                self.assertIsInstance(data["brightness"], int)
-                self.assertTrue(1 <= data["brightness"] <= 255)
-        # A bulb on but reporting brightness 0 is never sent 0 (which would turn it off).
+                self.assertEqual(data, sent)
+        # A bulb already on (switched out of band) with no target keeps its level.
         self.setUp()
-        self.ha.set("light.chandelier_2", "on", {"brightness": 0})
+        self.ha.set("light.chandelier_2", "on", {"brightness": 77})
         self.ha.set("input_boolean.lm_soft_chandelier_2", "on")
         self.ha.run(bridge)
-        self.assertEqual(self.light("chandelier_2"), ("on", 1))
+        self.assertEqual(self.light("chandelier_2"), ("on", 77))
+        self.assertEqual(self.ha.calls[0][2], {})
+
+    def test_a_unit_held_off_switched_on_by_hand_comes_back_at_its_own_level(self):
+        # The P5.1 must-fix. The chandelier is held off for sleep: the crossover holds its
+        # soft switches off and the bridges turn the bulbs off (chandelier 1 was at 128). At
+        # 3 a.m. a hard switch turns chandelier 1's soft switch on: the unit has no on-target
+        # for the section, so the bridge takes the plain turn_on and the bulb comes back at
+        # its own last level, as a switched-only bulb would. It came on at 255 before.
+        self.publish({"sleep": {"units": {"chandelier": "off", "reading": 20}}})
+        self.crossover("sleep")
+        self.assertEqual(self.light("chandelier_1"), ("off", None))
+        self.assertEqual(self.ha.state("input_boolean.lm_soft_chandelier_1"), "off")
+        self.ha.calls.clear()
+        wall = {
+            "id": "lm_hard_wall",
+            "actions": [
+                {
+                    "action": "input_boolean.turn_on",
+                    "target": {"entity_id": "input_boolean.lm_soft_chandelier_1"},
+                }
+            ],
+        }
+        self.ha.run(wall)
+        self.assertEqual(self.light("chandelier_1"), ("on", 128))
+        self.assertNotEqual(self.light("chandelier_1")[1], 255)
+        [bridge_call] = [c for c in self.ha.calls if c[3] == "lm_bridge_chandelier_1"]
+        self.assertEqual(bridge_call[:3], ("light.turn_on", "light.chandelier_1", {}))
+        # The reading lamp has a target for sleep: switched on by hand, it comes on at it.
+        self.ha.set("light.reading_lamp", "off", {"brightness": None})
+        self.ha.set("input_boolean.lm_soft_reading_lamp", "off")
+        wall["actions"][0]["target"]["entity_id"] = "input_boolean.lm_soft_reading_lamp"
+        self.ha.run(wall)
+        self.assertEqual(self.light("reading_lamp"), ("on", 20))
 
     def maintain(self, lux, row=None, section="afternoon"):
         self.setUp()

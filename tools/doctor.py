@@ -9,9 +9,11 @@ LM_HA_TOKEN (or LM_HA_TOKEN_FILE):
 
 It checks REST and the WebSocket, reads the Area, entity, and device registries, and
 prints the rooms Light Map would build from them, with anything that needs attention.
-Given `--config`, it also shows what a sync would change in that committed snapshot, and
-what deploying its switching plane (the `lm_` lane) would do: a preview of the plan, or why
-the deploy would be refused.
+Given `--config`, it also shows what a sync would change in that committed snapshot, what
+deploying its switching plane (the `lm_` lane) would do (a preview of the plan, or why the
+deploy would be refused), and today's section boundaries for each schedule profile its
+adaptive rooms use, from HA's own location and time zone (P5.2a; which sections collapse,
+and why).
 
 Strictly read-only: it never writes to HA, and never writes the config.
 """
@@ -35,6 +37,7 @@ import app.main  # noqa: E402,F401
 from app.core import config as config_mod  # noqa: E402
 from app.core import deploy, inventory, switching  # noqa: E402
 from app.core.ha import HAAuthError, HAClient, HAError  # noqa: E402
+from app.modules.adaptive import scheduler  # noqa: E402
 
 OK, WARN, FAIL = "  ok  ", " warn ", " FAIL "
 
@@ -117,6 +120,7 @@ async def _run(args: argparse.Namespace) -> int:
         _check_snapshot(report, committed, snapshot)
         if committed is not None:
             await _check_switching(report, ha, committed)
+            await _check_schedule(report, ha, committed)
     return report.summary()
 
 
@@ -297,6 +301,38 @@ async def _check_switching(report: Report, ha: HAClient, committed: Mapping[str,
         )
     else:
         report.record(OK, "The switching plane in HA matches the committed config")
+
+
+async def _check_schedule(report: Report, ha: HAClient, committed: Mapping[str, Any]) -> None:
+    """Today's section boundaries for each profile an adaptive room uses, at HA's location."""
+    used = sorted(
+        {
+            room["adaptive_config"]["schedule_profile"]
+            for room in committed.get("rooms", [])
+            if room.get("adaptive") is True and room.get("adaptive_config")
+        }
+    )
+    if not used:
+        return
+    try:
+        location = await ha.get_config()
+        provider = scheduler.provider_for(location)
+    except HAError as exc:
+        report.record(WARN, "Could not read HA's location for the section schedule", str(exc))
+        return
+    except ValueError as exc:
+        report.record(FAIL, "Sun-relative sections can't be computed", str(exc))
+        return
+    today = datetime.now(provider.tzinfo).date()
+    profiles = {p["id"]: p for p in committed.get("schedule_profiles", [])}
+    for profile_id in used:
+        lines = []
+        for b in scheduler.compute_day(profiles[profile_id], provider, today, provider.tzinfo):
+            when = b.planned.strftime("%H:%M") if b.planned else "--:--"
+            lines.append(f"{when} {b.section}" + ("" if b.ran else f" (skipped: {b.reason})"))
+        report.listing(
+            OK, f"Schedule '{profile_id}' today ({today}, {location.get('time_zone')})", lines
+        )
 
 
 if __name__ == "__main__":
