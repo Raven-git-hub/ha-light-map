@@ -25,8 +25,9 @@ almanac's publish). Every config save tells the observer to re-read the config (
 re-reads it every tick). Without HA, or with a data directory that can't be opened, the Map
 still serves, and `/api/status` says what is missing.
 
-The HTTP surface is the Map tab's (P3), the Log tab's (P4) and the adaptive editor's
-(the Config tab, P5.0). Everything under /api/
+The HTTP surface is the Map tab's (P3), the Log tab's (P4), the adaptive editor's (the
+Config tab, P5.0), and the adaptive views' and the schedule editor's (P5.2b). Everything
+under /api/
 answers JSON; an error is `{error, detail, ...}` with `problems` when there are several.
 Every request first passes the Host allowlist (`LM_ALLOWED_HOSTS`, plus `localhost` and
 `127.0.0.1`), which refuses a DNS-rebinding page; it is not authentication.
@@ -36,9 +37,14 @@ Every request first passes the Host allowlist (`LM_ALLOWED_HOSTS`, plus `localho
   switch can take as its source), `/api/log` (the event log, newest first, by minimum
   level, category and room), `/api/rooms/{room}/adaptive_config` (the adaptive editor's
   view of a room: its block, each active bulb's tier, unit and dimmability; the one read
-  of HA's states it makes never fails it).
+  of HA's states it makes never fails it), `/api/rooms/{room}/now`, `/analysis` and
+  `/almanac` (the adaptive views, P5.2b: the schedule from the config and HA's location,
+  the learned data from the store, a live `al_` entity only with the cutover switch on),
+  `/api/schedule_profiles` (the schedule editor's view), and `POST
+  /api/schedule_profiles/check` (a draft's problems and its day today; writes nothing).
 - Config edits, each validate-then-write: `PUT /api/rooms/{room}/adaptive`,
   `PUT /api/rooms/{room}/adaptive_config` (the adaptive editor's save, P5.0),
+  `PUT /api/schedule_profiles` (the schedule editor's save, P5.2b),
   `PUT /api/bulbs/{bulb}/hard_switches`, `PUT /api/bulbs/{bulb}/ignored` (set a light that
   isn't a room bulb aside, or bring it back; P4.1), `POST /api/rooms/{room}/groups`,
   `PUT|DELETE /api/rooms/{room}/groups/{group}`. Each edit of something that exists
@@ -79,7 +85,9 @@ Hard rules:
   The adaptive lane's `al_` names are the live system's own, so the adaptive module stays
   unwired (`ADAPTIVE_ENABLED` off) until cutover: nothing generates, previews or writes
   `al_`, no adaptive runtime runs (nothing fires a scene or publishes an almanac), and the
-  switching plane's output is exactly P5.0's.
+  switching plane's output is exactly P5.0's. Nor do the adaptive views read a live `al_`
+  entity, which until then is the old system's (`_live_state`); the Almanac tab reads the
+  store, never `sensor.al_almanac_`.
 - The HA token never reaches the config or a response.
 - What changes HA or the config is recorded in the event log; a log entry that can't be
   written never fails the action it records.
@@ -90,8 +98,11 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import AsyncIterator, Mapping, Sequence
+import sqlite3
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from datetime import tzinfo as TimeZone
 from pathlib import Path
 from typing import Any
 
@@ -110,7 +121,9 @@ from app.core.deploy import DeployError, StalePreview
 from app.core.ha import HAAuthError, HAClient, HAError
 from app.core.inventory import InventoryError, NotFound
 from app.core.observe import Observer
-from app.core.store import LEVELS, Store
+from app.core.store import LEVELS, Store, StoreError
+from app.modules.adaptive import almanac as adaptive_almanac
+from app.modules.adaptive import analyser, scheduler
 from app.modules.adaptive import generate as adaptive_generate
 from app.modules.adaptive.runtime import AdaptiveRuntime
 
@@ -177,6 +190,20 @@ COEXISTENCE_NOTE = (
     "live, and a bridge acts only when its soft switch flips. A bulb with a hard switch is "
     "live: once deployed, pressing the switch drives the bulb through Light Map, while the "
     "old system still drives it too."
+)
+
+# What the Now tab shows in place of the live adaptive state while the cutover switch is off.
+NOT_LIVE_TITLE = "Adaptive runs at cutover — not live yet"
+NOT_LIVE_NOTE = (
+    "Light Map's adaptive engine is built but switched off until cutover (P6). Until then "
+    "ha-adaptive-light drives this room, and the scene select, guard and hold under these "
+    "names are its own, so Light Map doesn't read them: what is shown here is the schedule "
+    "this room will follow and what Light Map's own store holds."
+)
+
+ALMANAC_SOURCE_NOTE = (
+    "Read from Light Map's own store, never from Home Assistant's sensor.al_almanac_ "
+    "entity, which belongs to ha-adaptive-light until cutover (P6)."
 )
 
 AREAS_NOTE = (
@@ -282,6 +309,16 @@ class AdaptiveConfigEdit(BaseModel):
     # (one definition of its shape: schema/config.schema.json), and normalised by the
     # defaults (the scene matrix reshaped to the units).
     adaptive_config: dict[str, Any]
+    base: str
+
+
+class ScheduleProfilesDraft(BaseModel):
+    # The whole list, checked by the config's own JSON Schema and cross-check (one
+    # definition of a profile's shape: schema/config.schema.json).
+    schedule_profiles: list[dict[str, Any]]
+
+
+class ScheduleProfilesEdit(ScheduleProfilesDraft):
     base: str
 
 
@@ -418,17 +455,22 @@ def room_version(room: Mapping[str, Any]) -> str:
 
 def editor_version(doc: Mapping[str, Any], room: Mapping[str, Any]) -> str:
     """What the adaptive editor's save is made against: the room's adaptive flag and block
-    (`room_version`) and its active-bulb roster. A bulb ignored, moved out or synced in from
-    another tab while the editor is open changes which bulbs the editor may offer without
-    always touching the block (a switched-only bulb's doesn't), so with the block alone a
-    stale editor that then made an ignored bulb adaptive got a validation error (422) the
-    user couldn't act on, rather than a reload (409 `edit_stale`)."""
+    (`room_version`), its active-bulb roster, and the schedule profiles it may choose from.
+    A bulb ignored, moved out or synced in from another tab while the editor is open changes
+    which bulbs the editor may offer without always touching the block (a switched-only
+    bulb's doesn't), so with the block alone a stale editor that then made an ignored bulb
+    adaptive got a validation error (422) the user couldn't act on, rather than a reload
+    (409 `edit_stale`). A profile created or deleted in the schedule editor is the same
+    case for the profile picker."""
     roster = sorted(
         bulb["id"]
         for home, bulb in inventory.active_bulbs(doc)
         if home is not None and home["id"] == room["id"]
     )
-    return fingerprint({"room": room_version(room), "bulbs": roster})
+    # The profiles its picker offers (P5.2b): one deleted in the schedule editor while this
+    # editor is open, and selected in it, made its save a 422 about a missing profile.
+    profiles = [p.get("id") for p in doc.get("schedule_profiles", [])]
+    return fingerprint({"room": room_version(room), "bulbs": roster, "profiles": profiles})
 
 
 def _commit(
@@ -991,6 +1033,711 @@ async def save_adaptive_config(
         return {**result, "changes": changes, "version": editor_version(proposed, after)}
 
 
+# -- The adaptive views (P5.2b) ---------------------------------------------------------
+#
+# The Now, Analysis and Almanac tabs, read-only, and the schedule-profile editor. They read
+# three things: the config and HA's location (the schedule, and the time zone a day is
+# counted in), Light Map's own store (the observations and the almanac snapshots), and,
+# only with the cutover switch on, the live `al_` entities. Until cutover those are
+# ha-adaptive-light's (the scene select, the guard, the hold, and `sensor.al_almanac_`, on
+# the same HA, under the same names): read with the switch off, they would show the old
+# system's state as if it were Light Map's. So `_live_state` is the one place an `al_`
+# entity is read, and with the switch off it reads no HA state at all. The almanac comes
+# from the store, never from the sensor.
+
+
+def _hhmm(moment: datetime | None) -> str | None:
+    return moment.strftime("%H:%M") if moment is not None else None
+
+
+def _profile(doc: Mapping[str, Any], profile_id: str) -> Mapping[str, Any]:
+    profile = next((p for p in doc.get("schedule_profiles", []) if p["id"] == profile_id), None)
+    if profile is None:
+        raise NotFound(f"no schedule profile '{profile_id}'")
+    return profile
+
+
+def _profile_rooms(doc: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The adaptive rooms, by name, each with the schedule profile it selects."""
+    return [
+        {
+            "id": room["id"],
+            "name": room["name"],
+            "profile": room["adaptive_config"].get("schedule_profile", config_mod.DEFAULT_PROFILE),
+        }
+        for room in sorted(
+            adaptive_generate.adaptive_rooms(doc), key=lambda r: (r["name"].casefold(), r["id"])
+        )
+    ]
+
+
+def schedule_version(doc: Mapping[str, Any]) -> str:
+    """What the schedule editor's save is made against: the profiles, and which profile
+    each adaptive room selects. The editor names the rooms a profile is shared with and
+    offers to delete one no room uses, so a room switched to a profile in another tab must
+    make its save stale (409), not let it delete a profile in use (refused only by the
+    cross-check, as a broken reference) or warn about the wrong rooms."""
+    return fingerprint(
+        {
+            "profiles": doc.get("schedule_profiles", []),
+            "rooms": {r["id"]: r["profile"] for r in _profile_rooms(doc)},
+        }
+    )
+
+
+def schedule_day(
+    profile: Mapping[str, Any], provider: scheduler.SunProvider, now: datetime, tz: TimeZone
+) -> dict[str, Any]:
+    """One profile's day at a place, for the Now tab and the schedule editor: today's six
+    boundaries (`scheduler.compute_day`) in chronological order, each with its start and end
+    (`HH:MM`, in `tz`, HA's time zone), its trigger and effective priority, and whether it
+    runs, was moved later (a clamp) or is skipped today, and why; and the section in force at
+    `now` (`scheduler.active_section_at`), which before the day's first boundary is
+    yesterday's last (`carried_over`). Pure: the scheduler's computation, shaped for JSON."""
+    local = now.astimezone(tz)
+    today = local.date()
+    boundaries = scheduler.compute_day(profile, provider, today, tz)
+    try:
+        section, started = scheduler.active_section_at(profile, provider, local, tz)
+    except scheduler.SunUnavailable:
+        current = None  # no section has started in the days looked back over
+    else:
+        current = {
+            "section": section,
+            "since": _hhmm(started),
+            "since_date": started.date().isoformat(),
+            "carried_over": started.date() != today,
+        }
+    specs = {s["id"]: s for s in profile.get("sections", [])}
+    minimum = profile.get("min_section_minutes", config_mod.DEFAULT_MIN_SECTION_MINUTES)
+    entries = []
+    previous = None  # the last section kept, chronologically: the one a clamp moved past
+    for boundary in boundaries:
+        spec = specs.get(boundary.section, {})
+        clamped = boundary.ran and boundary.reason is not None
+        if clamped:
+            # The scheduler's reason gives the gap as a timedelta ("0:30:00"); say it in
+            # the profile's own terms.
+            reason = f"moved later, to start {minimum} min after {previous}"
+        else:
+            reason = boundary.reason
+        entries.append(
+            {
+                "section": boundary.section,
+                "trigger": spec.get("trigger"),
+                "priority": boundary.priority,
+                "default_priority": "priority" not in spec,
+                # A collapsed section keeps the time it would have started, when it had one.
+                "start": _hhmm(boundary.planned),
+                "ends": _hhmm(boundary.ends) if boundary.ran else None,
+                "outcome": "collapsed" if not boundary.ran else "clamped" if clamped else "ran",
+                "reason": reason,
+                "current": bool(
+                    current
+                    and boundary.ran
+                    and boundary.section == current["section"]
+                    and boundary.planned == started
+                ),
+            }
+        )
+        if boundary.ran:
+            previous = boundary.section
+    return {
+        "date": today.isoformat(),
+        "now": _hhmm(local),
+        "time_zone": getattr(tz, "key", str(tz)),
+        "boundaries": entries,
+        "current": current,
+    }
+
+
+async def _location(request: Request) -> tuple[scheduler.AstralSunProvider | None, str | None]:
+    """HA's location as a sun provider (its time zone with it), or None and why not. Reads
+    HA's `/api/config` only, never a state, and never fails the view: without it there is
+    no schedule (a sun-relative boundary needs the place), and the view says so."""
+    ha = request.app.state.ha
+    if ha is None:
+        return None, f"Home Assistant is not configured ({request.app.state.ha_error})"
+    try:
+        location = await ha.get_config()
+    except Exception as exc:  # noqa: BLE001 - whatever went wrong, the view still serves
+        if not isinstance(exc, HAError):
+            log.warning("reading HA's location for an adaptive view failed: %r", exc)
+        return (
+            None,
+            f"Home Assistant's location could not be read ({str(exc) or type(exc).__name__})",
+        )
+    if not isinstance(location, Mapping):
+        return None, "Home Assistant's location could not be read (its answer was not its config)"
+    try:
+        return scheduler.provider_for(location), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _day_clock(
+    request: Request, provider: scheduler.AstralSunProvider | None, error: str | None
+) -> tuple[datetime, dict[str, Any]]:
+    """Now, in HA's time zone (the one a sample's day and a snapshot's `valid_from` are
+    counted in), or in UTC when HA's location can't be read, with a note saying so."""
+    now = request.app.state.clock()
+    tz: TimeZone = provider.tzinfo if provider is not None else timezone.utc
+    local = now.astimezone(tz)
+    clock = {
+        "time_zone": getattr(tz, "key", None) or "UTC",
+        "source": "ha" if provider is not None else "utc",
+        "today": local.date().isoformat(),
+        "note": None if provider is not None else f"{error}: days are counted in UTC.",
+    }
+    return local, clock
+
+
+def _data(request: Request, what: str) -> Store:
+    data: Store | None = request.app.state.data
+    if data is None:
+        raise ApiError(
+            503, "store_unavailable", f"{what} is not available: {request.app.state.data_error}"
+        )
+    return data
+
+
+def _store_failed(what: str, exc: Exception) -> ApiError:
+    """A store that fails under a read (closed by a shutdown, a broken database): said as
+    the tab's own answer, as when there is no store, never a bare 500."""
+    log.warning("reading the store for %s failed: %r", what.lower(), exc)
+    return ApiError(503, "store_unavailable", f"{what} is not available: the store failed ({exc})")
+
+
+def _units(doc: Mapping[str, Any], room: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """A room's learning units, sorted by id (the almanac's order), each with its members'
+    names, from the module's own reading of them (`learning_units`: active bulbs only)."""
+    return [
+        {
+            "id": unit["id"],
+            "name": unit["name"],
+            "members": [{"id": b["id"], "name": b["name"]} for b in unit["bulbs"]],
+        }
+        for unit in adaptive_generate.learning_units(doc, room)
+    ]
+
+
+def _newest(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The newest snapshot row, as the almanac's payload picks it."""
+    return max(
+        rows,
+        key=lambda r: (r.get("valid_from") or "", r.get("ts") or "", r.get("id") or 0),
+        default=None,
+    )
+
+
+def _local_time(ts: str | None, tz: TimeZone) -> str | None:
+    """A stored UTC timestamp as `YYYY-MM-DD HH:MM` in HA's time zone."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts).astimezone(tz).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return ts
+
+
+def _current_targets(
+    request: Request,
+    doc: Mapping[str, Any],
+    room: Mapping[str, Any],
+    current: Mapping[str, Any] | None,
+    today: str | None,
+) -> dict[str, Any]:
+    """The section in force's unit targets as the store's almanac would publish them now
+    (`almanac.payload`: `off` for a unit held off, its learned brightness, or None), with
+    the lux target. From Light Map's store, never from HA's sensor."""
+    data: Store | None = request.app.state.data
+    if data is None:
+        return {
+            "available": False,
+            "error": f"The store is not open: {request.app.state.data_error}",
+        }
+    if current is None or today is None:
+        return {"available": False, "error": "No section is in force, so there is no target."}
+    section = current["section"]
+    try:
+        rows = adaptive_almanac.latest(data, room["id"], today=datetime.fromisoformat(today).date())
+    except Exception as exc:  # noqa: BLE001 - the schedule above still serves
+        log.warning("reading the almanac for the Now tab failed: %r", exc)
+        return {"available": False, "error": f"The almanac could not be read ({exc})"}
+    published = adaptive_almanac.payload(room, rows)
+    attributes = published["attributes"][section]
+    scene = room["adaptive_config"]["scenes"][section]
+    learned_lux = (_newest(list(rows.get(section, {}).values())) or {}).get("lux_target")
+    return {
+        "available": True,
+        "section": section,
+        "valid_from": published["state"] if rows else None,
+        "units": [
+            {
+                **unit,
+                "mode": scene["units"][unit["id"]]["mode"],
+                "target": attributes["units"].get(unit["id"]),
+            }
+            for unit in _units(doc, room)
+        ],
+        "lux_target": attributes["lux_target"],
+        "lux_source": (
+            "learned"
+            if learned_lux is not None
+            else "seed" if attributes["lux_target"] is not None else None
+        ),
+        "maintenance_enabled": attributes["maintenance_enabled"],
+    }
+
+
+async def _live_state(request: Request, room: Mapping[str, Any]) -> dict[str, Any]:
+    """The room's live adaptive state: its scene select, guard and hold as HA has them, and
+    the runtime's view of it. Only with the cutover switch on (`adaptive_wired_in`): until
+    cutover these names are ha-adaptive-light's, on the same HA, and reading them would show
+    its state as Light Map's. Off, nothing is read, not even HA's states as a whole (they
+    carry those entities): the not-live note stands in for them."""
+    if not adaptive_wired_in():
+        return {"wired": False, "title": NOT_LIVE_TITLE, "note": NOT_LIVE_NOTE}
+    room_id = room["id"]
+    entities = {
+        "scene": adaptive_generate.scene_select_entity(room_id),
+        "guard": adaptive_generate.guard_entity(room_id),
+        "hold": adaptive_generate.hold_entity(room_id),
+    }
+    runtime = request.app.state.runtime
+    if runtime is not None:
+        status_ = runtime.status()
+        runtime_view = {
+            "running": status_["running"],
+            "section": status_["sections"].get(room_id),
+            "last_analysis": status_["last_analysis"],
+            "published": room_id in status_["published"],
+        }
+    else:
+        runtime_view = None
+    live: dict[str, Any] = {"wired": True, "entities": entities, "runtime": runtime_view}
+    ha = request.app.state.ha
+    if ha is None:
+        return {
+            **live,
+            "available": False,
+            "error": f"Home Assistant is not configured ({request.app.state.ha_error})",
+        }
+    try:
+        states = await ha.get_states()
+    except Exception as exc:  # noqa: BLE001 - the rest of the tab still serves
+        return {
+            **live,
+            "available": False,
+            "error": f"Home Assistant could not be read ({str(exc) or type(exc).__name__})",
+        }
+    found = (
+        {
+            s["entity_id"]: s
+            for s in states
+            if isinstance(s, Mapping) and isinstance(s.get("entity_id"), str)
+        }
+        if isinstance(states, list)
+        else {}
+    )
+    return {
+        **live,
+        "available": True,
+        "error": None,
+        "states": {key: (found.get(entity) or {}).get("state") for key, entity in entities.items()},
+    }
+
+
+@router.get("/rooms/{room_id}/now")
+async def adaptive_now(request: Request, room_id: str) -> dict[str, Any]:
+    """The Now tab for an adaptive room: today's schedule from its profile and HA's location
+    (`schedule_day`), the section in force, its unit targets from the store's almanac, the
+    other rooms sharing the profile, and the live state, which only the cutover switch lets
+    it read (`_live_state`). Writes nothing. 409 `not_adaptive` for a room that isn't."""
+    doc = _store(request).read()
+    room = _adaptive_room(doc, room_id)
+    profile_id = room["adaptive_config"]["schedule_profile"]
+    profile = _profile(doc, profile_id)
+    provider, error = await _location(request)
+    if provider is None:
+        schedule: dict[str, Any] = {"available": False, "error": error}
+    else:
+        try:
+            day = schedule_day(profile, provider, request.app.state.clock(), provider.tzinfo)
+        except Exception as exc:  # a validated profile computes; say so if not
+            log.exception("computing the schedule for the Now tab failed")
+            schedule = {"available": False, "error": f"The schedule could not be computed ({exc})"}
+        else:
+            schedule = {"available": True, "error": None, **day}
+    return {
+        "room": {"id": room["id"], "name": room["name"]},
+        "profile": {
+            "id": profile["id"],
+            "name": profile.get("name") or profile["id"],
+            "collision_policy": profile["collision_policy"],
+            "min_section_minutes": profile["min_section_minutes"],
+            "shared_with": [
+                {"id": r["id"], "name": r["name"]}
+                for r in _profile_rooms(doc)
+                if r["profile"] == profile_id and r["id"] != room_id
+            ],
+        },
+        "schedule": schedule,
+        "targets": _current_targets(
+            request, doc, room, schedule.get("current"), schedule.get("date")
+        ),
+        "live": await _live_state(request, room),
+    }
+
+
+@router.get("/rooms/{room_id}/analysis")
+async def adaptive_analysis(request: Request, room_id: str) -> dict[str, Any]:
+    """The Analysis tab: `analyser.analyse_room` run now over the store, as the nightly pass
+    would for the room (its current units, the config's `learning`, the lookback ending
+    today in HA's time zone), returning the rolling almanac it computes. Records nothing:
+    the store's queries are read-only. 409 `not_adaptive`; 503 `store_unavailable`."""
+    doc = _store(request).read()
+    room = _adaptive_room(doc, room_id)
+    data = _data(request, "The analysis")
+    provider, error = await _location(request)
+    local, clock = _day_clock(request, provider, error)
+    cfg = analyser.LearningConfig.from_config(doc.get("learning"))
+    units = _units(doc, room)
+    block = room["adaptive_config"]
+    view: dict[str, Any] = {
+        "room": {"id": room["id"], "name": room["name"]},
+        "clock": clock,
+        # Whether the runtime files observations under a section yet (the cutover switch):
+        # only to explain an empty analysis. Nothing live is read here.
+        "adaptive_live": adaptive_wired_in(),
+        "learning": {
+            "lookback_days": cfg.lookback_days,
+            "bootstrap_min_days": cfg.bootstrap_min_days,
+            "publish_delay_days": cfg.publish_delay_days,
+        },
+        "units": units,
+    }
+    if not units:
+        return {
+            **view,
+            "state": {"mode": "no_units", "days_analysed": 0, "valid_from": None, "updated": None},
+            "sections": [{"section": s, "learned": False} for s in config_mod.SECTIONS],
+        }
+    # Off the event loop: a lookback's readings can take a moment to pool.
+    try:
+        rolled = await asyncio.to_thread(
+            analyser.analyse_room,
+            data,
+            room["id"],
+            {u["id"]: [m["id"] for m in u["members"]] for u in units},
+            cfg,
+            local.date(),
+            tz=local.tzinfo,
+            presence_configured=bool(block.get("presence_sensors")),
+        )
+    except (StoreError, sqlite3.Error) as exc:
+        raise _store_failed("The analysis", exc) from exc
+    meta = rolled.get("_meta") or {}
+    days = meta.get("days_analysed", 0)
+    sections = []
+    for section in config_mod.SECTIONS:
+        entry = rolled.get(section)
+        modes = block["scenes"][section]["units"]
+        if not entry:
+            sections.append({"section": section, "learned": False})
+            continue
+        sections.append(
+            {
+                "section": section,
+                "learned": True,
+                "lux_target": entry["lux_target"],
+                "days_contributing": entry["days_contributing"],
+                "high_confidence_days": entry["high_confidence_days"],
+                "trust_weight": entry["trust_weight"],
+                "units": {
+                    u["id"]: {
+                        "brightness": entry["units"].get(u["id"]),
+                        "on_fraction": entry["on_fraction"].get(u["id"]),
+                        "mode": modes[u["id"]]["mode"],
+                    }
+                    for u in units
+                },
+            }
+        )
+    return {
+        **view,
+        "state": {
+            "mode": meta.get("mode") if days else "empty",
+            "days_analysed": days,
+            "valid_from": meta.get("valid_from"),
+            "updated": meta.get("updated"),
+        },
+        "sections": sections,
+    }
+
+
+@router.get("/rooms/{room_id}/almanac")
+async def adaptive_almanac_view(request: Request, room_id: str) -> dict[str, Any]:
+    """The Almanac tab: the snapshot in force in Light Map's store (`almanac.latest`), per
+    unit and section, with each unit's effective target as the publish resolves it
+    (`almanac.payload`) and the section's knobs as the publish reads them (the config's
+    now). Never reads HA's `sensor.al_almanac_`, which is the old system's until cutover.
+    409 `not_adaptive`; 503 `store_unavailable`."""
+    doc = _store(request).read()
+    room = _adaptive_room(doc, room_id)
+    data = _data(request, "The almanac")
+    provider, error = await _location(request)
+    local, clock = _day_clock(request, provider, error)
+    try:
+        rows = adaptive_almanac.latest(data, room["id"], today=local.date())
+    except (StoreError, sqlite3.Error) as exc:
+        raise _store_failed("The almanac", exc) from exc
+    published = adaptive_almanac.payload(room, rows)
+    units = _units(doc, room)
+    block = room["adaptive_config"]
+    every_row = [row for section in rows.values() for row in section.values()]
+    newest = _newest(every_row)
+    sections = []
+    for section in config_mod.SECTIONS:
+        attributes = published["attributes"][section]
+        scene = block["scenes"][section]
+        found = rows.get(section, {})
+        learned_lux = (_newest(list(found.values())) or {}).get("lux_target")
+        sections.append(
+            {
+                "section": section,
+                "knobs": {
+                    key: scene[key]
+                    for key in (
+                        "lux_target_seed",
+                        "lux_margin",
+                        "max_step_pct",
+                        "maintenance_enabled",
+                        "transition_seconds",
+                    )
+                },
+                "lux_target": attributes["lux_target"],
+                "lux_source": (
+                    "learned"
+                    if learned_lux is not None
+                    else "seed" if attributes["lux_target"] is not None else None
+                ),
+                "units": {
+                    u["id"]: {
+                        "mode": scene["units"][u["id"]]["mode"],
+                        "target": attributes["units"].get(u["id"]),
+                        "learned": (found.get(u["id"]) or {}).get("brightness"),
+                        "valid_from": (found.get(u["id"]) or {}).get("valid_from"),
+                    }
+                    for u in units
+                },
+            }
+        )
+    unit_ids = {u["id"] for u in units}
+    return {
+        "room": {"id": room["id"], "name": room["name"]},
+        "clock": clock,
+        "adaptive_live": adaptive_wired_in(),
+        "note": ALMANAC_SOURCE_NOTE,
+        "snapshot": (
+            {
+                "valid_from": newest["valid_from"],
+                "ran_at": _local_time(newest.get("ts"), local.tzinfo),
+                "mode": newest["mode"],
+                "days_analysed": newest["days_analysed"],
+            }
+            if newest
+            else None
+        ),
+        "units": units,
+        "sections": sections,
+        "retired_units": sorted({row["learning_unit_id"] for row in every_row} - unit_ids),
+    }
+
+
+# -- The schedule editor (P5.2b) ------------------------------------------------------
+
+
+async def _schedule_days(request: Request, profiles: Sequence[Any]) -> dict[str, Any]:
+    """Each profile's day today at HA's location (`schedule_day`, less each boundary's
+    trigger), by id, for the editor: None for a profile that can't be computed (a draft's
+    malformed trigger), and `location` saying whether HA's location could be read at all."""
+    provider, error = await _location(request)
+    if provider is None:
+        return {"location": {"available": False, "error": error}, "days": {}}
+    now = request.app.state.clock()
+
+    def compute() -> dict[str, Any]:
+        days: dict[str, Any] = {}
+        for profile in profiles:
+            if not isinstance(profile, Mapping) or not isinstance(profile.get("id"), str):
+                continue
+            try:
+                day = schedule_day(profile, provider, now, provider.tzinfo)
+            except Exception:  # noqa: BLE001 - a draft may be anything; its problems say what
+                days[profile["id"]] = None
+                continue
+            # Without the triggers: the editor has its own, and a draft's, echoed back, could
+            # be one nested deeper than the response can be serialised (a 500).
+            day["boundaries"] = [
+                {k: v for k, v in b.items() if k != "trigger"} for b in day["boundaries"]
+            ]
+            days[profile["id"]] = day
+        return days
+
+    # Off the event loop, as the check's validation is: the editor sends a draft every time
+    # it changes, and a large one would hold up every other request and the observer.
+    days = await asyncio.to_thread(compute)
+    return {
+        "location": {
+            "available": True,
+            "error": None,
+            "time_zone": getattr(provider.tzinfo, "key", str(provider.tzinfo)),
+        },
+        "days": days,
+    }
+
+
+def _describe_trigger(trigger: Mapping[str, Any]) -> str:
+    """A trigger in words, for the event log."""
+    kind = trigger.get("type")
+    if kind == "clock":
+        return f"at {trigger.get('time')}"
+    if kind == "sun":
+        event = trigger.get("event")
+        offset = trigger.get("offset_minutes", 0)
+        if not offset:
+            return f"at {event}"
+        return f"{abs(offset)} min {'after' if offset > 0 else 'before'} {event}"
+    if kind in ("earliest", "latest"):
+        parts = [_describe_trigger(sub) for sub in trigger.get("of", [])]
+        return f"at the {kind} of {', '.join(parts)}"
+    return str(trigger)
+
+
+def schedule_changes(
+    before: Sequence[Mapping[str, Any]], after: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """What a schedule-editor save changed, in words, for the event log."""
+    old = {p["id"]: p for p in before}
+    new = {p["id"]: p for p in after}
+
+    def label(profile: Mapping[str, Any]) -> str:
+        name = profile.get("name")
+        return f"{name} ({profile['id']})" if name and name != profile["id"] else profile["id"]
+
+    changes = [f"added the profile {label(p)}" for p in after if p["id"] not in old]
+    changes += [f"removed the profile {label(p)}" for p in before if p["id"] not in new]
+    for profile in after:
+        was = old.get(profile["id"])
+        if was is None:
+            continue
+        what = label(profile)
+        if was.get("name") != profile.get("name"):
+            changes.append(f"renamed {label(was)} to {profile.get('name') or profile['id']}")
+        if was.get("collision_policy") != profile.get("collision_policy"):
+            changes.append(f"{what}: collisions now {profile.get('collision_policy')}")
+        if was.get("min_section_minutes") != profile.get("min_section_minutes"):
+            changes.append(
+                f"{what}: the shortest section is now {profile.get('min_section_minutes')} min"
+            )
+        sections = {s["id"]: s for s in was.get("sections", [])}
+        for section in profile.get("sections", []):
+            prior = sections.get(section["id"], {})
+            if prior.get("trigger") != section.get("trigger"):
+                changes.append(
+                    f"{what}: {section['id']} now starts {_describe_trigger(section['trigger'])}"
+                )
+            if prior.get("priority") != section.get("priority"):
+                priority = section.get("priority")
+                changes.append(
+                    f"{what}: {section['id']} priority "
+                    + ("back to its default" if priority is None else f"now {priority}")
+                )
+    kept = [p["id"] for p in after if p["id"] in old]
+    if kept != [p["id"] for p in before if p["id"] in new]:
+        changes.append("reordered the profiles")
+    return changes
+
+
+@router.get("/schedule_profiles")
+async def get_schedule_profiles(request: Request) -> dict[str, Any]:
+    """The schedule editor's view: the profiles, the `version` a save sends back as `base`
+    (`schedule_version`), the adaptive rooms and the profile each selects (a profile is
+    shared by every room that selects it), the standard schedule (what a new profile can
+    start from), and each profile's day today at HA's location. Writes nothing."""
+    doc = _store(request).read()
+    profiles = doc.get("schedule_profiles", [])
+    return {
+        "schedule_profiles": profiles,
+        "version": schedule_version(doc),
+        "rooms": _profile_rooms(doc),
+        "sections": list(config_mod.SECTIONS),
+        "default_profile": config_mod.DEFAULT_PROFILE,
+        "standard": config_mod.standard_schedule(),
+        **await _schedule_days(request, profiles),
+    }
+
+
+@router.post("/schedule_profiles/check")
+async def check_schedule_profiles(request: Request, body: ScheduleProfilesDraft) -> dict[str, Any]:
+    """A draft of the whole list, checked as its save would be (the schema and the
+    cross-check, references from the rooms included), and each of its profiles' day today.
+    Writes nothing: the editor asks as the draft changes, so a collision shows as it is
+    made, and a problem before Save."""
+    doc = _store(request).read()
+    proposed = {**doc, "schedule_profiles": body.schedule_profiles}
+
+    def check() -> tuple[list[Any], list[str]]:
+        try:
+            return config_mod.checked(proposed)["schedule_profiles"], []
+        except ConfigError as exc:
+            return body.schedule_profiles, exc.problems
+
+    profiles, problems = await asyncio.to_thread(check)
+    return {"problems": problems, **await _schedule_days(request, profiles)}
+
+
+@router.put("/schedule_profiles")
+async def save_schedule_profiles(request: Request, body: ScheduleProfilesEdit) -> dict[str, Any]:
+    """Replace the whole `schedule_profiles` list, from the schedule editor (P5.2b).
+
+    Refused (409 `sync_first`) before the first sync has saved a config, as creating a room
+    is. Made against the `version` the editor showed (`base`, `schedule_version`; 409
+    `edit_stale` otherwise), validated before it is written (`default` kept, six sections
+    in canonical order each with a well-formed trigger, every room's profile still there),
+    and recorded in the event log with what changed. Config only: never reads or writes HA;
+    a profile reaches the rooms that select it through the runtime, from cutover (P6)."""
+    async with _store(request).lock:
+        doc = _store(request).read()
+        if not _store(request).exists():
+            # Before the first reviewed sync there is no config: saving the profiles would
+            # create one holding no rooms, and the Map would take the house as synced (and
+            # let a room be created into it), skipping the review of everything else.
+            raise ApiError(
+                409,
+                "sync_first",
+                "No config has been saved yet: sync from HA on the Map first, so the rooms it "
+                "builds are reviewed before anything is saved.",
+            )
+        _check_base(body.base, schedule_version(doc), "The schedule", "the schedule editor")
+        proposed = config_mod.checked({**doc, "schedule_profiles": body.schedule_profiles})
+        changes = schedule_changes(doc.get("schedule_profiles", []), proposed["schedule_profiles"])
+        result = _commit(
+            request,
+            doc,
+            proposed,
+            False,  # a schedule binds no hard switch, so makes nothing live
+            record=(
+                "Saved the schedule profiles: "
+                + (f"{len(changes)} change(s)." if changes else "nothing changed.")
+            ),
+            detail={"changes": changes},
+            category="config",
+        )
+        return {**result, "changes": changes, "version": schedule_version(proposed)}
+
+
 # -- Bulbs -----------------------------------------------------------------------------
 
 
@@ -1516,13 +2263,15 @@ def create_app(
     data_dir: Path | None = None,
     observe: bool | None = None,
     hosts: Sequence[str] | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     """Build the app. No I/O: the config is read per request, and the HA client, the store
     and the observer are made in the lifespan. `ha` replaces the client (tests pass a
     fake); `config_path` defaults to LM_CONFIG_PATH, else /data/config.json; `data_dir`
     overrides where the store lives. The observer runs when `observe` says so, by default
     only with the app's own client (a test's fake may not speak HA's event API). `hosts` is
-    the Host allowlist, by default from LM_ALLOWED_HOSTS."""
+    the Host allowlist, by default from LM_ALLOWED_HOSTS. `clock` is the time the adaptive
+    views compute "now" and "today" from (tests pass a fixed one)."""
     path = config_path or Path(os.environ.get(CONFIG_PATH_ENV, "").strip() or DEFAULT_CONFIG_PATH)
     if hosts is None:
         hosts, skipped = allowed_hosts(os.environ.get(ALLOWED_HOSTS_ENV))
@@ -1614,6 +2363,7 @@ def create_app(
     app.state.observer = None
     app.state.observer_reason = "not started yet"
     app.state.runtime = None  # the adaptive runtime, only with the module wired in
+    app.state.clock = clock or (lambda: datetime.now(timezone.utc))
     app.state.allowed_hosts = hosts
     # Outermost, so a request for an unknown Host reaches nothing, static files included.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False)

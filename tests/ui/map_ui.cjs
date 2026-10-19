@@ -333,10 +333,11 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
       assert.equal(await page.$('tr[data-ignored="counter_lamp"]'), null);
     });
 
-    await step("the other tabs are placeholders", async () => {
+    await step("the Now tab shows an adaptive room's day (P5.2b), not live yet", async () => {
       await page.click('a[href="#now"]');
-      await page.waitForSelector(".placeholder");
-      assert.match(await page.textContent(".placeholder"), /P5/);
+      await page.waitForSelector(".adaptive-view .schedule-table");
+      assert.match(new URL(page.url()).hash, /^#now\/(kitchen|living_room)$/);
+      assert.match(await page.textContent(".live-card"), /not live yet/);
       await page.click('a[href="#map"]');
       await page.waitForSelector("table.map-table");
     });

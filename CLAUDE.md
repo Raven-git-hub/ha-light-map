@@ -112,8 +112,10 @@ locks); config checks never depend on HA.
   (where the committed config lives; default `/data/config.json`), and `LM_ALLOWED_HOSTS`
   (the Host names the API answers besides `localhost` and `127.0.0.1`).
 - HTTP: everything under `/api/` in `app/main.py` (see "HTTP surface" in
-  `docs/ARCHITECTURE.md`). An action that writes HA, or commits HA's state to the config,
-  is a preview that returns a `fingerprint` and an apply that must carry it; keep it so.
+  `docs/ARCHITECTURE.md`); the UI's views in `static/`, one pair per view (the adaptive
+  tabs share `adaptive.js`), third-party code only vendored under `static/vendor/`. An
+  action that writes HA, or commits HA's state to the config, is a preview that returns a
+  `fingerprint` and an apply that must carry it; keep it so.
   Every request passes the Host allowlist first; tests address the app as `localhost`.
 - Observation: handlers run off the WebSocket read loop (a queue), so one may send HA a
   command; a module observes only through `core.observe.Observer` (`subscribe`,
@@ -136,9 +138,10 @@ locks); config checks never depend on HA.
 pip install -r requirements.txt
 pip install -r requirements-dev.txt  # test-only (jinja2, for the adaptive template tests)
 python -m unittest                 # tests against fakes and fixtures; never a real HA
-                                   # (tests/test_ui.py drives the Map, the Log and the
-                                   # adaptive editor in headless Chromium when Node's
-                                   # Playwright is installed, else skips; the adaptive
+                                   # (tests/test_ui.py drives the Map, the Log, the
+                                   # adaptive editor, the Now / Analysis / Almanac tabs
+                                   # and the schedule editor in headless Chromium when
+                                   # Node's Playwright is installed, else skips; the adaptive
                                    # templates are rendered and run when jinja2, from
                                    # requirements-dev.txt, is installed, else skip)
 python -c "import app.main"
@@ -166,3 +169,11 @@ observer), and the generated `lm_` lane is byte-identical to P5.0's (held to
 composition root before cutover; tests turn it on in their own scope
 (`tests.fakes.adaptive_wired`). Even on, the Map's deploy applies only `lm_`; the `al_`
 plan is previewed read-only.
+
+**The adaptive views read beside the live system** (P5.2b). The Now / Analysis / Almanac
+tabs take the schedule from the config and HA's location and the learned data from Light
+Map's own store, never from `sensor.al_almanac_`. A live `al_` entity (the scene select,
+the guard, the hold) is the old system's until P6, so it is read only when
+`app.main.adaptive_wired_in()` (the cutover switch); off, the Now tab shows "not live yet"
+and its endpoint reads no HA state at all. The only write in P5.2b is the schedule
+editor's config save.

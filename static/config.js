@@ -13,6 +13,9 @@
 // check, since the config can't see Home Assistant: a bulb HA reports as on/off only can't
 // be adaptive. A bulb whose capability is unknown (offline) is never locked.
 //
+// The schedule profiles a room chooses from are edited in the schedule editor (#schedule,
+// schedule.js; P5.2b), linked from the rooms list and from the editor's profile picker.
+//
 // Read from and written through /api (see app/main.py); every name is set as text, never
 // as markup. Nothing here writes HA: the adaptive automations reach it only through the
 // adaptive lane's deploy, which waits for cutover (P6).
@@ -20,16 +23,7 @@
 "use strict";
 
 (() => {
-  const { h, fill, api, notify, fail, confirmBox } = LM;
-
-  const SECTION_NAMES = {
-    sunrise: "Sunrise",
-    day: "Day",
-    afternoon: "Afternoon",
-    sunset: "Sunset",
-    night: "Night",
-    sleep: "Sleep",
-  };
+  const { h, fill, api, notify, fail, confirmBox, sectionName } = LM;
   const ENTITY_ID = /^[a-z0-9_]+\.[a-z0-9_]+$/;
   // As the server's cross-check: a lux sensor reports a number; a presence sensor must
   // read on/off; neither may be one of Light Map's own entities.
@@ -124,6 +118,13 @@
             h("a", { href: "#map" }, "Map"),
             ", then open its config here or with its Adaptive config button.",
           ),
+      h("h2", { class: "profiles-heading" }, "Schedule profiles"),
+      h(
+        "p",
+        { class: "muted" },
+        "When each section of the day starts (at a time, or from sunrise or sunset), shared by every room that follows the profile. ",
+        h("a", { id: "edit-schedules", href: "#schedule" }, "Edit the schedule profiles"),
+      ),
     );
   }
 
@@ -554,6 +555,9 @@
         id: "profile-select",
         onchange: (event) => {
           ed.draft.schedule_profile = event.target.value;
+          // The link to the schedule editor follows the profile picked (no redraw here).
+          const link = event.target.closest(".profile")?.querySelector("a.edit-schedule");
+          if (link) link.href = `#schedule/${encodeURIComponent(event.target.value)}`;
           changed();
         },
       },
@@ -567,7 +571,9 @@
       h(
         "p",
         { class: "muted small" },
-        "Profiles are shared between rooms. When each section starts and ends (sun-relative or fixed) is edited with the scheduler, which arrives with the adaptive engine (P5.2).",
+        "Profiles are shared between rooms. When each section starts (at a time, or from sunrise or sunset) is edited in the ",
+        h("a", { class: "edit-schedule", href: `#schedule/${encodeURIComponent(current)}` }, "schedule editor"),
+        ".",
       ),
     );
   }
@@ -852,7 +858,7 @@
     return h(
       "tr",
       { dataset: { section } },
-      h("th", { scope: "row", class: "section-name" }, SECTION_NAMES[section] || section),
+      h("th", { scope: "row", class: "section-name" }, sectionName(section)),
       units.map((unit) => modeCell(section, row, unit)),
       KNOBS.map((spec) => h("td", { class: "knob-cell", dataset: { knob: spec.key } }, knobInput(section, row, spec))),
     );
@@ -882,13 +888,13 @@
     return h(
       "td",
       { class: "mode-cell", dataset: { unit: unit.id } },
-      h("div", { class: "segmented", role: "group", "aria-label": `${SECTION_NAMES[section]}: ${unit.name}` }, buttons),
+      h("div", { class: "segmented", role: "group", "aria-label": `${sectionName(section)}: ${unit.name}` }, buttons),
     );
   }
 
   function knobInput(section, row, spec) {
     const field = `${section}:${spec.key}`;
-    const label = `${SECTION_NAMES[section]}: ${spec.label}`;
+    const label = `${sectionName(section)}: ${spec.label}`;
     if (spec.check) {
       return h("input", {
         type: "checkbox",

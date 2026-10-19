@@ -147,6 +147,12 @@ static/              Vanilla JS and CSS, no build step; desktop-oriented, dark.
   log.css, log.js    The Log tab (P4): the event log, read-only.
   config.css,        The Config tab (P5.0): the adaptive rooms, and the per-room adaptive
   config.js          editor (`#config/<room>`), opened from the Map.
+  adaptive.css,      The Now, Analysis and Almanac tabs (P5.2b): read-only, per adaptive
+  adaptive.js        room (`#now/<room>`, ...), sharing the room picker and the chart.
+  schedule.css,      The schedule-profile editor (P5.2b, `#schedule/<profile>`), under the
+  schedule.js        Config tab.
+  vendor/uplot/      uPlot 1.6.31 (MIT), the Analysis chart: vendored as published, one
+                     self-contained file and its stylesheet, no CDN, no build step.
 schema/
   config.schema.json The config contract (see "Top-level config shape").
   storage.schema.sql SQLite DDL (see "Storage model").
@@ -163,7 +169,8 @@ tests/               Unit tests (stdlib unittest, `python -m unittest`) against 
                      fixtures; never a real HA. `test_ui.py` also drives the Map, the Log
                      and the adaptive editor in headless Chromium (`tests/ui/map_ui.cjs`,
                      `log_ui.cjs`, `config_ui.cjs`, `lanes_ui.cjs`, Node's Playwright) where
-                     that is installed, and is skipped where it isn't. `ha_script.py` renders
+                     that is installed, and is skipped where it isn't (P5.2b adds `adaptive_ui.cjs`, the Now /
+                     Analysis / Almanac tabs, and `schedule_ui.cjs`, the schedule editor). `ha_script.py` renders
                      the generated Jinja and runs the generated automations against a fake
                      state machine (P5.1; needs jinja2, from `requirements-dev.txt`, else
                      those tests skip). `golden/` holds byte-exact generated output: `lm_only.yaml`
@@ -312,8 +319,8 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
   (slug), name?, sections[], collision_policy, min_section_minutes }` (P5.2a). A profile
   with id `default` must always exist.
   - `sections[]`: all six sections, once each, in canonical order (`sunrise` ... `sleep`),
-    each `{ id (section), name?, trigger, priority? }` (`name`: a display name, used from
-    P5.2b). `trigger` says when the section starts
+    each `{ id (section), name?, trigger, priority? }` (`name`: a display name, accepted
+    and kept, not yet shown: deferred past P5.2b). `trigger` says when the section starts
     each day: `{ type: clock, time: "HH:MM" }`, `{ type: sun, event: sunrise | sunset,
     offset_minutes? }`, or `{ type: earliest | latest, of: [trigger, ...] }` (at least
     two; "sunrise or 05:30, whichever is earlier"). `priority` (0–1000) decides a
@@ -328,8 +335,8 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
   Version 5 backfills every profile that has no `sections` with the standard schedule
   (the predecessor's six boundaries: sunrise = the earlier of sunrise and 05:30, day =
   sunrise + 3 h, afternoon = sunset − 3 h, sunset, night 20:30, sleep 22:00; see
-  `docs/DESIGN.md`, "Schedule profiles"). Display names for the sections, and the editor,
-  arrive with P5.2b.
+  `docs/DESIGN.md`, "Schedule profiles"). The editor arrived with P5.2b (`#schedule`; see
+  "HTTP surface"); display names for the sections are deferred (see "Open decisions").
 - `learning` — adaptive analyser tuning (P5.2a), every field optional, defaults in code
   (not written into the document): `lookback_days` (21), `publish_delay_days` (2),
   `bootstrap_min_days` (7), `reactive_weight` (5), `post_reactive_boost` ([3, 2, 1.5]),
@@ -466,7 +473,7 @@ the query layer only; the archive keeps everything.
 
 ---
 
-## HTTP surface (P3, P4, P5.0, P5.1)
+## HTTP surface (P3, P4, P5.0, P5.1, P5.2b)
 
 `app/main.py` serves the UI's API under `/api/` (JSON; an error is `{error, detail}`,
 with `problems` when there are several) beside `/healthz` and the static UI. The HA client
@@ -478,8 +485,8 @@ room with bulbs to observe, and, only with the cutover switch on, the adaptive r
 
 | | |
 | --- | --- |
-| Reads | `GET /api/status`, `/api/map`, `/api/config` (export, token-free), `/api/entities` (hard-switch source picker), `/api/log` (the event log, filtered by minimum level, category and room; P4), `/api/rooms/{room}/adaptive_config` (the adaptive editor's view: the block, each active bulb's tier, unit and dimmability; P5.0) |
-| Config edits | `PUT /api/rooms/{room}/adaptive`, `PUT /api/rooms/{room}/adaptive_config` (P5.0), `PUT /api/bulbs/{bulb}/hard_switches`, `PUT /api/bulbs/{bulb}/ignored` (P4.1), `POST /api/rooms/{room}/groups`, `PUT`/`DELETE /api/rooms/{room}/groups/{group}` |
+| Reads | `GET /api/status`, `/api/map`, `/api/config` (export, token-free), `/api/entities` (hard-switch source picker), `/api/log` (the event log, filtered by minimum level, category and room; P4), `/api/rooms/{room}/adaptive_config` (the adaptive editor's view: the block, each active bulb's tier, unit and dimmability; P5.0), `/api/rooms/{room}/now`, `/analysis`, `/almanac` (the adaptive views; P5.2b), `/api/schedule_profiles` (the schedule editor's view; P5.2b), `POST /api/schedule_profiles/check` (a draft's problems and its day today; writes nothing) |
+| Config edits | `PUT /api/rooms/{room}/adaptive`, `PUT /api/rooms/{room}/adaptive_config` (P5.0), `PUT /api/schedule_profiles` (P5.2b), `PUT /api/bulbs/{bulb}/hard_switches`, `PUT /api/bulbs/{bulb}/ignored` (P4.1), `POST /api/rooms/{room}/groups`, `PUT`/`DELETE /api/rooms/{room}/groups/{group}` |
 | Area edits (HA first) | `POST /api/rooms`, `PUT /api/rooms/{room}/name`, `POST /api/bulbs/{bulb}/move/preview` then `/move` |
 | Previewed actions | `GET /api/sync/preview` then `POST /api/sync`; `GET /api/deploy/preview` then `POST /api/deploy`; `GET /api/areas/preview` then `POST /api/areas/deploy` |
 
@@ -506,6 +513,20 @@ room with bulbs to observe, and, only with the cutover switch on, the adaptive r
   says which it is (`adaptive`). With it on, the status also reports the adaptive runtime
   (`adaptive_runtime`, P5.2a): each room's section, the last nightly pass, and what it
   last published.
+- **The adaptive views read beside the live system** (P5.2b). The Now, Analysis and
+  Almanac tabs take the schedule from the config and HA's location, and the learned data
+  from Light Map's own store (the Almanac tab never reads `sensor.al_almanac_`). A live
+  `al_` entity (the scene select, the guard, the hold), which the old system owns until
+  P6, is read only with the cutover switch on; off, the Now tab says adaptive isn't live
+  yet, and makes no call that reads an HA state. Nothing they do writes HA; the analysis
+  runs on demand and records nothing.
+- **The schedule editor** (P5.2b) saves the whole `schedule_profiles` list against a
+  `version` covering the profiles and which profile each adaptive room selects (409
+  `edit_stale` otherwise), validate-then-write, config only, and like creating a room it
+  waits for the first sync (409 `sync_first`). It keeps `default`, deletes only a profile no
+  room selects, and warns that a profile is shared by every room that selects it. The
+  adaptive editor's `version` covers the profile ids its picker offers. See
+  `docs/DESIGN.md`, "The adaptive views".
 - **A Map edit commits only its own change** to the snapshot; whatever else HA changed waits
   for a reviewed sync.
 - **Coexistence.** An edit that makes a hard switch drive something new is refused (409
@@ -575,8 +596,10 @@ Parallel build in this repo; the live `ha-adaptive-light` keeps running untouche
     `tools/compare_analyser.py`), the almanac's store and publish, the runtime loop, and
     the bridge's gated fallback (an adaptive bulb with no target comes on at its own last
     brightness), all behind the cutover switch, which stays off.
-  - **P5.2b — Adaptive views.** The Now / Analysis / Almanac tabs (read-only), the
-    schedule-profile editor, and the sections' display names.
+  - **P5.2b — Adaptive views.** The Now / Analysis / Almanac tabs (read-only, reading a
+    live `al_` entity only with the cutover switch on) and the schedule-profile editor,
+    with uPlot vendored for the Analysis chart. No engine or generator change; the
+    sections' display names are deferred (they need a generator change).
 - **P6 — Cutover.** Deploy against live HA; remove the old `al_*` system; turn the cutover
   switch on and add the `al_` lane's apply to the Map's deploy; re-express the house; start
   the almanac (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old
@@ -664,8 +687,15 @@ system's `al_` ones among them) that already drive the same bulbs.
   publish delay). The predecessor also read the room's lux a few times just after the
   first crossover into an unlearned section and published that as a provisional target,
   but with maintenance off, so it changed nothing in HA; reading HA's sensors from the
-  runtime would also be the module scraping HA itself. Not ported; revisit if the Now tab
-  (P5.2b) wants a target to show on the first day.
+  runtime would also be the module scraping HA itself. Not ported; the Now tab (P5.2b)
+  shows "nothing learned yet" for the first day. Revisit if that proves confusing.
+- **Section display names** (deferred from P5.2b) — the scene select's options, and so the
+  state every generated template reads, are the canonical section ids. Custom names (the
+  predecessor's) need the templates to map a name back to its id: a generator change.
+  Until then the views use the canonical names, and a section's `name` is kept but unused.
+- **A light theme** (P5.2b) — the UI has one theme, dark. The adaptive views and the chart
+  take every colour from the shell's CSS tokens, so a light theme would be a set of token
+  values (and `color-scheme`) in `app.css`, not a change to each view.
 - **Which section an observation records** (P5.2a) — the runtime reports the section it
   last fired for the room (the scene select's), falling back to the scheduled one before
   its first crossover, so a heartbeat in the seconds between a boundary and the crossover

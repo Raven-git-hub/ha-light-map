@@ -348,10 +348,27 @@ def load(path: Path) -> dict[str, Any]:
     return loads(doc)
 
 
+# A schedule trigger nests (`earliest`/`latest` of triggers), and the schema's `$ref` to
+# itself sets no depth. One nested a few hundred levels exhausted Python's recursion limit
+# inside jsonschema, and the RecursionError surfaced as a bare 500 from the schedule editor
+# (P5.2b review) instead of a refusal saying why.
+TOO_DEEP = (
+    "the config is nested too deeply to check (a schedule trigger's earliest/latest within "
+    "earliest/latest, hundreds of levels down)"
+)
+
+
 def loads(doc: Mapping[str, Any]) -> dict[str, Any]:
     """Run an already-parsed document through the load pipeline and return the result."""
     if not isinstance(doc, Mapping):
         raise ConfigError("the config must be a JSON object")
+    try:
+        return _load(doc)
+    except RecursionError:
+        raise ConfigError(TOO_DEEP) from None
+
+
+def _load(doc: Mapping[str, Any]) -> dict[str, Any]:
     doc = apply_defaults(migrate(doc))
     if "access_token" in (doc.get("homeassistant") or {}):
         # Dropped rather than used, so the token in memory can only ever have come from the
@@ -944,6 +961,8 @@ def checked(config: Mapping[str, Any]) -> dict[str, Any]:
         carried = json.loads(_dumps(redact(config)))
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"the config is not representable as JSON: {exc}") from exc
+    except RecursionError:
+        raise ConfigError(TOO_DEEP) from None
     return loads(carried)
 
 

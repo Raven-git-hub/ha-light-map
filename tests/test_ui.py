@@ -1,4 +1,5 @@
-"""The frontend (the Map, the Log, and the Config tab's adaptive editor), pragmatically: static checks that always run (the
+"""The frontend (the Map, the Log, the Config tab's adaptive editor, the Now / Analysis /
+Almanac tabs and the schedule editor), pragmatically: static checks that always run (the
 JS parses, every API call it makes is a route the app serves, the shell links each view),
 and headless-Chromium runs of the key interactions against the app over the fake HA, which
 are skipped where Node's Playwright and a Chromium aren't installed. No build step, no real
@@ -16,12 +17,15 @@ import threading
 import time
 import unittest
 from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import uvicorn
 
 from app.core import config, deploy
 from app.main import create_app, router
+from app.modules.adaptive import almanac, analyser
+from tests import analyser_fixtures
 from tests.fakes import FakeHA, adaptive_wired, committed_config, scenes
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,6 +34,10 @@ SCRIPT = Path(__file__).resolve().parent / "ui" / "map_ui.cjs"
 LOG_SCRIPT = Path(__file__).resolve().parent / "ui" / "log_ui.cjs"
 CONFIG_SCRIPT = Path(__file__).resolve().parent / "ui" / "config_ui.cjs"
 LANES_SCRIPT = Path(__file__).resolve().parent / "ui" / "lanes_ui.cjs"
+ADAPTIVE_SCRIPT = Path(__file__).resolve().parent / "ui" / "adaptive_ui.cjs"
+SCHEDULE_SCRIPT = Path(__file__).resolve().parent / "ui" / "schedule_ui.cjs"
+# The adaptive views' "now": a Friday noon in London (BST), the day section in force.
+NOW = datetime(2026, 10, 16, 11, 0, tzinfo=timezone.utc)
 
 # `api("PUT", `/api/bulbs/${bulb.id}/hard_switches`, ...)`: the method and path of each call.
 API_CALL = re.compile(r'api\(\s*"(GET|POST|PUT|DELETE|PATCH)",\s*[`"](/api/[^`"]*)[`"]')
@@ -94,14 +102,27 @@ class StaticTest(unittest.TestCase):
             "map.css",
             "log.css",
             "config.css",
+            "adaptive.css",
+            "schedule.css",
+            "vendor/uplot/uPlot.min.css",
             "app.js",
             "map.js",
             "log.js",
             "config.js",
+            "adaptive.js",
+            "schedule.js",
         ):
             self.assertIn(f'"{asset}"', html)
-        for view in ("map.js", "log.js", "config.js"):
+            self.assertTrue((STATIC / asset).is_file(), asset)
+        for view in ("map.js", "log.js", "config.js", "adaptive.js", "schedule.js"):
             self.assertLess(html.index('src="app.js"'), html.index(f'src="{view}"'))
+        # The chart library is vendored, never fetched: nothing in the shell leaves the app.
+        self.assertNotRegex(html, r"(src|href)=\"(https?:)?//")
+        # The chart library is loaded by the Analysis tab when it draws (no other view
+        # parses it), from the vendored copy, with its licence beside it.
+        self.assertIn('"vendor/uplot/uPlot.iife.min.js"', (STATIC / "adaptive.js").read_text())
+        for vendored in ("uPlot.iife.min.js", "LICENSE"):
+            self.assertTrue((STATIC / "vendor" / "uplot" / vendored).is_file(), vendored)
         for tab in ("map", "now", "analysis", "almanac", "config", "log"):
             self.assertIn(f'href="#{tab}"', html)
 
@@ -115,7 +136,15 @@ class StaticTest(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_the_scripts_parse(self):
-        for script in [*STATIC.glob("*.js"), SCRIPT, LOG_SCRIPT, CONFIG_SCRIPT, LANES_SCRIPT]:
+        for script in [
+            *STATIC.glob("*.js"),
+            SCRIPT,
+            LOG_SCRIPT,
+            CONFIG_SCRIPT,
+            LANES_SCRIPT,
+            ADAPTIVE_SCRIPT,
+            SCHEDULE_SCRIPT,
+        ]:
             result = subprocess.run(
                 ["node", "--check", str(script)], capture_output=True, text=True
             )
@@ -277,6 +306,76 @@ class BrowserTest(unittest.TestCase):
             # Editing the adaptive config wrote nothing to HA and drove no bulb.
             self.assertEqual(ha.writes, [])
             self.assertEqual(ha.fired, [])
+
+    def test_the_adaptive_views(self):
+        # The cutover switch off, as the live app runs: the tabs show the schedule and the
+        # store, and say adaptive isn't live, reading none of the old system's al_ entities.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config.save(path, committed_config())
+            ha = FakeHA()
+            # The old system's entities, live on the same HA under the same names.
+            ha.helper_states.update(
+                {
+                    "input_select.al_scene_living_room": "night",
+                    "input_boolean.al_active_living_room": "on",
+                    "input_boolean.al_hold_living_room": "on",
+                }
+            )
+            app = create_app(ha=ha, config_path=path, verify_delay=0, clock=lambda: NOW)
+            with serve(app) as url:
+                # Three weeks of the living room's readings, and the snapshot the nightly
+                # pass made of them, in force since before today.
+                store = app.state.data
+                fixture = analyser_fixtures.readings(
+                    5,
+                    bulbs=("chandelier_1", "chandelier_2", "chandelier_3", "reading_lamp"),
+                    first=date(2026, 9, 22),
+                    days=21,
+                    skip_days=(3,),
+                )
+                analyser_fixtures.to_store(fixture, store, room="living_room")
+                local = NOW.astimezone(analyser_fixtures.TZ)
+                almanac.record(store, analyser.run(store, config.load(path), now=local))
+                report = self.run_script(ADAPTIVE_SCRIPT, url)
+            self.assertEqual(len(report["steps"]), 6)
+            # HA was asked where it is, and nothing else: no state read, no al_ entity.
+            self.assertEqual({name for name, _ in ha.calls}, {"get_config"})
+            self.assertEqual(ha.writes, [])
+
+    def test_the_schedule_editor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            config.save(path, committed_config())
+            ha = FakeHA()
+            app = create_app(ha=ha, config_path=path, verify_delay=0, clock=lambda: NOW)
+            with serve(app) as url:
+                report = self.run_script(SCHEDULE_SCRIPT, url)
+            self.assertEqual(len(report["steps"]), 9)
+            saved = config.load(path)
+            profiles = saved["schedule_profiles"]
+            self.assertEqual([p["id"] for p in profiles], ["default", "weekend", "evening"])
+            evening = profiles[2]
+            self.assertEqual(evening["name"], "Evenings")
+            sections = {s["id"]: s for s in evening["sections"]}
+            self.assertEqual(sections["sleep"]["trigger"], {"type": "clock", "time": "22:30"})
+            self.assertEqual(
+                sections["day"]["trigger"],
+                {"type": "sun", "event": "sunrise", "offset_minutes": 150},
+            )
+            self.assertEqual(sections["day"]["priority"], 120)
+            self.assertEqual(
+                sections["night"]["trigger"],
+                {
+                    "type": "earliest",
+                    "of": [{"type": "clock", "time": "21:15"}, {"type": "clock", "time": "21:00"}],
+                },
+            )
+            self.assertEqual(profiles[1]["name"], "Weekend")
+            self.assertEqual(profiles[1]["sections"], config.standard_schedule()["sections"])
+            # The other tab's rename stood: the stale save didn't revert it.
+            self.assertEqual(profiles[0]["name"], "Standard")
+            self.assertEqual(ha.writes, [])  # the editor changes the config only
 
     def test_the_log(self):
         with tempfile.TemporaryDirectory() as directory:

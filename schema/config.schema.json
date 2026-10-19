@@ -689,7 +689,7 @@
           "$ref": "#/$defs/section"
         },
         "name": {
-          "description": "A display name for the section, as the predecessor's profiles had (accepted, and used as the boundary's name; the editor that sets it, and the scene select's display names, arrive with P5.2b).",
+          "description": "A display name for the section, as the predecessor's profiles had (accepted, kept as written, and used as the boundary's name; nothing shows or sets it yet: display names, and the scene select's, are deferred past P5.2b, since the generated templates read the section id).",
           "type": "string",
           "minLength": 1
         },

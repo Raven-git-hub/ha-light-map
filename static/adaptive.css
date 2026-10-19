@@ -1,0 +1,402 @@
+/* The adaptive views: Now, Analysis and Almanac. Cards and tables reuse the Config tab's
+   (config.css); this adds the room picker, the day bar, the schedule and targets tables,
+   and the charts. Every colour is a theme token (app.css). Legible at phone width: the
+   tables stack into labelled rows, or scroll sideways inside their own box. */
+
+.adaptive-view {
+  max-width: 72rem;
+}
+
+.adaptive-view a {
+  color: var(--accent);
+}
+
+.view-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+}
+
+.view-head h2 {
+  margin: 0.25rem 0;
+  font-size: 1.2rem;
+}
+
+.view-head .spacer {
+  flex: 1;
+}
+
+/* -- The room picker ---------------------------------------------------------------- */
+
+.room-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.adaptive-view a.room-pill {
+  padding: 0.2rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.adaptive-view a.room-pill:hover,
+.adaptive-view a.room-pill:focus-visible {
+  color: var(--fg);
+  border-color: var(--muted);
+}
+
+.adaptive-view a.room-pill[aria-current="page"] {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+/* -- Badges ------------------------------------------------------------------------- */
+
+.badge.now {
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+
+.badge.off,
+.badge.skipped {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.badge.moved {
+  color: var(--live);
+  border: 1px solid var(--live);
+}
+
+/* A section's key: a short line in its colour, beside its name (never the name in it). */
+.section-key {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0;
+  margin-right: 0.4rem;
+  vertical-align: middle;
+  border-top: 3px solid var(--key, var(--line));
+  border-radius: 2px;
+}
+
+/* -- Live state ----------------------------------------------------------------------- */
+
+.not-live p {
+  margin: 0.25rem 0;
+}
+
+.live-state,
+.snapshot {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.3rem 1rem;
+  margin: 0.25rem 0;
+}
+
+.live-state dt,
+.snapshot dt {
+  color: var(--muted);
+}
+
+.live-state dd,
+.snapshot dd {
+  margin: 0;
+}
+
+/* -- The day bar ---------------------------------------------------------------------- */
+
+.day-bar-wrap {
+  margin: 0.75rem 0 1rem;
+}
+
+.day-bar {
+  position: relative;
+  height: 2.4rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.day-bar .segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 0.35rem;
+  background: var(--panel-2);
+  border-right: 2px solid var(--panel);
+  /* The section's colour as a band along the bottom: its identity, with its name above. */
+  box-shadow: inset 0 -5px 0 var(--key, var(--line));
+}
+
+.day-bar .segment.before {
+  background: var(--bg);
+}
+
+.day-bar .segment.current {
+  background: var(--raised);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.day-bar .segment .label {
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.day-bar .segment.current .label {
+  font-weight: 700;
+}
+
+.day-bar .now-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 2px solid var(--fg);
+}
+
+/* Each tick under its hour: centred on it, the two ends kept inside the bar. */
+.day-ticks {
+  position: relative;
+  height: 1.1rem;
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.day-ticks span {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+.day-ticks span:first-child {
+  transform: none;
+}
+
+.day-ticks span:last-child {
+  transform: translateX(-100%);
+}
+
+/* -- Tables --------------------------------------------------------------------------- */
+
+.schedule-table,
+.targets-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.schedule-table th,
+.schedule-table td,
+.targets-table th,
+.targets-table td {
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+  border-top: 1px solid var(--line);
+}
+
+.schedule-table thead th,
+.targets-table thead th {
+  border-top: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.schedule-table td.start {
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-table tr.current > * {
+  background: var(--raised);
+}
+
+.schedule-table tr.current > th {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.schedule-table tr.collapsed > * {
+  color: var(--muted);
+}
+
+.schedule-table td.outcome {
+  max-width: 24rem;
+}
+
+.analysis-table,
+.almanac-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 100%;
+}
+
+.analysis-table th,
+.analysis-table td,
+.almanac-table th,
+.almanac-table td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+  border-top: 1px solid var(--line);
+}
+
+.analysis-table thead th,
+.almanac-table thead th {
+  border-top: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel-2);
+}
+
+.analysis-table .section-name,
+.analysis-table .section-head,
+.almanac-table .section-name,
+.almanac-table .section-head {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--panel-2);
+  border-right: 1px solid var(--line);
+}
+
+.analysis-table td,
+.almanac-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.almanac-table .first {
+  border-left: 1px solid var(--line);
+}
+
+.state-line .pill {
+  margin-right: 0.35rem;
+}
+
+.bootstrap-progress {
+  width: min(20rem, 100%);
+  accent-color: var(--live);
+}
+
+/* -- Charts --------------------------------------------------------------------------- */
+
+.chart {
+  width: 100%;
+  margin: 0.5rem 0 0.25rem;
+  border-radius: 6px;
+}
+
+.chart:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.chart .uplot {
+  font-family: inherit;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  margin: 0.25rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chart-legend li,
+.readout-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.line-key {
+  flex: none;
+}
+
+.chart-readout {
+  min-height: 1.4em;
+}
+
+.readout-item strong {
+  color: var(--fg);
+}
+
+/* -- Phone width ---------------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  /* The schedule and the targets as one block per row, each cell labelled. */
+  .schedule-table thead,
+  .targets-table thead {
+    display: none;
+  }
+
+  .schedule-table,
+  .schedule-table tbody,
+  .schedule-table tr,
+  .schedule-table th,
+  .schedule-table td,
+  .targets-table,
+  .targets-table tbody,
+  .targets-table tr,
+  .targets-table th,
+  .targets-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .schedule-table tr,
+  .targets-table tr {
+    padding: 0.35rem 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .schedule-table th,
+  .schedule-table td,
+  .targets-table th,
+  .targets-table td {
+    border-top: none;
+    padding: 0.1rem 0.25rem;
+  }
+
+  .schedule-table td::before,
+  .targets-table td::before {
+    content: attr(data-label) ": ";
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .schedule-table td.outcome {
+    max-width: none;
+  }
+
+  .day-bar .segment .label {
+    font-size: 0.7rem;
+  }
+
+  .live-state,
+  .snapshot {
+    grid-template-columns: 1fr;
+    gap: 0 1rem;
+  }
+
+  .live-state dd,
+  .snapshot dd {
+    margin-bottom: 0.35rem;
+  }
+}

@@ -3,18 +3,70 @@
 //
 // A view registers itself with LM.view(name, render): map.js is the Map tab (P3), log.js
 // the Log (P4), config.js the Config tab (P5.0: the adaptive rooms and the per-room
-// adaptive editor). Now, Analysis and Almanac arrive with the adaptive engine (P5.2); until
-// then each shows a placeholder.
+// adaptive editor), adaptive.js the Now, Analysis and Almanac tabs (P5.2b), and schedule.js
+// the schedule-profile editor (P5.2b), which sits under the Config tab ({tab: "config"}).
 //
 // A route is `#view` or `#view/arg` (`#config/living_room` opens that room's editor):
 // render(main, arg) gets the arg, decoded, or null. A view holding unsaved edits says so
 // with LM.protect(dirty): leaving it (a tab, a link, the back button) asks first, and so
-// does closing or reloading the page.
+// does closing or reloading the page. A view that changes what it shows without a route
+// (a profile picked inside the schedule editor) records its address with
+// LM.replaceRoute(hash), so the leave guard compares against what is on screen.
+//
+// The sections' labels (LM.sectionName) and a schedule trigger in words
+// (LM.describeTrigger) are shared by the views that show them. Sections are labelled by
+// their canonical names: custom display names are deferred (docs/DESIGN.md).
 
 "use strict";
 
 const LM = (() => {
   const views = {};
+  const tabs = {};
+
+  // The six sections in canonical order (core's SECTIONS), and their labels.
+  const SECTIONS = ["sunrise", "day", "afternoon", "sunset", "night", "sleep"];
+  const SECTION_NAMES = {
+    sunrise: "Sunrise",
+    day: "Day",
+    afternoon: "Afternoon",
+    sunset: "Sunset",
+    night: "Night",
+    sleep: "Sleep",
+  };
+
+  function sectionName(section) {
+    return SECTION_NAMES[section] || section;
+  }
+
+  // A schedule trigger in words: "at 20:30", "3 h before sunset", "the earlier of sunrise
+  // and 05:30". The sun events are the astronomical ones, not the sections of that name.
+  function describeTrigger(trigger) {
+    if (!trigger || typeof trigger !== "object") return "—";
+    if (trigger.type === "clock") return `at ${trigger.time}`;
+    if (trigger.type === "sun") {
+      const offset = Number(trigger.offset_minutes || 0);
+      if (!offset) return `at ${trigger.event}`;
+      const minutes = Math.abs(offset);
+      const span =
+        minutes % 60 === 0
+          ? `${minutes / 60} h`
+          : minutes > 60
+            ? `${Math.floor(minutes / 60)} h ${minutes % 60} min`
+            : `${minutes} min`;
+      return `${span} ${offset > 0 ? "after" : "before"} ${trigger.event}`;
+    }
+    if (trigger.type === "earliest" || trigger.type === "latest") {
+      const parts = (trigger.of || []).map((sub) => describeTrigger(sub).replace(/^at /, ""));
+      const which = trigger.type === "earliest" ? "earlier" : "later";
+      const joined = parts.length > 2 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts.join(" and ");
+      return parts.length > 2 ? `the ${trigger.type} of ${joined}` : `the ${which} of ${joined}`;
+    }
+    return "—";
+  }
+
+  function plural(n, singular, pluralForm = `${singular}s`) {
+    return `${n} ${n === 1 ? singular : pluralForm}`;
+  }
 
   // DOM without innerHTML: names come from Home Assistant, and text set as a text node
   // can never turn into markup.
@@ -204,20 +256,11 @@ const LM = (() => {
 
   // -- Router --------------------------------------------------------------------------
 
-  const PLACEHOLDERS = {
-    now: ["Now", "The live state of each adaptive room. Arrives with the Adaptive Light engine (P5.2)."],
-    analysis: [
-      "Analysis",
-      "What the learner made of each learning unit. Arrives with the Adaptive Light engine (P5.2).",
-    ],
-    almanac: [
-      "Almanac",
-      "The learned targets per learning unit and section. Arrives with the Adaptive Light engine (P5.2).",
-    ],
-  };
-
-  function view(name, render) {
+  // `tab`: the tab a view sits under when it has none of its own (the schedule editor is
+  // the Config tab's).
+  function view(name, render, { tab } = {}) {
     views[name] = render;
+    tabs[name] = tab || name;
   }
 
   // The view on screen's unsaved-edit check, and the route it was shown for. Set by the
@@ -229,6 +272,13 @@ const LM = (() => {
 
   function protect(dirty, what = "Your changes") {
     guard = dirty ? { dirty, what } : null;
+  }
+
+  // The address of what is on screen, changed without routing (replaceState fires no
+  // hashchange): the leave guard then compares a new address with this one.
+  function replaceRoute(hash) {
+    if ((location.hash || "#map") !== hash) history.replaceState(null, "", hash);
+    shown = hash;
   }
 
   async function route() {
@@ -260,8 +310,9 @@ const LM = (() => {
     shown = hash;
     const [name, ...rest] = hash.slice(1).split("/");
     const arg = rest.length ? decodeURIComponent(rest.join("/")) : null;
+    const current = tabs[name || "map"] || name || "map";
     for (const tab of document.querySelectorAll(".tab")) {
-      if (tab.getAttribute("href") === `#${name || "map"}`) tab.setAttribute("aria-current", "page");
+      if (tab.getAttribute("href") === `#${current}`) tab.setAttribute("aria-current", "page");
       else tab.removeAttribute("aria-current");
     }
     const main = document.getElementById("view");
@@ -276,8 +327,9 @@ const LM = (() => {
       }
       return;
     }
-    const [title, text] = PLACEHOLDERS[name] || ["Not found", `There is no view called ${name}.`];
-    main.append(h("section", { class: "placeholder" }, h("h2", {}, title), h("p", {}, text)));
+    main.append(
+      h("section", { class: "placeholder" }, h("h2", {}, "Not found"), h("p", {}, `There is no view called ${name}.`)),
+    );
   }
 
   async function showStatus() {
@@ -312,5 +364,25 @@ const LM = (() => {
     showStatus();
   });
 
-  return { h, fill, api, ApiError, notify, fail, clearNotices, dialog, footer, confirmBox, list, view, route, protect };
+  return {
+    h,
+    fill,
+    api,
+    ApiError,
+    notify,
+    fail,
+    clearNotices,
+    dialog,
+    footer,
+    confirmBox,
+    list,
+    view,
+    route,
+    protect,
+    replaceRoute,
+    SECTIONS,
+    sectionName,
+    describeTrigger,
+    plural,
+  };
 })();
