@@ -65,7 +65,7 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
       await page.waitForSelector(popup, { state: "detached" });
     });
 
-    await step("the al_ plan then lists its steps, and the deploy applies them after lm_", async () => {
+    await step("the al_ plan then lists its steps", async () => {
       await page.click("#deploy-button");
       await page.waitForSelector(`${popup} .module-lane li`);
       assert.match(await page.textContent(popup), /The lm_ lane already matches the config: nothing to do there/);
@@ -77,12 +77,43 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
       await shot(page, "lanes-02-planned");
       // Nothing is left for lm_, but the deploy still has al_'s steps to take.
       assert.equal(await page.$eval(`${popup} .deploy-confirm`, (b) => b.disabled), false);
+    });
+
+    await step("a deploy a module lane stops partway says what stands and shows what is left", async () => {
+      // HA's answer when al_ fails after lm_ went out (as the server words it), stubbed: the
+      // dialog must not leave the old preview standing as if nothing had happened.
+      await page.route("**/api/deploy", (route) =>
+        route.fulfill({
+          status: 502,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: "deploy_failed",
+            detail: "Deployed and verified: lm_. The al_ lane's deploy stopped or did not verify.",
+            problems: ["automation al_maint_living_room did not load: HA rejected it (see HA's log)"],
+            deployed: ["lm"],
+            result: { prefix: "lm", created: {}, updated: {}, removed: {}, sync: [], synced: {}, unsynced: {}, warnings: [] },
+            modules: {},
+          }),
+        }),
+      );
+      await page.click(`${popup} .deploy-confirm`);
+      await page.waitForFunction((sel) => /Part of this deploy went through/.test(document.querySelector(sel).textContent), popup);
+      const text = await page.textContent(popup);
+      assert.match(text, /Deployed and verified: lm_\. The al_ lane's deploy stopped/);
+      assert.match(text, /al_maint_living_room did not load/);
+      assert.match(await page.textContent(`${popup} .module-lane`), /al_: 12 steps, applied after lm_/);
+      await shot(page, "lanes-03-partial");
+      await page.unroute("**/api/deploy");
+    });
+
+    await step("the deploy then applies al_ after lm_", async () => {
+      assert.equal(await page.$eval(`${popup} .deploy-confirm`, (b) => b.disabled), false);
       await page.click(`${popup} .deploy-confirm`);
       await page.waitForSelector(`${popup} .module-result`);
       const result = await page.textContent(`${popup} .module-result`);
       assert.match(result, /The al_ lane: deployed and verified\./);
       assert.match(result, /Created 12, updated 0, removed 0\./);
-      await shot(page, "lanes-03-deployed");
+      await shot(page, "lanes-04-deployed");
       await page.click(`${popup} button.cancel`);
       await page.waitForSelector(popup, { state: "detached" });
     });

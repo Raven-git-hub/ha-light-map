@@ -4,13 +4,15 @@ applies and writes is P5.2b's, byte for byte.
 
 `tests/golden/switch_off.json` was captured from `main` at the P5.2b merge, before any P6a
 change: the deploy preview, the apply's answer and every write it made to HA, the preview
-after it, every call the three made to HA (reads too, in order), and the Now tab and the
-schedule editor's days on an ordinary day and on both of London's clock changes, against a
-fake HA that still holds the old ha-adaptive-light's `al_` helpers and automations (one of
-them under an id Light Map's own `al_` lane would generate). `lm_only.yaml` holds the
-generated set to the same standard."""
+after it, every call the three made to HA (reads too, in order), the event log, and the Now
+tab and the schedule editor's days on an ordinary day and on both of London's clock
+changes, against a fake HA that still holds the old ha-adaptive-light's `al_` helpers and
+automations (one of them under an id Light Map's own `al_` lane would generate). Then the
+same for the deploy's other paths (`FAILURES`): refused, stale, not verified, names taken,
+no search, a failing read. `lm_only.yaml` holds the generated set to the same standard."""
 
 import json
+import re
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -20,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.core import config, deploy, generate
+from app.core.ha import HAError
 from app.main import create_app
 from tests.fakes import FakeHA, committed_config
 
@@ -122,9 +125,69 @@ def live_facing_output() -> dict:
                         response = client.get(url)
                         reads[url] = [response.status_code, response.json()]
                     out["views"][moment.isoformat()] = reads
-                return json.loads(json.dumps(out))
+                out["log"] = _log(client)
+        out["failures"] = {name: _failure(name) for name in FAILURES}
+        return json.loads(json.dumps(out))
     finally:
         deploy.log.disabled = False
+
+
+# The deploy's other paths, each in a house of its own beside the old system: refused before
+# writing, stale, written but not verified, names already taken, HA's search missing, and
+# HA failing while the crossover report reads the helpers.
+FAILURES = ("refused", "stale", "unverified", "collisions", "search_fails", "helpers_fail")
+
+
+def _log(client: TestClient) -> list:
+    entries = client.get("/api/log", params={"level": "debug"}).json()["entries"]
+    keep = ("level", "category", "room_id", "message", "detail")
+    return [{k: e[k] for k in keep} for e in entries]
+
+
+def _failure(name: str) -> dict:
+    ha = FakeHA(**OLD_SYSTEM)
+    if name == "refused":
+        ha.states = [s for s in ha.states if s["entity_id"] != "switch.reading_relay"]
+    elif name == "collisions":
+        ha.yaml_helpers = {"lm_soft_porch", "al_active_living_room"}
+        ha.states.append(
+            {
+                "entity_id": "automation.lm_bridge_porch",
+                "state": "on",
+                "attributes": {"friendly_name": "My porch", "id": "1700000000001"},
+            }
+        )
+    elif name == "search_fails":
+        ha.search_fails = True
+    elif name == "helpers_fail":
+        real, seen = ha.list_helpers, []
+
+        async def list_helpers(domain):
+            # The deploy's own read goes through; the crossover report's, after it, fails.
+            seen.append(domain)
+            if len(seen) > 1:
+                raise HAError(f"{domain}/list failed")
+            return await real(domain)
+
+        ha.list_helpers = list_helpers
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "config.json"
+        config.save(path, committed_config())
+        app = create_app(ha=ha, config_path=path, verify_delay=0, clock=lambda: MOMENTS[0])
+        with TestClient(app, base_url="http://localhost") as client:
+            out: dict = {}
+            preview = client.get("/api/deploy/preview")
+            out["preview"] = [preview.status_code, preview.json()]
+            fingerprint = (preview.json() or {}).get("fingerprint", "x")
+            if name == "stale":
+                ha.automations["lm_stray"] = {"id": "lm_stray", "triggers": [], "actions": []}
+            elif name == "unverified":
+                ha.disabled.add("lm_bridge_porch")
+            applied = client.post("/api/deploy", json={"fingerprint": fingerprint})
+            out["apply"] = [applied.status_code, applied.json()]
+            out["calls"] = [[method, list(args)] for method, args in ha.calls]
+            out["log"] = _log(client)
+            return out
 
 
 class SwitchOffTest(unittest.TestCase):
@@ -146,11 +209,11 @@ class SwitchOffTest(unittest.TestCase):
         self.assertNotIn("modules", preview)
         self.assertEqual(sorted(applied), ["deployed", "result"])
         self.assertEqual(applied["result"]["prefix"], "lm")
-        # Nothing written is an al_ artefact; no input_select is even read.
+        # Nothing written is an al_ artefact (by id, entity id or name); no input_select is
+        # even read.
         for method, args in out["writes"]:
             named = json.dumps(args)
-            self.assertNotIn('"al_', named, method)
-            self.assertNotIn("AL ", named, method)
+            self.assertIsNone(re.search(r"\bal_|\bAL ", named), (method, named))
         self.assertNotIn(["list_helpers", ["input_select"]], out["calls"])
         self.assertEqual(
             list(out["ha"]["helpers"]["input_select"].values()),

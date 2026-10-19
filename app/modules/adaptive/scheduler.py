@@ -274,8 +274,11 @@ def _resolve(
                 continue
         if not resolved:
             raise SunUnavailable(f"no component of {kind} resolved on {on}")
-        pick = min if kind == "earliest" else max
-        return pick(resolved, key=lambda found: _instant(found[0]))
+        # On a tie, a component that starts when it says beats one moved there from a time
+        # the clocks skip: latest(02:30, 03:00) on a day 02:30 doesn't happen is simply 03:00.
+        if kind == "earliest":
+            return min(resolved, key=lambda found: (_instant(found[0]), found[1] is not None))
+        return max(resolved, key=lambda found: (_instant(found[0]), found[1] is None))
 
     raise ValueError(f"unknown trigger type: {kind}")
 
@@ -323,11 +326,20 @@ def compute_day(
     day, and the order is the order they happen in."""
     sun = provider.times(on)
     first, last = _day_span(on, tzinfo)
+    # A day the clocks skip whole (Apia's 30 December 2011, crossing the date line) has no
+    # moment for any section: clamped into it, each would start on the day before.
+    missing = _instant(first) > _instant(last)
     candidates: list[Boundary] = []
     for section in schedule["sections"]:
         trigger = section["trigger"]
         priority = section.get("priority", default_priority(trigger))
         name = section.get("name", section["id"])
+        if missing:
+            reason = f"{on} doesn't happen here: the clocks skip the whole day"
+            candidates.append(
+                Boundary(section["id"], name, None, priority, outcome="collapsed", reason=reason)
+            )
+            continue
         try:
             planned, skipped = _resolve(trigger, sun, on, tzinfo)
         except SunUnavailable as exc:
@@ -476,18 +488,27 @@ def active_section_at(
     and the first boundary the section in force is the last one from yesterday. This is
     what makes the runtime level-triggered: a start after downtime catches up by asking it.
 
+    It looks at tomorrow too: where the clocks went back across midnight just after it
+    (St John's, Newfoundland, until 2010: 00:01 back to 23:01), the repeated hour reads as
+    yesterday's date, yet a section of today's that started at 00:00 is in force, and must
+    not be taken back. Anywhere else tomorrow has started nothing yet.
+
     `days` gives a day's boundaries as `compute_day` would, for a caller that has them
     already (`tools/sweep.py`, which asks this about every section of a year of days).
     """
-    for delta in range(LOOKBACK_DAYS + 1):
+    started: list[Boundary] = []
+    for delta in range(-1, LOOKBACK_DAYS + 1):
         day = when.date() - timedelta(days=delta)
         found = days(day) if days is not None else compute_day(schedule, provider, day, tzinfo)
-        ran = [b for b in found if b.ran]
-        past = [b for b in ran if _not_after(b.planned, when)]
+        past = [b for b in found if b.ran and _not_after(b.planned, when)]
         if past:
-            last = past[-1]
-            return last.section, last.planned
-    raise SunUnavailable("could not determine an active section")
+            started.append(past[-1])  # each day's are in the order they happen
+            if delta >= 0:
+                break  # an earlier day's all started before this one's
+    if not started:
+        raise SunUnavailable("could not determine an active section")
+    last = max(started, key=lambda b: _instant(b.planned))
+    return last.section, last.planned
 
 
 # -- The module's entry points ---------------------------------------------------------

@@ -174,6 +174,24 @@ def check_day(
     return problems
 
 
+def _clock_change(start: datetime, end: datetime, zone: TimeZone | None) -> datetime | None:
+    """The first second after `start`, up to `end`, at which the zone's clocks read
+    another offset, or None if they don't change between the two."""
+    if zone is None:
+        return None
+    offset = start.astimezone(zone).utcoffset()
+    if end.astimezone(zone).utcoffset() == offset:
+        return None
+    before, after = int(start.timestamp()), int(end.timestamp()) + 1
+    while after - before > 1:
+        middle = (before + after) // 2
+        if datetime.fromtimestamp(middle, zone).utcoffset() == offset:
+            before = middle
+        else:
+            after = middle
+    return datetime.fromtimestamp(after, timezone.utc)
+
+
 def check_in_force(
     boundaries: Sequence[Boundary],
     profile: Mapping[str, Any],
@@ -185,10 +203,13 @@ def check_in_force(
     """What the runtime would disagree with in one day's report (nothing, for a day the
     scheduler got right): every section reported as run must be the one
     `active_section_at` (the runtime's own choice of the section in force) gives at its
-    start and still gives one second before its end (the next kept start, or for the day's
-    last, the next day's start), so it is in force over that whole, non-empty stretch of its
-    day. Where they disagree, the Now tab shows a section that never comes into force.
-    `days` gives the boundaries of a day already computed (`active_section_at`'s own)."""
+    start, just after the clocks change if they do while it is in force (a repeated hour
+    could take it back), and still one second before its end (the next kept start, or for
+    the day's last, the next day's start). The runtime's choice only moves on as kept
+    starts pass, so that puts it in force over that whole, non-empty stretch of its day.
+    Where they disagree, the Now tab shows a section that never comes into force, or one
+    the runtime would leave and fire again. `days` gives the boundaries of a day already
+    computed (`active_section_at`'s own)."""
     problems = []
     kept = [b for b in boundaries if b.ran and b.planned is not None]
     for i, b in enumerate(kept):
@@ -201,7 +222,12 @@ def check_in_force(
                 f"{b.section} is never in force: the next section starts no later than it does"
             )
             continue
-        for label, moment in (("starts", start), ("ends", end - timedelta(seconds=1))):
+        moments = [("starts", start)]
+        change = _clock_change(start, end - timedelta(seconds=1), zone)
+        if change is not None:
+            moments.append(("is in force and the clocks change", change))
+        moments.append(("ends", end - timedelta(seconds=1)))
+        for label, moment in moments:
             try:
                 section, since = active_section_at(
                     profile, provider, _local(moment, zone), zone, days=days

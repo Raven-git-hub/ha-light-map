@@ -1,6 +1,7 @@
 """app.core.deploy against the fake HA: reconcile the lm_ lane, verify after writing, stay
 in the lane, never drive a bulb, and write Areas from the committed snapshot."""
 
+import contextlib
 import copy
 import unittest
 from unittest import mock
@@ -830,8 +831,9 @@ class CrossoverTest(unittest.IsolatedAsyncioTestCase):
         )
         # Off, the al_ names are no business of the report.
         self.assertEqual((await deploy.crossover(ha, committed_config()))["collisions"], [])
-        # A module lane's names HA can't be read for are listed as unchecked; the switching
-        # plane's report still stands.
+        # A module lane's helpers HA can't list go unchecked, and the report says so; the
+        # rest of its names (another domain's helpers, its automations) are still checked,
+        # and the switching plane's report still stands.
         real = ha.list_helpers
 
         async def failing(domain):
@@ -845,11 +847,30 @@ class CrossoverTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             report["errors"],
             [
-                "could not read HA's helpers to check the al_ lane's names: input_select/list "
-                "failed: unknown command"
+                "could not read HA's input_select helpers to check the al_ lane's names: "
+                "input_select/list failed: unknown command"
             ],
         )
-        self.assertEqual(report["collisions"], [])
+        self.assertEqual(len(report["collisions"]), 2)
+
+    async def test_the_switching_planes_own_names_unread_fail_the_report(self):
+        # Unlike a module lane's: the switching plane's report is the deploy's, and is never
+        # given without its names checked.
+        ha = FakeHA()
+        real = ha.list_helpers
+
+        async def failing(domain):
+            if domain == "input_boolean":
+                raise HAError("input_boolean/list failed")
+            return await real(domain)
+
+        ha.list_helpers = failing
+        for wired in (False, True):
+            with self.subTest(wired=wired), contextlib.ExitStack() as stack:
+                if wired:
+                    stack.enter_context(adaptive_wired())
+                with self.assertRaises(HAError):
+                    await deploy.crossover(ha, committed_config())
 
     async def test_an_ha_without_search_says_so(self):
         report = await deploy.crossover(FakeHA(search_fails=True), committed_config())

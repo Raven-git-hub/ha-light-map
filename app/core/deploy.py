@@ -707,17 +707,22 @@ async def crossover(ha: HAClient, config: Mapping[str, Any]) -> dict[str, Any]:
     collisions = []
     helpers: dict[str, set[Any]] = {}
     for prefix, desired in lanes.items():
-        domains = lane_domains(desired)
-        try:
-            for domain in domains:
-                if domain not in helpers:
+        domains = []
+        for domain in lane_domains(desired):
+            if domain not in helpers:
+                try:
                     helpers[domain] = {i.get("id") for i in await ha.list_helpers(domain)}
-        except HAError as exc:
-            if prefix == switching.PREFIX:
-                raise
-            # A module lane's names unchecked must never cost the switching plane its report.
-            errors.append(f"could not read HA's helpers to check the {prefix}_ lane's names: {exc}")
-            continue
+                except HAError as exc:
+                    if prefix == switching.PREFIX:
+                        raise
+                    # A module lane's helpers HA can't list must never cost the switching
+                    # plane its report: those names go unchecked, and the report says so.
+                    errors.append(
+                        f"could not read HA's {domain} helpers to check the {prefix}_ lane's "
+                        f"names: {exc}"
+                    )
+                    continue
+            domains.append(domain)
         for domain in domains:
             for item_id in desired[domain]:
                 if f"{domain}.{item_id}" in by_entity and item_id not in helpers[domain]:

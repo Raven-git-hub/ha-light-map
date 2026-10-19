@@ -253,7 +253,7 @@ class BrowserTest(unittest.TestCase):
             app = create_app(ha=ha, config_path=path, verify_delay=0)
             with serve(app) as url:
                 report = self.run_script(LANES_SCRIPT, url)
-            self.assertEqual(len(report["steps"]), 4)
+            self.assertEqual(len(report["steps"]), 6)
             self.assertIn("lm_bridge_chandelier_1", ha.automations)
             self.assertIn("al_maint_living_room", ha.automations)
             self.assertEqual(sorted(ha.helpers["input_select"]), ["al_scene_living_room"])

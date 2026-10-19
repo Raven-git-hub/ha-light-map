@@ -484,6 +484,70 @@ class ClockChangeTest(unittest.TestCase):
         )
         self.assertEqual(seen[1], ("sunrise", "01:30", "01:30"))
 
+    def test_a_day_the_clocks_skip_whole_collapses_every_section(self):
+        # Apia crossed the date line: 29 December 2011 was followed by the 31st.
+        apia = ZoneInfo("Pacific/Apia")
+        sun = FixedSunProvider(time(6, 30), time(19, 0), apia)
+        found, _ = self.day(schedule(), date(2011, 12, 30), sun, apia)
+        for b in found.values():
+            self.assertFalse(b.ran)
+            self.assertEqual(
+                b.reason, "2011-12-30 doesn't happen here: the clocks skip the whole day"
+            )
+        found, _ = self.day(schedule(), date(2011, 12, 31), sun, apia)
+        self.assertTrue(all(b.ran for b in found.values()))
+
+    def test_a_repeated_hour_after_midnight_never_takes_a_section_back(self):
+        # St John's went back from 00:01 to 23:01 on 7 November 2010: the repeated hour
+        # reads as the 6th, after sunrise (00:00 on the 7th) had started. Read by the date
+        # alone, it took the day back to the 6th's sleep, and the runtime would have fired
+        # sleep, then sunrise, again.
+        st_johns = ZoneInfo("America/St_Johns")
+        sun = FixedSunProvider(time(7, 0), time(17, 0), st_johns)
+        profile = {**clocks(sunrise="00:00", day="00:10"), "collision_policy": "clamp"}
+        found, _ = self.day(profile, date(2010, 11, 7), sun, st_johns)
+        repeated = datetime(2010, 11, 6, 23, 30, fold=1, tzinfo=st_johns)
+        self.assertEqual(
+            scheduler.active_section_at(profile, sun, repeated, st_johns),
+            ("sunrise", found["sunrise"].planned),
+        )
+
+        # And the sweep's check would have caught the old reading: it looks just after the
+        # clocks change, while sunrise is in force.
+        def by_date_alone(schedule_, provider, when, tzinfo=None, *, days=None):
+            for delta in range(3):
+                ran = [b for b in days(when.date() - timedelta(days=delta)) if b.ran]
+                past = [b for b in ran if scheduler._not_after(b.planned, when)]
+                if past:
+                    return past[-1].section, past[-1].planned
+            raise SunUnavailable("none")
+
+        boundaries = scheduler.compute_day(profile, sun, date(2010, 11, 7), st_johns)
+        computed = sweep._Days(profile, sun)
+        with unittest.mock.patch.object(sweep, "active_section_at", by_date_alone):
+            problems = sweep.check_in_force(boundaries, profile, sun, st_johns, days=computed)
+        self.assertEqual(
+            problems,
+            [
+                "sunrise is reported in force from 00:00, but just as it is in force and the "
+                "clocks change the runtime has sleep (from 22:00) in force"
+            ],
+        )
+
+    def test_a_composite_tie_goes_to_the_time_that_happens(self):
+        # latest(02:30, 03:00) on a day 02:30 doesn't happen is simply 03:00: not moved.
+        profile = copy.deepcopy(schedule())
+        profile["sections"][0]["trigger"] = {
+            "type": "latest",
+            "of": [{"type": "clock", "time": "02:30"}, {"type": "clock", "time": "03:00"}],
+        }
+        found, _ = self.day(profile)
+        self.assertEqual(found["sunrise"].planned, datetime(2026, 3, 8, 3, 0, tzinfo=NEW_YORK))
+        self.assertIsNone(found["sunrise"].shifted)
+        profile["sections"][0]["trigger"]["type"] = "earliest"
+        found, _ = self.day(profile)
+        self.assertIsNone(found["sunrise"].shifted)
+
     def test_the_now_tab_says_a_start_was_moved_and_why(self):
         from app.main import schedule_day
 
@@ -499,6 +563,30 @@ class ClockChangeTest(unittest.TestCase):
         )
         day_ = next(b for b in view["boundaries"] if b["section"] == "day")
         self.assertEqual((day_["outcome"], day_["reason"], day_["ends"]), ("ran", None, "03:00"))
+
+    def test_the_now_tab_explains_a_skipped_start_and_a_repeated_hours_second_pass(self):
+        from app.main import schedule_day
+
+        # Collapsed, a section keeps the time it would have started: for one the clocks
+        # skip, that is the gap's end, which the reason now says.
+        profile = clocks(sunrise="00:30", day="01:30", afternoon="02:30", sunset="03:00")
+        profile = with_section(profile, "afternoon", priority=10)  # sunset wins the tie
+        view = schedule_day(profile, self.SUN, datetime(2026, 3, 8, 12, 0, tzinfo=UTC), NEW_YORK)
+        afternoon = next(b for b in view["boundaries"] if b["section"] == "afternoon")
+        self.assertEqual((afternoon["outcome"], afternoon["start"]), ("collapsed", "03:00"))
+        self.assertIn("gap conflict", afternoon["reason"])
+        self.assertIn("02:30 doesn't happen on 2026-03-08", afternoon["reason"])
+        # A clamp into the hour the clocks repeat: 01:45 EDT + 30 minutes is the second
+        # 01:15, which reads earlier than the start before it, so the reason says so.
+        profile = {**clocks(sunrise="01:45", day="01:50"), "collision_policy": "clamp"}
+        view = schedule_day(profile, self.SUN, datetime(2026, 11, 1, 12, 0, tzinfo=UTC), NEW_YORK)
+        day_ = next(b for b in view["boundaries"] if b["section"] == "day")
+        self.assertEqual((day_["start"], day_["outcome"]), ("01:15", "clamped"))
+        self.assertEqual(
+            day_["reason"],
+            "moved later, to start 30 min after sunrise (the second 01:15: the clocks go back "
+            "today)",
+        )
 
 
 class SweepTest(unittest.TestCase):
@@ -612,13 +700,13 @@ class SweepTest(unittest.TestCase):
             report, profile, ClockChangeTest.SUN, NEW_YORK, days=lambda day: report
         )
         # Read by instant, the skipped 02:30 comes after night's 03:00: the runtime moves
-        # from day straight to night, and sunset never comes into force.
+        # from day straight to night as the clocks change, and sunset never comes into force.
         self.assertEqual(
             problems,
             [
                 (
-                    "day is reported in force from 01:30, but just as it ends the runtime has "
-                    "night (from 03:00) in force"
+                    "day is reported in force from 01:30, but just as it is in force and the "
+                    "clocks change the runtime has night (from 03:00) in force"
                 ),
                 "sunset is never in force: the next section starts no later than it does",
             ],

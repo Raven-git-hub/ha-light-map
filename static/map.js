@@ -1714,13 +1714,14 @@
             cancel.textContent = "Close";
           } catch (err) {
             go.textContent = "Deploy to Home Assistant";
-            if (err.error === "preview_stale")
-              // A module lane found stale once lm_ was written says what was deployed.
-              await load(
-                err.body?.deployed
-                  ? err.message
-                  : "What a deploy would do changed while you were reviewing: this is the new preview.",
-              );
+            if (err.body?.deployed) {
+              // A module lane stopped the deploy after lm_ was written (stale, or it failed):
+              // part of it stands, so the preview on screen is out of date. Show what is
+              // left, and why the rest stopped.
+              await load("Part of this deploy went through (see below): this is the preview of what is left.");
+              showError(errors, err);
+            } else if (err.error === "preview_stale")
+              await load("What a deploy would do changed while you were reviewing: this is the new preview.");
             else {
               showError(errors, err);
               update();

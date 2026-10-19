@@ -1052,6 +1052,12 @@ def _hhmm(moment: datetime | None) -> str | None:
     return moment.strftime("%H:%M") if moment is not None else None
 
 
+def _second_pass(moment: datetime) -> bool:
+    """Whether a time is the second of the two its wall clock reads in an hour the clocks
+    repeat (a fall-back)."""
+    return bool(moment.fold) and moment.utcoffset() != moment.replace(fold=0).utcoffset()
+
+
 def _profile(doc: Mapping[str, Any], profile_id: str) -> Mapping[str, Any]:
     profile = next((p for p in doc.get("schedule_profiles", []) if p["id"] == profile_id), None)
     if profile is None:
@@ -1127,8 +1133,16 @@ def schedule_day(
             reason = f"moved later, to start {minimum} min after {previous}"
             if shifted:
                 reason = f"{shifted}; {reason}"
+        elif boundary.ran:
+            reason = shifted
         else:
-            reason = shifted or boundary.reason
+            # A skipped section keeps the time it would have started, which for one the
+            # clocks skip is the gap's end: say so, beside why it is skipped.
+            reason = "; ".join(r for r in (boundary.reason, boundary.shifted) if r) or None
+        if reason and boundary.planned is not None and _second_pass(boundary.planned):
+            # Where the clocks go back, a time in the repeated hour reads as earlier than one
+            # before it: say which of the two it is.
+            reason += f" (the second {_hhmm(boundary.planned)}: the clocks go back today)"
         entries.append(
             {
                 "section": boundary.section,
@@ -2132,12 +2146,16 @@ async def deploy_apply(request: Request, body: Confirm) -> dict[str, Any]:
         )
         answer: dict[str, Any] = {"deployed": True, "result": result}
         if lanes:
-            answer["modules"] = await _apply_module_lanes(request, ha, doc, lanes)
+            answer["modules"] = await _apply_module_lanes(request, ha, doc, lanes, result)
         return answer
 
 
 async def _apply_module_lanes(
-    request: Request, ha: HAClient, doc: Mapping[str, Any], lanes: Mapping[str, Lane]
+    request: Request,
+    ha: HAClient,
+    doc: Mapping[str, Any],
+    lanes: Mapping[str, Lane],
+    result: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Each module lane, in order, once the switching plane is written and verified (the
     soft switches and bridges a module commands exist then): `{prefix: {deployed, result}
@@ -2149,30 +2167,44 @@ async def _apply_module_lanes(
     applied only if that is still the plan the preview showed: `lm_` writes nothing a
     module lane's plan reads, so a difference means HA moved on meanwhile. A stale lane
     (409 `preview_stale`) or one that fails or doesn't verify (502 `deploy_failed`) stops
-    the deploy there; the error's `deployed` names the lanes that were deployed and
-    verified before it, which stand."""
+    the deploy there. Its error says what stands: `deployed` names the lanes deployed and
+    verified before it, `result` is the `lm_` lane's summary (as a deploy that went through
+    would answer it: its soft switches left unsynced among it) and `modules` what each
+    module lane before it did."""
     deployed = [switching.PREFIX]
     done: dict[str, Any] = {}
+
+    def so_far() -> dict[str, Any]:
+        return {"deployed": deployed, "result": result, "modules": dict(done)}
+
     for prefix, (previewed, refused) in lanes.items():
         if previewed is None:
             done[prefix] = {"deployed": False, "refused": refused}
             continue
-        lane_plan, _ = await _prepare_lane(ha, doc, prefix)
+        lane_plan, problems = await _prepare_lane(ha, doc, prefix)
         if lane_plan is None or _plan_digest(lane_plan) != _plan_digest(previewed):
+            # Planned again once lm_ is written, it would now be refused (HA can't be
+            # read, say: not a change to report as one), or it would do something else.
+            why = (
+                "would now be refused"
+                if lane_plan is None
+                else "would do something other than the preview showed"
+            )
             _record(
                 request,
                 "deploy",
-                f"The {prefix}_ lane changed after the preview, so it was not deployed.",
-                detail={"deployed": deployed},
+                f"The {prefix}_ lane {why}, so it was not deployed.",
+                detail={"deployed": deployed, "problems": problems},
                 level="warning",
             )
             raise ApiError(
                 409,
                 "preview_stale",
-                f"Deployed and verified: {', '.join(f'{p}_' for p in deployed)}. What the "
-                f"{prefix}_ lane would do has changed since the preview, so it was not "
-                "applied: review the preview again.",
-                deployed=deployed,
+                f"Deployed and verified: {', '.join(f'{p}_' for p in deployed)}. Planned "
+                f"again, the {prefix}_ lane {why}, so it was not applied: review the preview "
+                "again.",
+                problems=problems,
+                **so_far(),
             )
         try:
             report = await deploy.apply(ha, lane_plan)
@@ -2196,7 +2228,7 @@ async def _apply_module_lanes(
                 "part of it. Preview and deploy again: the next deploy reconciles from "
                 "whatever HA holds.",
                 problems=problems,
-                deployed=deployed,
+                **so_far(),
             ) from exc
         log.info("deployed the %s_ lane: %d steps", prefix, len(lane_plan["steps"]))
         result = deploy.summarise(lane_plan, report)

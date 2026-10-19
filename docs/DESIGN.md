@@ -1028,12 +1028,15 @@ plan, the same fingerprint, the same writes and the same answer.
   `lm_`, reports `al_` as not applied with its reason, and the next preview shows its plan.
 - **Each module lane is planned again just before it is written.** `lm_` changes nothing a
   module lane's plan reads (the lane's own artefacts and the entities it addresses), so the
-  plan must be the one the preview showed; if HA has moved on in between, the lane isn't
-  applied (409 `preview_stale`, with `deployed` naming the lanes that were), and the next
-  preview starts from whatever HA then holds.
-- **A lane that fails or doesn't verify stops the deploy there** (502 `deploy_failed`, with
-  `deployed`): the lanes before it stand, verified, and the next deploy reconciles the
-  rest. Each lane deployed is recorded in the event log.
+  plan must be the one the preview showed; if HA has moved on in between, or the lane would
+  now be refused (HA can't be read, say, which is said as such, with why), it isn't
+  applied (409 `preview_stale`), and the next preview starts from whatever HA then holds.
+- **A lane that fails or doesn't verify stops the deploy there** (502 `deploy_failed`): the
+  lanes before it stand, verified, and the next deploy reconciles the rest. Either way the
+  error says what stands: `deployed` names the lanes deployed and verified, `result` is
+  the `lm_` lane's summary (its unsynced soft switches among it, as a deploy that went
+  through would report them) and `modules` what each module lane before it did; the Map
+  then shows the preview of what is left. Each lane deployed is recorded in the event log.
 - The answer is the `lm_` lane's summary (`result`), as before, and with module lanes wired,
   `modules`: per lane, whether it was `deployed`, with its summary, or why it wasn't.
 
@@ -1137,8 +1140,15 @@ force. So the scheduler now reasons in real time throughout:
 
 So every section reported as run is in force from its start to its end, exactly as the
 runtime picks it, and `tools/sweep.py` checks that on every day it computes (below). The
-fall-back handling is unchanged: `active_section_at` compares instants, so the repeated hour
-never takes a section back.
+fall-back handling stands: `active_section_at` compares instants, so the repeated hour never
+takes a section back. It also looks at the day after `when`'s date, for the one case where
+the repeated hour comes after a midnight (St John's, Newfoundland, until 2010, went back from
+00:01 to 23:01): there it reads as the day before, yet a section that started at 00:00 is in
+force. And a sun event in a repeated hour keeps the pass it really happens in (the
+predecessor's wall-clock offset moved it to the first, as much as an hour early). A day the
+clocks skip whole (Apia's 30 December 2011, across the date line) collapses every section.
+In the Now tab a moved start says why, and a moved or skipped one in a repeated hour's
+second pass says it is the second.
 
 It is **level-triggered**: `active_section_at` says which section is in force at a moment
 (looking back up to two days, since before the day's first boundary the last section of

@@ -1007,6 +1007,3138 @@
    ]
   ]
  ],
+ "failures": {
+  "collisions": {
+   "apply": [
+    409,
+    {
+     "detail": "Refused before writing.",
+     "error": "deploy_refused",
+     "problems": [
+      "input_boolean.lm_soft_porch already exists in HA but is not one of Light Map's UI-managed helpers (a YAML helper, or another helper's entity renamed to it?), so HA would create input_boolean.lm_soft_porch_2: free the id there"
+     ]
+    }
+   ],
+   "calls": [
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_1"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_2"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_3"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.kitchen_strip"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.porch"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.reading_lamp"
+     ]
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ]
+   ],
+   "log": [],
+   "preview": [
+    200,
+    {
+     "coexistence": {
+      "live_bulbs": [
+       "chandelier_1",
+       "chandelier_2",
+       "chandelier_3",
+       "reading_lamp"
+      ],
+      "note": "Light Map runs beside ha-adaptive-light until cutover (P6). Deploying never drives a bulb: each soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge acts only when its soft switch flips. A bulb with a hard switch is live: once deployed, pressing the switch drives the bulb through Light Map, while the old system still drives it too."
+     },
+     "crossover": {
+      "collisions": [
+       "input_boolean.lm_soft_porch is already in HA but isn't one of Light Map's UI-managed helpers (a YAML helper, or another helper's entity renamed to it?): the deploy is refused until the id is freed",
+       "automation.lm_bridge_porch is already taken by automation id 1700000000001 (My porch): Light Map's lm_bridge_porch would load as automation.lm_bridge_porch_2"
+      ],
+      "drivers": [
+       {
+        "adaptive_light": true,
+        "bulbs": [
+         "light.reading_lamp"
+        ],
+        "entity_id": "automation.al_maintenance_living_room",
+        "id": "al_maintenance_living_room",
+        "kind": "automation",
+        "name": "al_maintenance_living_room"
+       },
+       {
+        "adaptive_light": true,
+        "bulbs": [
+         "light.chandelier_1"
+        ],
+        "entity_id": "automation.al_scene_living_room_day",
+        "id": "al_scene_living_room_day",
+        "kind": "automation",
+        "name": "al_scene_living_room_day"
+       },
+       {
+        "adaptive_light": false,
+        "bulbs": [
+         "light.porch"
+        ],
+        "entity_id": "automation.1700000000000",
+        "id": "1700000000000",
+        "kind": "automation",
+        "name": "1700000000000"
+       }
+      ],
+      "errors": [],
+      "groups": [
+       {
+        "bulbs": [
+         "light.chandelier_1",
+         "light.chandelier_2",
+         "light.chandelier_3"
+        ],
+        "entity_id": "light.living_room_group",
+        "name": "Living room lights"
+       }
+      ]
+     },
+     "ready": false,
+     "refused": [
+      "input_boolean.lm_soft_porch already exists in HA but is not one of Light Map's UI-managed helpers (a YAML helper, or another helper's entity renamed to it?), so HA would create input_boolean.lm_soft_porch_2: free the id there"
+     ]
+    }
+   ]
+  },
+  "helpers_fail": {
+   "apply": [
+    502,
+    {
+     "detail": "Home Assistant: input_boolean/list failed",
+     "error": "ha_error"
+    }
+   ],
+   "calls": [
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_1"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_2"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_3"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.kitchen_strip"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.porch"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.reading_lamp"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ]
+   ],
+   "log": [],
+   "preview": [
+    502,
+    {
+     "detail": "Home Assistant: input_boolean/list failed",
+     "error": "ha_error"
+    }
+   ]
+  },
+  "refused": {
+   "apply": [
+    409,
+    {
+     "detail": "Refused before writing.",
+     "error": "deploy_refused",
+     "problems": [
+      "switch.reading_relay (hard switch 'reading_switch') is not in Home Assistant"
+     ]
+    }
+   ],
+   "calls": [
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_1"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_2"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_3"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.kitchen_strip"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.porch"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.reading_lamp"
+     ]
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ]
+   ],
+   "log": [],
+   "preview": [
+    200,
+    {
+     "coexistence": {
+      "live_bulbs": [
+       "chandelier_1",
+       "chandelier_2",
+       "chandelier_3",
+       "reading_lamp"
+      ],
+      "note": "Light Map runs beside ha-adaptive-light until cutover (P6). Deploying never drives a bulb: each soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge acts only when its soft switch flips. A bulb with a hard switch is live: once deployed, pressing the switch drives the bulb through Light Map, while the old system still drives it too."
+     },
+     "crossover": {
+      "collisions": [],
+      "drivers": [
+       {
+        "adaptive_light": true,
+        "bulbs": [
+         "light.reading_lamp"
+        ],
+        "entity_id": "automation.al_maintenance_living_room",
+        "id": "al_maintenance_living_room",
+        "kind": "automation",
+        "name": "al_maintenance_living_room"
+       },
+       {
+        "adaptive_light": true,
+        "bulbs": [
+         "light.chandelier_1"
+        ],
+        "entity_id": "automation.al_scene_living_room_day",
+        "id": "al_scene_living_room_day",
+        "kind": "automation",
+        "name": "al_scene_living_room_day"
+       },
+       {
+        "adaptive_light": false,
+        "bulbs": [
+         "light.porch"
+        ],
+        "entity_id": "automation.1700000000000",
+        "id": "1700000000000",
+        "kind": "automation",
+        "name": "1700000000000"
+       }
+      ],
+      "errors": [],
+      "groups": [
+       {
+        "bulbs": [
+         "light.chandelier_1",
+         "light.chandelier_2",
+         "light.chandelier_3"
+        ],
+        "entity_id": "light.living_room_group",
+        "name": "Living room lights"
+       }
+      ]
+     },
+     "ready": false,
+     "refused": [
+      "switch.reading_relay (hard switch 'reading_switch') is not in Home Assistant"
+     ]
+    }
+   ]
+  },
+  "search_fails": {
+   "apply": [
+    200,
+    {
+     "deployed": true,
+     "result": {
+      "created": {
+       "automation": [
+        "lm_bridge_chandelier_1",
+        "lm_bridge_chandelier_2",
+        "lm_bridge_chandelier_3",
+        "lm_bridge_kitchen_strip",
+        "lm_bridge_porch",
+        "lm_bridge_reading_lamp",
+        "lm_hard_living_all_off",
+        "lm_hard_reading_switch"
+       ],
+       "input_boolean": [
+        "lm_soft_chandelier_1",
+        "lm_soft_chandelier_2",
+        "lm_soft_chandelier_3",
+        "lm_soft_kitchen_strip",
+        "lm_soft_porch",
+        "lm_soft_reading_lamp"
+       ]
+      },
+      "prefix": "lm",
+      "removed": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "sync": [
+       "input_boolean.lm_soft_chandelier_1",
+       "input_boolean.lm_soft_chandelier_2",
+       "input_boolean.lm_soft_chandelier_3",
+       "input_boolean.lm_soft_kitchen_strip",
+       "input_boolean.lm_soft_porch",
+       "input_boolean.lm_soft_reading_lamp"
+      ],
+      "synced": {
+       "input_boolean.lm_soft_chandelier_1": "on",
+       "input_boolean.lm_soft_chandelier_2": "on",
+       "input_boolean.lm_soft_kitchen_strip": "off",
+       "input_boolean.lm_soft_porch": "off",
+       "input_boolean.lm_soft_reading_lamp": "off"
+      },
+      "unsynced": {
+       "input_boolean.lm_soft_chandelier_3": "unavailable"
+      },
+      "updated": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "warnings": []
+     }
+    }
+   ],
+   "calls": [
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_1"
+     ]
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft chandelier_1"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft chandelier_2"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft chandelier_3"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft kitchen_strip"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft porch"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft reading_lamp"
+      }
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "call_service",
+     [
+      "input_boolean",
+      "turn_on",
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_1"
+      }
+     ]
+    ],
+    [
+     "call_service",
+     [
+      "input_boolean",
+      "turn_on",
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_2"
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_chandelier_1",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_1",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.chandelier_1"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_1",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.chandelier_1"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_chandelier_1",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Chandelier 1 (light.chandelier_1) follows input_boolean.lm_soft_chandelier_1. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_chandelier_1",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_1",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_1",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_chandelier_2",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_2",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.chandelier_2"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_2",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.chandelier_2"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_chandelier_2",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Chandelier 2 (light.chandelier_2) follows input_boolean.lm_soft_chandelier_2. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_chandelier_2",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_2",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_2",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_chandelier_3",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_3",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.chandelier_3"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_3",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.chandelier_3"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_chandelier_3",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Chandelier 3 (light.chandelier_3) follows input_boolean.lm_soft_chandelier_3. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_chandelier_3",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_3",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_3",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_kitchen_strip",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_kitchen_strip",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.kitchen_strip"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_kitchen_strip",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.kitchen_strip"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_kitchen_strip",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Kitchen strip (light.kitchen_strip) follows input_boolean.lm_soft_kitchen_strip. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_kitchen_strip",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_kitchen_strip",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_kitchen_strip",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_porch",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_porch",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.porch"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_porch",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.porch"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_porch",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Porch (light.porch) follows input_boolean.lm_soft_porch. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_porch",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_porch",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_porch",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_reading_lamp",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_reading_lamp",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.reading_lamp"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_reading_lamp",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.reading_lamp"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_reading_lamp",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Reading lamp (light.reading_lamp) follows input_boolean.lm_soft_reading_lamp. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_reading_lamp",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_reading_lamp",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_reading_lamp",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_hard_living_all_off",
+      {
+       "actions": [
+        {
+         "action": "input_boolean.turn_off",
+         "target": {
+          "entity_id": [
+           "input_boolean.lm_soft_chandelier_1",
+           "input_boolean.lm_soft_chandelier_2",
+           "input_boolean.lm_soft_chandelier_3",
+           "input_boolean.lm_soft_reading_lamp"
+          ]
+         }
+        }
+       ],
+       "alias": "lm_hard_living_all_off",
+       "conditions": [
+        {
+         "condition": "template",
+         "value_template": "{{ trigger.from_state is not none and trigger.to_state is not none }}"
+        }
+       ],
+       "description": "Light Map hard switch: All off button turns switching group All living room lights (4 bulbs) off. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_hard_living_all_off",
+       "mode": "queued",
+       "triggers": [
+        {
+         "entity_id": "event.living_room_button",
+         "not_from": [
+          "unavailable",
+          "unknown"
+         ],
+         "not_to": [
+          "unavailable",
+          "unknown"
+         ],
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_hard_reading_switch",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "trigger",
+             "id": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "input_boolean.turn_on",
+             "target": {
+              "entity_id": [
+               "input_boolean.lm_soft_reading_lamp"
+              ]
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "trigger",
+             "id": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "input_boolean.turn_off",
+             "target": {
+              "entity_id": [
+               "input_boolean.lm_soft_reading_lamp"
+              ]
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_hard_reading_switch",
+       "conditions": [],
+       "description": "Light Map hard switch: Reading switch is followed by Reading lamp (light.reading_lamp). Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_hard_reading_switch",
+       "mode": "queued",
+       "triggers": [
+        {
+         "entity_id": "switch.reading_relay",
+         "from": "off",
+         "id": "on",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "switch.reading_relay",
+         "from": "on",
+         "id": "off",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ]
+   ],
+   "log": [
+    {
+     "category": "deploy",
+     "detail": {
+      "created": {
+       "automation": [
+        "lm_bridge_chandelier_1",
+        "lm_bridge_chandelier_2",
+        "lm_bridge_chandelier_3",
+        "lm_bridge_kitchen_strip",
+        "lm_bridge_porch",
+        "lm_bridge_reading_lamp",
+        "lm_hard_living_all_off",
+        "lm_hard_reading_switch"
+       ],
+       "input_boolean": [
+        "lm_soft_chandelier_1",
+        "lm_soft_chandelier_2",
+        "lm_soft_chandelier_3",
+        "lm_soft_kitchen_strip",
+        "lm_soft_porch",
+        "lm_soft_reading_lamp"
+       ]
+      },
+      "prefix": "lm",
+      "removed": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "sync": [
+       "input_boolean.lm_soft_chandelier_1",
+       "input_boolean.lm_soft_chandelier_2",
+       "input_boolean.lm_soft_chandelier_3",
+       "input_boolean.lm_soft_kitchen_strip",
+       "input_boolean.lm_soft_porch",
+       "input_boolean.lm_soft_reading_lamp"
+      ],
+      "synced": {
+       "input_boolean.lm_soft_chandelier_1": "on",
+       "input_boolean.lm_soft_chandelier_2": "on",
+       "input_boolean.lm_soft_kitchen_strip": "off",
+       "input_boolean.lm_soft_porch": "off",
+       "input_boolean.lm_soft_reading_lamp": "off"
+      },
+      "unsynced": {
+       "input_boolean.lm_soft_chandelier_3": "unavailable"
+      },
+      "updated": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "warnings": []
+     },
+     "level": "info",
+     "message": "Deployed the switching plane: 14 created, 0 updated, 0 removed.",
+     "room_id": null
+    }
+   ],
+   "preview": [
+    200,
+    {
+     "coexistence": {
+      "live_bulbs": [
+       "chandelier_1",
+       "chandelier_2",
+       "chandelier_3",
+       "reading_lamp"
+      ],
+      "note": "Light Map runs beside ha-adaptive-light until cutover (P6). Deploying never drives a bulb: each soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge acts only when its soft switch flips. A bulb with a hard switch is live: once deployed, pressing the switch drives the bulb through Light Map, while the old system still drives it too."
+     },
+     "crossover": {
+      "collisions": [],
+      "drivers": [],
+      "errors": [
+       "could not ask HA which automations, scripts and scenes use the bulbs: unknown_command: Unknown command."
+      ],
+      "groups": [
+       {
+        "bulbs": [
+         "light.chandelier_1",
+         "light.chandelier_2",
+         "light.chandelier_3"
+        ],
+        "entity_id": "light.living_room_group",
+        "name": "Living room lights"
+       }
+      ]
+     },
+     "fingerprint": "2afa808a4dbe6e9e1f7621e7a84646e6d1fc0ffe854c8fe96ec8dcbcfca99ac6",
+     "going_live": [
+      {
+       "automation": "lm_hard_living_all_off",
+       "bulbs": [
+        "chandelier_1",
+        "chandelier_2",
+        "chandelier_3",
+        "reading_lamp"
+       ],
+       "id": "living_all_off",
+       "name": "All off button",
+       "op": "create",
+       "owner": {
+        "id": "living_all",
+        "kind": "group",
+        "name": "All living room lights"
+       }
+      },
+      {
+       "automation": "lm_hard_reading_switch",
+       "bulbs": [
+        "reading_lamp"
+       ],
+       "id": "reading_switch",
+       "name": "Reading switch",
+       "op": "create",
+       "owner": {
+        "id": "reading_lamp",
+        "kind": "bulb",
+        "name": "Reading lamp"
+       }
+      }
+     ],
+     "plan": {
+      "created": {
+       "automation": [
+        "lm_bridge_chandelier_1",
+        "lm_bridge_chandelier_2",
+        "lm_bridge_chandelier_3",
+        "lm_bridge_kitchen_strip",
+        "lm_bridge_porch",
+        "lm_bridge_reading_lamp",
+        "lm_hard_living_all_off",
+        "lm_hard_reading_switch"
+       ],
+       "input_boolean": [
+        "lm_soft_chandelier_1",
+        "lm_soft_chandelier_2",
+        "lm_soft_chandelier_3",
+        "lm_soft_kitchen_strip",
+        "lm_soft_porch",
+        "lm_soft_reading_lamp"
+       ]
+      },
+      "prefix": "lm",
+      "removed": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "sync": [
+       "input_boolean.lm_soft_chandelier_1",
+       "input_boolean.lm_soft_chandelier_2",
+       "input_boolean.lm_soft_chandelier_3",
+       "input_boolean.lm_soft_kitchen_strip",
+       "input_boolean.lm_soft_porch",
+       "input_boolean.lm_soft_reading_lamp"
+      ],
+      "synced": {},
+      "unsynced": {},
+      "updated": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "warnings": []
+     },
+     "ready": true,
+     "refused": []
+    }
+   ]
+  },
+  "stale": {
+   "apply": [
+    409,
+    {
+     "detail": "What a deploy would do has changed since the preview: review the preview again.",
+     "error": "preview_stale"
+    }
+   ],
+   "calls": [
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_1"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_2"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_3"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.kitchen_strip"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.porch"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.reading_lamp"
+     ]
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_stray"
+     ]
+    ]
+   ],
+   "log": [],
+   "preview": [
+    200,
+    {
+     "coexistence": {
+      "live_bulbs": [
+       "chandelier_1",
+       "chandelier_2",
+       "chandelier_3",
+       "reading_lamp"
+      ],
+      "note": "Light Map runs beside ha-adaptive-light until cutover (P6). Deploying never drives a bulb: each soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge acts only when its soft switch flips. A bulb with a hard switch is live: once deployed, pressing the switch drives the bulb through Light Map, while the old system still drives it too."
+     },
+     "crossover": {
+      "collisions": [],
+      "drivers": [
+       {
+        "adaptive_light": true,
+        "bulbs": [
+         "light.reading_lamp"
+        ],
+        "entity_id": "automation.al_maintenance_living_room",
+        "id": "al_maintenance_living_room",
+        "kind": "automation",
+        "name": "al_maintenance_living_room"
+       },
+       {
+        "adaptive_light": true,
+        "bulbs": [
+         "light.chandelier_1"
+        ],
+        "entity_id": "automation.al_scene_living_room_day",
+        "id": "al_scene_living_room_day",
+        "kind": "automation",
+        "name": "al_scene_living_room_day"
+       },
+       {
+        "adaptive_light": false,
+        "bulbs": [
+         "light.porch"
+        ],
+        "entity_id": "automation.1700000000000",
+        "id": "1700000000000",
+        "kind": "automation",
+        "name": "1700000000000"
+       }
+      ],
+      "errors": [],
+      "groups": [
+       {
+        "bulbs": [
+         "light.chandelier_1",
+         "light.chandelier_2",
+         "light.chandelier_3"
+        ],
+        "entity_id": "light.living_room_group",
+        "name": "Living room lights"
+       }
+      ]
+     },
+     "fingerprint": "2afa808a4dbe6e9e1f7621e7a84646e6d1fc0ffe854c8fe96ec8dcbcfca99ac6",
+     "going_live": [
+      {
+       "automation": "lm_hard_living_all_off",
+       "bulbs": [
+        "chandelier_1",
+        "chandelier_2",
+        "chandelier_3",
+        "reading_lamp"
+       ],
+       "id": "living_all_off",
+       "name": "All off button",
+       "op": "create",
+       "owner": {
+        "id": "living_all",
+        "kind": "group",
+        "name": "All living room lights"
+       }
+      },
+      {
+       "automation": "lm_hard_reading_switch",
+       "bulbs": [
+        "reading_lamp"
+       ],
+       "id": "reading_switch",
+       "name": "Reading switch",
+       "op": "create",
+       "owner": {
+        "id": "reading_lamp",
+        "kind": "bulb",
+        "name": "Reading lamp"
+       }
+      }
+     ],
+     "plan": {
+      "created": {
+       "automation": [
+        "lm_bridge_chandelier_1",
+        "lm_bridge_chandelier_2",
+        "lm_bridge_chandelier_3",
+        "lm_bridge_kitchen_strip",
+        "lm_bridge_porch",
+        "lm_bridge_reading_lamp",
+        "lm_hard_living_all_off",
+        "lm_hard_reading_switch"
+       ],
+       "input_boolean": [
+        "lm_soft_chandelier_1",
+        "lm_soft_chandelier_2",
+        "lm_soft_chandelier_3",
+        "lm_soft_kitchen_strip",
+        "lm_soft_porch",
+        "lm_soft_reading_lamp"
+       ]
+      },
+      "prefix": "lm",
+      "removed": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "sync": [
+       "input_boolean.lm_soft_chandelier_1",
+       "input_boolean.lm_soft_chandelier_2",
+       "input_boolean.lm_soft_chandelier_3",
+       "input_boolean.lm_soft_kitchen_strip",
+       "input_boolean.lm_soft_porch",
+       "input_boolean.lm_soft_reading_lamp"
+      ],
+      "synced": {},
+      "unsynced": {},
+      "updated": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "warnings": []
+     },
+     "ready": true,
+     "refused": []
+    }
+   ]
+  },
+  "unverified": {
+   "apply": [
+    502,
+    {
+     "detail": "The deploy stopped or did not verify, so Home Assistant may hold part of it. Preview and deploy again: the next deploy reconciles from whatever HA holds.",
+     "error": "deploy_failed",
+     "problems": [
+      "automation lm_bridge_porch has not loaded (is its entity disabled in HA?)"
+     ]
+    }
+   ],
+   "calls": [
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_1"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_2"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.chandelier_3"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.kitchen_strip"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.porch"
+     ]
+    ],
+    [
+     "search_related",
+     [
+      "entity",
+      "light.reading_lamp"
+     ]
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft chandelier_1"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft chandelier_2"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft chandelier_3"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft kitchen_strip"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft porch"
+      }
+     ]
+    ],
+    [
+     "create_helper",
+     [
+      "input_boolean",
+      {
+       "icon": "mdi:light-switch",
+       "name": "LM Soft reading_lamp"
+      }
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "call_service",
+     [
+      "input_boolean",
+      "turn_on",
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_1"
+      }
+     ]
+    ],
+    [
+     "call_service",
+     [
+      "input_boolean",
+      "turn_on",
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_2"
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_chandelier_1",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_1",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.chandelier_1"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_1",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.chandelier_1"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_chandelier_1",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Chandelier 1 (light.chandelier_1) follows input_boolean.lm_soft_chandelier_1. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_chandelier_1",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_1",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_1",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_chandelier_2",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_2",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.chandelier_2"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_2",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.chandelier_2"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_chandelier_2",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Chandelier 2 (light.chandelier_2) follows input_boolean.lm_soft_chandelier_2. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_chandelier_2",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_2",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_2",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_chandelier_3",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_3",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.chandelier_3"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_chandelier_3",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.chandelier_3"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_chandelier_3",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Chandelier 3 (light.chandelier_3) follows input_boolean.lm_soft_chandelier_3. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_chandelier_3",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_3",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_chandelier_3",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_kitchen_strip",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_kitchen_strip",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.kitchen_strip"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_kitchen_strip",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.kitchen_strip"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_kitchen_strip",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Kitchen strip (light.kitchen_strip) follows input_boolean.lm_soft_kitchen_strip. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_kitchen_strip",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_kitchen_strip",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_kitchen_strip",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_porch",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_porch",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.porch"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_porch",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.porch"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_porch",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Porch (light.porch) follows input_boolean.lm_soft_porch. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_porch",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_porch",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_porch",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_bridge_reading_lamp",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_reading_lamp",
+             "state": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_on",
+             "target": {
+              "entity_id": "light.reading_lamp"
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "state",
+             "entity_id": "input_boolean.lm_soft_reading_lamp",
+             "state": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "light.turn_off",
+             "target": {
+              "entity_id": "light.reading_lamp"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_bridge_reading_lamp",
+       "conditions": [],
+       "description": "Light Map soft->bulb bridge: Reading lamp (light.reading_lamp) follows input_boolean.lm_soft_reading_lamp. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_bridge_reading_lamp",
+       "mode": "restart",
+       "triggers": [
+        {
+         "entity_id": "input_boolean.lm_soft_reading_lamp",
+         "from": "off",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "input_boolean.lm_soft_reading_lamp",
+         "from": "on",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_hard_living_all_off",
+      {
+       "actions": [
+        {
+         "action": "input_boolean.turn_off",
+         "target": {
+          "entity_id": [
+           "input_boolean.lm_soft_chandelier_1",
+           "input_boolean.lm_soft_chandelier_2",
+           "input_boolean.lm_soft_chandelier_3",
+           "input_boolean.lm_soft_reading_lamp"
+          ]
+         }
+        }
+       ],
+       "alias": "lm_hard_living_all_off",
+       "conditions": [
+        {
+         "condition": "template",
+         "value_template": "{{ trigger.from_state is not none and trigger.to_state is not none }}"
+        }
+       ],
+       "description": "Light Map hard switch: All off button turns switching group All living room lights (4 bulbs) off. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_hard_living_all_off",
+       "mode": "queued",
+       "triggers": [
+        {
+         "entity_id": "event.living_room_button",
+         "not_from": [
+          "unavailable",
+          "unknown"
+         ],
+         "not_to": [
+          "unavailable",
+          "unknown"
+         ],
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "save_automation_config",
+     [
+      "lm_hard_reading_switch",
+      {
+       "actions": [
+        {
+         "choose": [
+          {
+           "conditions": [
+            {
+             "condition": "trigger",
+             "id": "on"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "input_boolean.turn_on",
+             "target": {
+              "entity_id": [
+               "input_boolean.lm_soft_reading_lamp"
+              ]
+             }
+            }
+           ]
+          },
+          {
+           "conditions": [
+            {
+             "condition": "trigger",
+             "id": "off"
+            }
+           ],
+           "sequence": [
+            {
+             "action": "input_boolean.turn_off",
+             "target": {
+              "entity_id": [
+               "input_boolean.lm_soft_reading_lamp"
+              ]
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ],
+       "alias": "lm_hard_reading_switch",
+       "conditions": [],
+       "description": "Light Map hard switch: Reading switch is followed by Reading lamp (light.reading_lamp). Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+       "id": "lm_hard_reading_switch",
+       "mode": "queued",
+       "triggers": [
+        {
+         "entity_id": "switch.reading_relay",
+         "from": "off",
+         "id": "on",
+         "to": "on",
+         "trigger": "state"
+        },
+        {
+         "entity_id": "switch.reading_relay",
+         "from": "on",
+         "id": "off",
+         "to": "off",
+         "trigger": "state"
+        }
+       ]
+      }
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ],
+    [
+     "get_states",
+     []
+    ],
+    [
+     "list_helpers",
+     [
+      "input_boolean"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_1"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_2"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_chandelier_3"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_kitchen_strip"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_porch"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_bridge_reading_lamp"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_living_all_off"
+     ]
+    ],
+    [
+     "get_automation_config",
+     [
+      "lm_hard_reading_switch"
+     ]
+    ]
+   ],
+   "log": [
+    {
+     "category": "deploy",
+     "detail": {
+      "problems": [
+       "automation lm_bridge_porch has not loaded (is its entity disabled in HA?)"
+      ]
+     },
+     "level": "error",
+     "message": "The switching-plane deploy stopped or did not verify.",
+     "room_id": null
+    }
+   ],
+   "preview": [
+    200,
+    {
+     "coexistence": {
+      "live_bulbs": [
+       "chandelier_1",
+       "chandelier_2",
+       "chandelier_3",
+       "reading_lamp"
+      ],
+      "note": "Light Map runs beside ha-adaptive-light until cutover (P6). Deploying never drives a bulb: each soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge acts only when its soft switch flips. A bulb with a hard switch is live: once deployed, pressing the switch drives the bulb through Light Map, while the old system still drives it too."
+     },
+     "crossover": {
+      "collisions": [],
+      "drivers": [
+       {
+        "adaptive_light": true,
+        "bulbs": [
+         "light.reading_lamp"
+        ],
+        "entity_id": "automation.al_maintenance_living_room",
+        "id": "al_maintenance_living_room",
+        "kind": "automation",
+        "name": "al_maintenance_living_room"
+       },
+       {
+        "adaptive_light": true,
+        "bulbs": [
+         "light.chandelier_1"
+        ],
+        "entity_id": "automation.al_scene_living_room_day",
+        "id": "al_scene_living_room_day",
+        "kind": "automation",
+        "name": "al_scene_living_room_day"
+       },
+       {
+        "adaptive_light": false,
+        "bulbs": [
+         "light.porch"
+        ],
+        "entity_id": "automation.1700000000000",
+        "id": "1700000000000",
+        "kind": "automation",
+        "name": "1700000000000"
+       }
+      ],
+      "errors": [],
+      "groups": [
+       {
+        "bulbs": [
+         "light.chandelier_1",
+         "light.chandelier_2",
+         "light.chandelier_3"
+        ],
+        "entity_id": "light.living_room_group",
+        "name": "Living room lights"
+       }
+      ]
+     },
+     "fingerprint": "2afa808a4dbe6e9e1f7621e7a84646e6d1fc0ffe854c8fe96ec8dcbcfca99ac6",
+     "going_live": [
+      {
+       "automation": "lm_hard_living_all_off",
+       "bulbs": [
+        "chandelier_1",
+        "chandelier_2",
+        "chandelier_3",
+        "reading_lamp"
+       ],
+       "id": "living_all_off",
+       "name": "All off button",
+       "op": "create",
+       "owner": {
+        "id": "living_all",
+        "kind": "group",
+        "name": "All living room lights"
+       }
+      },
+      {
+       "automation": "lm_hard_reading_switch",
+       "bulbs": [
+        "reading_lamp"
+       ],
+       "id": "reading_switch",
+       "name": "Reading switch",
+       "op": "create",
+       "owner": {
+        "id": "reading_lamp",
+        "kind": "bulb",
+        "name": "Reading lamp"
+       }
+      }
+     ],
+     "plan": {
+      "created": {
+       "automation": [
+        "lm_bridge_chandelier_1",
+        "lm_bridge_chandelier_2",
+        "lm_bridge_chandelier_3",
+        "lm_bridge_kitchen_strip",
+        "lm_bridge_porch",
+        "lm_bridge_reading_lamp",
+        "lm_hard_living_all_off",
+        "lm_hard_reading_switch"
+       ],
+       "input_boolean": [
+        "lm_soft_chandelier_1",
+        "lm_soft_chandelier_2",
+        "lm_soft_chandelier_3",
+        "lm_soft_kitchen_strip",
+        "lm_soft_porch",
+        "lm_soft_reading_lamp"
+       ]
+      },
+      "prefix": "lm",
+      "removed": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "sync": [
+       "input_boolean.lm_soft_chandelier_1",
+       "input_boolean.lm_soft_chandelier_2",
+       "input_boolean.lm_soft_chandelier_3",
+       "input_boolean.lm_soft_kitchen_strip",
+       "input_boolean.lm_soft_porch",
+       "input_boolean.lm_soft_reading_lamp"
+      ],
+      "synced": {},
+      "unsynced": {},
+      "updated": {
+       "automation": [],
+       "input_boolean": []
+      },
+      "warnings": []
+     },
+     "ready": true,
+     "refused": []
+    }
+   ]
+  }
+ },
  "ha": {
   "automations": {
    "1700000000000": {
@@ -1585,6 +4717,64 @@
    }
   }
  },
+ "log": [
+  {
+   "category": "deploy",
+   "detail": {
+    "created": {
+     "automation": [
+      "lm_bridge_chandelier_1",
+      "lm_bridge_chandelier_2",
+      "lm_bridge_chandelier_3",
+      "lm_bridge_kitchen_strip",
+      "lm_bridge_porch",
+      "lm_bridge_reading_lamp",
+      "lm_hard_living_all_off",
+      "lm_hard_reading_switch"
+     ],
+     "input_boolean": [
+      "lm_soft_chandelier_1",
+      "lm_soft_chandelier_2",
+      "lm_soft_chandelier_3",
+      "lm_soft_kitchen_strip",
+      "lm_soft_porch",
+      "lm_soft_reading_lamp"
+     ]
+    },
+    "prefix": "lm",
+    "removed": {
+     "automation": [],
+     "input_boolean": []
+    },
+    "sync": [
+     "input_boolean.lm_soft_chandelier_1",
+     "input_boolean.lm_soft_chandelier_2",
+     "input_boolean.lm_soft_chandelier_3",
+     "input_boolean.lm_soft_kitchen_strip",
+     "input_boolean.lm_soft_porch",
+     "input_boolean.lm_soft_reading_lamp"
+    ],
+    "synced": {
+     "input_boolean.lm_soft_chandelier_1": "on",
+     "input_boolean.lm_soft_chandelier_2": "on",
+     "input_boolean.lm_soft_kitchen_strip": "off",
+     "input_boolean.lm_soft_porch": "off",
+     "input_boolean.lm_soft_reading_lamp": "off"
+    },
+    "unsynced": {
+     "input_boolean.lm_soft_chandelier_3": "unavailable"
+    },
+    "updated": {
+     "automation": [],
+     "input_boolean": []
+    },
+    "warnings": []
+   },
+   "level": "info",
+   "message": "Deployed the switching plane: 14 created, 0 updated, 0 removed.",
+   "room_id": null
+  }
+ ],
  "preview": [
   200,
   {
