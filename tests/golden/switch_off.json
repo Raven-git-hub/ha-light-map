@@ -1,0 +1,5203 @@
+{
+ "apply": [
+  200,
+  {
+   "deployed": true,
+   "result": {
+    "created": {
+     "automation": [
+      "lm_bridge_chandelier_1",
+      "lm_bridge_chandelier_2",
+      "lm_bridge_chandelier_3",
+      "lm_bridge_kitchen_strip",
+      "lm_bridge_porch",
+      "lm_bridge_reading_lamp",
+      "lm_hard_living_all_off",
+      "lm_hard_reading_switch"
+     ],
+     "input_boolean": [
+      "lm_soft_chandelier_1",
+      "lm_soft_chandelier_2",
+      "lm_soft_chandelier_3",
+      "lm_soft_kitchen_strip",
+      "lm_soft_porch",
+      "lm_soft_reading_lamp"
+     ]
+    },
+    "prefix": "lm",
+    "removed": {
+     "automation": [],
+     "input_boolean": []
+    },
+    "sync": [
+     "input_boolean.lm_soft_chandelier_1",
+     "input_boolean.lm_soft_chandelier_2",
+     "input_boolean.lm_soft_chandelier_3",
+     "input_boolean.lm_soft_kitchen_strip",
+     "input_boolean.lm_soft_porch",
+     "input_boolean.lm_soft_reading_lamp"
+    ],
+    "synced": {
+     "input_boolean.lm_soft_chandelier_1": "on",
+     "input_boolean.lm_soft_chandelier_2": "on",
+     "input_boolean.lm_soft_kitchen_strip": "off",
+     "input_boolean.lm_soft_porch": "off",
+     "input_boolean.lm_soft_reading_lamp": "off"
+    },
+    "unsynced": {
+     "input_boolean.lm_soft_chandelier_3": "unavailable"
+    },
+    "updated": {
+     "automation": [],
+     "input_boolean": []
+    },
+    "warnings": []
+   }
+  }
+ ],
+ "calls": [
+  [
+   "get_states",
+   []
+  ],
+  [
+   "get_states",
+   []
+  ],
+  [
+   "list_helpers",
+   [
+    "input_boolean"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_1"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_2"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_3"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_kitchen_strip"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_porch"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_reading_lamp"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_hard_living_all_off"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_hard_reading_switch"
+   ]
+  ],
+  [
+   "get_states",
+   []
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.chandelier_1"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.chandelier_2"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.chandelier_3"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.kitchen_strip"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.porch"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.reading_lamp"
+   ]
+  ],
+  [
+   "list_helpers",
+   [
+    "input_boolean"
+   ]
+  ],
+  [
+   "get_states",
+   []
+  ],
+  [
+   "get_states",
+   []
+  ],
+  [
+   "list_helpers",
+   [
+    "input_boolean"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_1"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_2"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_3"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_kitchen_strip"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_porch"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_reading_lamp"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_hard_living_all_off"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_hard_reading_switch"
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft chandelier_1"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft chandelier_2"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft chandelier_3"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft kitchen_strip"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft porch"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft reading_lamp"
+    }
+   ]
+  ],
+  [
+   "get_states",
+   []
+  ],
+  [
+   "call_service",
+   [
+    "input_boolean",
+    "turn_on",
+    {
+     "entity_id": "input_boolean.lm_soft_chandelier_1"
+    }
+   ]
+  ],
+  [
+   "call_service",
+   [
+    "input_boolean",
+    "turn_on",
+    {
+     "entity_id": "input_boolean.lm_soft_chandelier_2"
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_chandelier_1",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_1",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.chandelier_1"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_1",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.chandelier_1"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_chandelier_1",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Chandelier 1 (light.chandelier_1) follows input_boolean.lm_soft_chandelier_1. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_chandelier_1",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_1",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_1",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_chandelier_2",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_2",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.chandelier_2"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_2",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.chandelier_2"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_chandelier_2",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Chandelier 2 (light.chandelier_2) follows input_boolean.lm_soft_chandelier_2. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_chandelier_2",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_2",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_2",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_chandelier_3",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_3",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.chandelier_3"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_3",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.chandelier_3"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_chandelier_3",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Chandelier 3 (light.chandelier_3) follows input_boolean.lm_soft_chandelier_3. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_chandelier_3",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_3",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_3",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_kitchen_strip",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_kitchen_strip",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.kitchen_strip"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_kitchen_strip",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.kitchen_strip"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_kitchen_strip",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Kitchen strip (light.kitchen_strip) follows input_boolean.lm_soft_kitchen_strip. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_kitchen_strip",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_kitchen_strip",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_kitchen_strip",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_porch",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_porch",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.porch"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_porch",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.porch"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_porch",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Porch (light.porch) follows input_boolean.lm_soft_porch. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_porch",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_porch",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_porch",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_reading_lamp",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_reading_lamp",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.reading_lamp"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_reading_lamp",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.reading_lamp"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_reading_lamp",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Reading lamp (light.reading_lamp) follows input_boolean.lm_soft_reading_lamp. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_reading_lamp",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_reading_lamp",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_reading_lamp",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_hard_living_all_off",
+    {
+     "actions": [
+      {
+       "action": "input_boolean.turn_off",
+       "target": {
+        "entity_id": [
+         "input_boolean.lm_soft_chandelier_1",
+         "input_boolean.lm_soft_chandelier_2",
+         "input_boolean.lm_soft_chandelier_3",
+         "input_boolean.lm_soft_reading_lamp"
+        ]
+       }
+      }
+     ],
+     "alias": "lm_hard_living_all_off",
+     "conditions": [
+      {
+       "condition": "template",
+       "value_template": "{{ trigger.from_state is not none and trigger.to_state is not none }}"
+      }
+     ],
+     "description": "Light Map hard switch: All off button turns switching group All living room lights (4 bulbs) off. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_hard_living_all_off",
+     "mode": "queued",
+     "triggers": [
+      {
+       "entity_id": "event.living_room_button",
+       "not_from": [
+        "unavailable",
+        "unknown"
+       ],
+       "not_to": [
+        "unavailable",
+        "unknown"
+       ],
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_hard_reading_switch",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "trigger",
+           "id": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "input_boolean.turn_on",
+           "target": {
+            "entity_id": [
+             "input_boolean.lm_soft_reading_lamp"
+            ]
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "trigger",
+           "id": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "input_boolean.turn_off",
+           "target": {
+            "entity_id": [
+             "input_boolean.lm_soft_reading_lamp"
+            ]
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_hard_reading_switch",
+     "conditions": [],
+     "description": "Light Map hard switch: Reading switch is followed by Reading lamp (light.reading_lamp). Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_hard_reading_switch",
+     "mode": "queued",
+     "triggers": [
+      {
+       "entity_id": "switch.reading_relay",
+       "from": "off",
+       "id": "on",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "switch.reading_relay",
+       "from": "on",
+       "id": "off",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "get_states",
+   []
+  ],
+  [
+   "list_helpers",
+   [
+    "input_boolean"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_1"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_2"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_3"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_kitchen_strip"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_porch"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_reading_lamp"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_hard_living_all_off"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_hard_reading_switch"
+   ]
+  ],
+  [
+   "get_states",
+   []
+  ],
+  [
+   "get_states",
+   []
+  ],
+  [
+   "list_helpers",
+   [
+    "input_boolean"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_1"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_2"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_chandelier_3"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_kitchen_strip"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_porch"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_bridge_reading_lamp"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_hard_living_all_off"
+   ]
+  ],
+  [
+   "get_automation_config",
+   [
+    "lm_hard_reading_switch"
+   ]
+  ],
+  [
+   "get_states",
+   []
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.chandelier_1"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.chandelier_2"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.chandelier_3"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.kitchen_strip"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.porch"
+   ]
+  ],
+  [
+   "search_related",
+   [
+    "entity",
+    "light.reading_lamp"
+   ]
+  ],
+  [
+   "list_helpers",
+   [
+    "input_boolean"
+   ]
+  ]
+ ],
+ "ha": {
+  "automations": {
+   "1700000000000": {
+    "actions": [
+     {
+      "action": "light.turn_on",
+      "target": {
+       "entity_id": [
+        "light.porch"
+       ]
+      }
+     }
+    ],
+    "alias": "Porch at dusk",
+    "id": "1700000000000",
+    "triggers": []
+   },
+   "al_maintenance_living_room": {
+    "actions": [
+     {
+      "action": "light.turn_on",
+      "target": {
+       "entity_id": [
+        "light.reading_lamp"
+       ]
+      }
+     }
+    ],
+    "alias": "AL Lux Maintenance",
+    "id": "al_maintenance_living_room",
+    "triggers": []
+   },
+   "al_scene_living_room_day": {
+    "actions": [
+     {
+      "action": "light.turn_on",
+      "target": {
+       "entity_id": "light.chandelier_1"
+      }
+     }
+    ],
+    "alias": "AL SET SCENE",
+    "id": "al_scene_living_room_day",
+    "triggers": []
+   },
+   "lm_bridge_chandelier_1": {
+    "actions": [
+     {
+      "choose": [
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_chandelier_1",
+          "state": "on"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_on",
+          "target": {
+           "entity_id": "light.chandelier_1"
+          }
+         }
+        ]
+       },
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_chandelier_1",
+          "state": "off"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_off",
+          "target": {
+           "entity_id": "light.chandelier_1"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "alias": "lm_bridge_chandelier_1",
+    "conditions": [],
+    "description": "Light Map soft->bulb bridge: Chandelier 1 (light.chandelier_1) follows input_boolean.lm_soft_chandelier_1. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+    "id": "lm_bridge_chandelier_1",
+    "mode": "restart",
+    "triggers": [
+     {
+      "entity_id": "input_boolean.lm_soft_chandelier_1",
+      "from": "off",
+      "to": "on",
+      "trigger": "state"
+     },
+     {
+      "entity_id": "input_boolean.lm_soft_chandelier_1",
+      "from": "on",
+      "to": "off",
+      "trigger": "state"
+     }
+    ]
+   },
+   "lm_bridge_chandelier_2": {
+    "actions": [
+     {
+      "choose": [
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_chandelier_2",
+          "state": "on"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_on",
+          "target": {
+           "entity_id": "light.chandelier_2"
+          }
+         }
+        ]
+       },
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_chandelier_2",
+          "state": "off"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_off",
+          "target": {
+           "entity_id": "light.chandelier_2"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "alias": "lm_bridge_chandelier_2",
+    "conditions": [],
+    "description": "Light Map soft->bulb bridge: Chandelier 2 (light.chandelier_2) follows input_boolean.lm_soft_chandelier_2. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+    "id": "lm_bridge_chandelier_2",
+    "mode": "restart",
+    "triggers": [
+     {
+      "entity_id": "input_boolean.lm_soft_chandelier_2",
+      "from": "off",
+      "to": "on",
+      "trigger": "state"
+     },
+     {
+      "entity_id": "input_boolean.lm_soft_chandelier_2",
+      "from": "on",
+      "to": "off",
+      "trigger": "state"
+     }
+    ]
+   },
+   "lm_bridge_chandelier_3": {
+    "actions": [
+     {
+      "choose": [
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_chandelier_3",
+          "state": "on"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_on",
+          "target": {
+           "entity_id": "light.chandelier_3"
+          }
+         }
+        ]
+       },
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_chandelier_3",
+          "state": "off"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_off",
+          "target": {
+           "entity_id": "light.chandelier_3"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "alias": "lm_bridge_chandelier_3",
+    "conditions": [],
+    "description": "Light Map soft->bulb bridge: Chandelier 3 (light.chandelier_3) follows input_boolean.lm_soft_chandelier_3. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+    "id": "lm_bridge_chandelier_3",
+    "mode": "restart",
+    "triggers": [
+     {
+      "entity_id": "input_boolean.lm_soft_chandelier_3",
+      "from": "off",
+      "to": "on",
+      "trigger": "state"
+     },
+     {
+      "entity_id": "input_boolean.lm_soft_chandelier_3",
+      "from": "on",
+      "to": "off",
+      "trigger": "state"
+     }
+    ]
+   },
+   "lm_bridge_kitchen_strip": {
+    "actions": [
+     {
+      "choose": [
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_kitchen_strip",
+          "state": "on"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_on",
+          "target": {
+           "entity_id": "light.kitchen_strip"
+          }
+         }
+        ]
+       },
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_kitchen_strip",
+          "state": "off"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_off",
+          "target": {
+           "entity_id": "light.kitchen_strip"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "alias": "lm_bridge_kitchen_strip",
+    "conditions": [],
+    "description": "Light Map soft->bulb bridge: Kitchen strip (light.kitchen_strip) follows input_boolean.lm_soft_kitchen_strip. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+    "id": "lm_bridge_kitchen_strip",
+    "mode": "restart",
+    "triggers": [
+     {
+      "entity_id": "input_boolean.lm_soft_kitchen_strip",
+      "from": "off",
+      "to": "on",
+      "trigger": "state"
+     },
+     {
+      "entity_id": "input_boolean.lm_soft_kitchen_strip",
+      "from": "on",
+      "to": "off",
+      "trigger": "state"
+     }
+    ]
+   },
+   "lm_bridge_porch": {
+    "actions": [
+     {
+      "choose": [
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_porch",
+          "state": "on"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_on",
+          "target": {
+           "entity_id": "light.porch"
+          }
+         }
+        ]
+       },
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_porch",
+          "state": "off"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_off",
+          "target": {
+           "entity_id": "light.porch"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "alias": "lm_bridge_porch",
+    "conditions": [],
+    "description": "Light Map soft->bulb bridge: Porch (light.porch) follows input_boolean.lm_soft_porch. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+    "id": "lm_bridge_porch",
+    "mode": "restart",
+    "triggers": [
+     {
+      "entity_id": "input_boolean.lm_soft_porch",
+      "from": "off",
+      "to": "on",
+      "trigger": "state"
+     },
+     {
+      "entity_id": "input_boolean.lm_soft_porch",
+      "from": "on",
+      "to": "off",
+      "trigger": "state"
+     }
+    ]
+   },
+   "lm_bridge_reading_lamp": {
+    "actions": [
+     {
+      "choose": [
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_reading_lamp",
+          "state": "on"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_on",
+          "target": {
+           "entity_id": "light.reading_lamp"
+          }
+         }
+        ]
+       },
+       {
+        "conditions": [
+         {
+          "condition": "state",
+          "entity_id": "input_boolean.lm_soft_reading_lamp",
+          "state": "off"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "light.turn_off",
+          "target": {
+           "entity_id": "light.reading_lamp"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "alias": "lm_bridge_reading_lamp",
+    "conditions": [],
+    "description": "Light Map soft->bulb bridge: Reading lamp (light.reading_lamp) follows input_boolean.lm_soft_reading_lamp. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+    "id": "lm_bridge_reading_lamp",
+    "mode": "restart",
+    "triggers": [
+     {
+      "entity_id": "input_boolean.lm_soft_reading_lamp",
+      "from": "off",
+      "to": "on",
+      "trigger": "state"
+     },
+     {
+      "entity_id": "input_boolean.lm_soft_reading_lamp",
+      "from": "on",
+      "to": "off",
+      "trigger": "state"
+     }
+    ]
+   },
+   "lm_hard_living_all_off": {
+    "actions": [
+     {
+      "action": "input_boolean.turn_off",
+      "target": {
+       "entity_id": [
+        "input_boolean.lm_soft_chandelier_1",
+        "input_boolean.lm_soft_chandelier_2",
+        "input_boolean.lm_soft_chandelier_3",
+        "input_boolean.lm_soft_reading_lamp"
+       ]
+      }
+     }
+    ],
+    "alias": "lm_hard_living_all_off",
+    "conditions": [
+     {
+      "condition": "template",
+      "value_template": "{{ trigger.from_state is not none and trigger.to_state is not none }}"
+     }
+    ],
+    "description": "Light Map hard switch: All off button turns switching group All living room lights (4 bulbs) off. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+    "id": "lm_hard_living_all_off",
+    "mode": "queued",
+    "triggers": [
+     {
+      "entity_id": "event.living_room_button",
+      "not_from": [
+       "unavailable",
+       "unknown"
+      ],
+      "not_to": [
+       "unavailable",
+       "unknown"
+      ],
+      "trigger": "state"
+     }
+    ]
+   },
+   "lm_hard_reading_switch": {
+    "actions": [
+     {
+      "choose": [
+       {
+        "conditions": [
+         {
+          "condition": "trigger",
+          "id": "on"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "input_boolean.turn_on",
+          "target": {
+           "entity_id": [
+            "input_boolean.lm_soft_reading_lamp"
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "conditions": [
+         {
+          "condition": "trigger",
+          "id": "off"
+         }
+        ],
+        "sequence": [
+         {
+          "action": "input_boolean.turn_off",
+          "target": {
+           "entity_id": [
+            "input_boolean.lm_soft_reading_lamp"
+           ]
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "alias": "lm_hard_reading_switch",
+    "conditions": [],
+    "description": "Light Map hard switch: Reading switch is followed by Reading lamp (light.reading_lamp). Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+    "id": "lm_hard_reading_switch",
+    "mode": "queued",
+    "triggers": [
+     {
+      "entity_id": "switch.reading_relay",
+      "from": "off",
+      "id": "on",
+      "to": "on",
+      "trigger": "state"
+     },
+     {
+      "entity_id": "switch.reading_relay",
+      "from": "on",
+      "id": "off",
+      "to": "off",
+      "trigger": "state"
+     }
+    ]
+   }
+  },
+  "helpers": {
+   "input_boolean": {
+    "al_active_living_room": {
+     "icon": "mdi:lightbulb-auto",
+     "id": "al_active_living_room",
+     "name": "AL Active living_room"
+    },
+    "al_hold_living_room": {
+     "id": "al_hold_living_room",
+     "name": "AL Hold living_room"
+    },
+    "guest_mode": {
+     "id": "guest_mode",
+     "name": "Guest mode"
+    },
+    "lm_soft_chandelier_1": {
+     "icon": "mdi:light-switch",
+     "id": "lm_soft_chandelier_1",
+     "name": "LM Soft chandelier_1"
+    },
+    "lm_soft_chandelier_2": {
+     "icon": "mdi:light-switch",
+     "id": "lm_soft_chandelier_2",
+     "name": "LM Soft chandelier_2"
+    },
+    "lm_soft_chandelier_3": {
+     "icon": "mdi:light-switch",
+     "id": "lm_soft_chandelier_3",
+     "name": "LM Soft chandelier_3"
+    },
+    "lm_soft_kitchen_strip": {
+     "icon": "mdi:light-switch",
+     "id": "lm_soft_kitchen_strip",
+     "name": "LM Soft kitchen_strip"
+    },
+    "lm_soft_porch": {
+     "icon": "mdi:light-switch",
+     "id": "lm_soft_porch",
+     "name": "LM Soft porch"
+    },
+    "lm_soft_reading_lamp": {
+     "icon": "mdi:light-switch",
+     "id": "lm_soft_reading_lamp",
+     "name": "LM Soft reading_lamp"
+    }
+   },
+   "input_select": {
+    "al_scene_living_room": {
+     "id": "al_scene_living_room",
+     "name": "AL Scene living_room",
+     "options": [
+      "Sunrise",
+      "Day",
+      "Afternoon",
+      "Sunset",
+      "Night",
+      "Sleep"
+     ]
+    }
+   }
+  }
+ },
+ "preview": [
+  200,
+  {
+   "coexistence": {
+    "live_bulbs": [
+     "chandelier_1",
+     "chandelier_2",
+     "chandelier_3",
+     "reading_lamp"
+    ],
+    "note": "Light Map runs beside ha-adaptive-light until cutover (P6). Deploying never drives a bulb: each soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge acts only when its soft switch flips. A bulb with a hard switch is live: once deployed, pressing the switch drives the bulb through Light Map, while the old system still drives it too."
+   },
+   "crossover": {
+    "collisions": [],
+    "drivers": [
+     {
+      "adaptive_light": true,
+      "bulbs": [
+       "light.reading_lamp"
+      ],
+      "entity_id": "automation.al_maintenance_living_room",
+      "id": "al_maintenance_living_room",
+      "kind": "automation",
+      "name": "al_maintenance_living_room"
+     },
+     {
+      "adaptive_light": true,
+      "bulbs": [
+       "light.chandelier_1"
+      ],
+      "entity_id": "automation.al_scene_living_room_day",
+      "id": "al_scene_living_room_day",
+      "kind": "automation",
+      "name": "al_scene_living_room_day"
+     },
+     {
+      "adaptive_light": false,
+      "bulbs": [
+       "light.porch"
+      ],
+      "entity_id": "automation.1700000000000",
+      "id": "1700000000000",
+      "kind": "automation",
+      "name": "1700000000000"
+     }
+    ],
+    "errors": [],
+    "groups": [
+     {
+      "bulbs": [
+       "light.chandelier_1",
+       "light.chandelier_2",
+       "light.chandelier_3"
+      ],
+      "entity_id": "light.living_room_group",
+      "name": "Living room lights"
+     }
+    ]
+   },
+   "fingerprint": "2afa808a4dbe6e9e1f7621e7a84646e6d1fc0ffe854c8fe96ec8dcbcfca99ac6",
+   "going_live": [
+    {
+     "automation": "lm_hard_living_all_off",
+     "bulbs": [
+      "chandelier_1",
+      "chandelier_2",
+      "chandelier_3",
+      "reading_lamp"
+     ],
+     "id": "living_all_off",
+     "name": "All off button",
+     "op": "create",
+     "owner": {
+      "id": "living_all",
+      "kind": "group",
+      "name": "All living room lights"
+     }
+    },
+    {
+     "automation": "lm_hard_reading_switch",
+     "bulbs": [
+      "reading_lamp"
+     ],
+     "id": "reading_switch",
+     "name": "Reading switch",
+     "op": "create",
+     "owner": {
+      "id": "reading_lamp",
+      "kind": "bulb",
+      "name": "Reading lamp"
+     }
+    }
+   ],
+   "plan": {
+    "created": {
+     "automation": [
+      "lm_bridge_chandelier_1",
+      "lm_bridge_chandelier_2",
+      "lm_bridge_chandelier_3",
+      "lm_bridge_kitchen_strip",
+      "lm_bridge_porch",
+      "lm_bridge_reading_lamp",
+      "lm_hard_living_all_off",
+      "lm_hard_reading_switch"
+     ],
+     "input_boolean": [
+      "lm_soft_chandelier_1",
+      "lm_soft_chandelier_2",
+      "lm_soft_chandelier_3",
+      "lm_soft_kitchen_strip",
+      "lm_soft_porch",
+      "lm_soft_reading_lamp"
+     ]
+    },
+    "prefix": "lm",
+    "removed": {
+     "automation": [],
+     "input_boolean": []
+    },
+    "sync": [
+     "input_boolean.lm_soft_chandelier_1",
+     "input_boolean.lm_soft_chandelier_2",
+     "input_boolean.lm_soft_chandelier_3",
+     "input_boolean.lm_soft_kitchen_strip",
+     "input_boolean.lm_soft_porch",
+     "input_boolean.lm_soft_reading_lamp"
+    ],
+    "synced": {},
+    "unsynced": {},
+    "updated": {
+     "automation": [],
+     "input_boolean": []
+    },
+    "warnings": []
+   },
+   "ready": true,
+   "refused": []
+  }
+ ],
+ "preview_after": [
+  200,
+  {
+   "coexistence": {
+    "live_bulbs": [
+     "chandelier_1",
+     "chandelier_2",
+     "chandelier_3",
+     "reading_lamp"
+    ],
+    "note": "Light Map runs beside ha-adaptive-light until cutover (P6). Deploying never drives a bulb: each soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge acts only when its soft switch flips. A bulb with a hard switch is live: once deployed, pressing the switch drives the bulb through Light Map, while the old system still drives it too."
+   },
+   "crossover": {
+    "collisions": [],
+    "drivers": [
+     {
+      "adaptive_light": true,
+      "bulbs": [
+       "light.reading_lamp"
+      ],
+      "entity_id": "automation.al_maintenance_living_room",
+      "id": "al_maintenance_living_room",
+      "kind": "automation",
+      "name": "al_maintenance_living_room"
+     },
+     {
+      "adaptive_light": true,
+      "bulbs": [
+       "light.chandelier_1"
+      ],
+      "entity_id": "automation.al_scene_living_room_day",
+      "id": "al_scene_living_room_day",
+      "kind": "automation",
+      "name": "al_scene_living_room_day"
+     },
+     {
+      "adaptive_light": false,
+      "bulbs": [
+       "light.porch"
+      ],
+      "entity_id": "automation.1700000000000",
+      "id": "1700000000000",
+      "kind": "automation",
+      "name": "1700000000000"
+     }
+    ],
+    "errors": [],
+    "groups": [
+     {
+      "bulbs": [
+       "light.chandelier_1",
+       "light.chandelier_2",
+       "light.chandelier_3"
+      ],
+      "entity_id": "light.living_room_group",
+      "name": "Living room lights"
+     }
+    ]
+   },
+   "fingerprint": "8c2a36491415ad04abe6292925e1735410c1c6aeed1888890a0b20b33b19b04c",
+   "going_live": [],
+   "plan": {
+    "created": {
+     "automation": [],
+     "input_boolean": []
+    },
+    "prefix": "lm",
+    "removed": {
+     "automation": [],
+     "input_boolean": []
+    },
+    "sync": [],
+    "synced": {},
+    "unsynced": {},
+    "updated": {
+     "automation": [],
+     "input_boolean": []
+    },
+    "warnings": []
+   },
+   "ready": true,
+   "refused": []
+  }
+ ],
+ "views": {
+  "2026-03-29T00:30:00+00:00": {
+   "/api/rooms/living_room/now": [
+    200,
+    {
+     "live": {
+      "note": "Light Map's adaptive engine is built but switched off until cutover (P6). Until then ha-adaptive-light drives this room, and the scene select, guard and hold under these names are its own, so Light Map doesn't read them: what is shown here is the schedule this room will follow and what Light Map's own store holds.",
+      "title": "Adaptive runs at cutover — not live yet",
+      "wired": false
+     },
+     "profile": {
+      "collision_policy": "collapse",
+      "id": "evening",
+      "min_section_minutes": 30,
+      "name": "evening",
+      "shared_with": []
+     },
+     "room": {
+      "id": "living_room",
+      "name": "Living Room"
+     },
+     "schedule": {
+      "available": true,
+      "boundaries": [
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "09:42",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sunrise",
+        "start": "05:30",
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "16:29",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "day",
+        "start": "09:42",
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "19:29",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "afternoon",
+        "start": "16:29",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "20:30",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "sunset",
+        "start": "19:29",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "22:00",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "night",
+        "start": "20:30",
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": null,
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sleep",
+        "start": "22:00",
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ],
+      "current": {
+       "carried_over": true,
+       "section": "sleep",
+       "since": "22:00",
+       "since_date": "2026-03-28"
+      },
+      "date": "2026-03-29",
+      "error": null,
+      "now": "00:30",
+      "time_zone": "Europe/London"
+     },
+     "targets": {
+      "available": true,
+      "lux_source": null,
+      "lux_target": null,
+      "maintenance_enabled": false,
+      "section": "sleep",
+      "units": [
+       {
+        "id": "chandelier",
+        "members": [
+         {
+          "id": "chandelier_1",
+          "name": "Chandelier 1"
+         },
+         {
+          "id": "chandelier_2",
+          "name": "Chandelier 2"
+         },
+         {
+          "id": "chandelier_3",
+          "name": "Chandelier 3"
+         }
+        ],
+        "mode": "auto",
+        "name": "Chandelier",
+        "target": null
+       },
+       {
+        "id": "reading",
+        "members": [
+         {
+          "id": "reading_lamp",
+          "name": "Reading lamp"
+         }
+        ],
+        "mode": "auto",
+        "name": "Reading",
+        "target": null
+       }
+      ],
+      "valid_from": null
+     }
+    }
+   ],
+   "/api/schedule_profiles": [
+    200,
+    {
+     "days": {
+      "default": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "09:42",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "16:29",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "09:42"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "19:29",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "16:29"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "19:29"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": true,
+        "section": "sleep",
+        "since": "22:00",
+        "since_date": "2026-03-28"
+       },
+       "date": "2026-03-29",
+       "now": "00:30",
+       "time_zone": "Europe/London"
+      },
+      "evening": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "09:42",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "16:29",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "09:42"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "19:29",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "16:29"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "19:29"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": true,
+        "section": "sleep",
+        "since": "22:00",
+        "since_date": "2026-03-28"
+       },
+       "date": "2026-03-29",
+       "now": "00:30",
+       "time_zone": "Europe/London"
+      }
+     },
+     "default_profile": "default",
+     "location": {
+      "available": true,
+      "error": null,
+      "time_zone": "Europe/London"
+     },
+     "rooms": [
+      {
+       "id": "living_room",
+       "name": "Living Room",
+       "profile": "evening"
+      }
+     ],
+     "schedule_profiles": [
+      {
+       "collision_policy": "collapse",
+       "id": "default",
+       "min_section_minutes": 30,
+       "name": "Default",
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      },
+      {
+       "collision_policy": "collapse",
+       "id": "evening",
+       "min_section_minutes": 30,
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      }
+     ],
+     "sections": [
+      "sunrise",
+      "day",
+      "afternoon",
+      "sunset",
+      "night",
+      "sleep"
+     ],
+     "standard": {
+      "collision_policy": "collapse",
+      "min_section_minutes": 30,
+      "sections": [
+       {
+        "id": "sunrise",
+        "priority": 100,
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "id": "day",
+        "priority": 50,
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "afternoon",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "sunset",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "night",
+        "priority": 100,
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "id": "sleep",
+        "priority": 100,
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ]
+     },
+     "version": "d2cbba3f32b77093d144e727746f53b8235765fd66163bbbb3fbf98aa272a214"
+    }
+   ]
+  },
+  "2026-03-29T15:00:00+00:00": {
+   "/api/rooms/living_room/now": [
+    200,
+    {
+     "live": {
+      "note": "Light Map's adaptive engine is built but switched off until cutover (P6). Until then ha-adaptive-light drives this room, and the scene select, guard and hold under these names are its own, so Light Map doesn't read them: what is shown here is the schedule this room will follow and what Light Map's own store holds.",
+      "title": "Adaptive runs at cutover — not live yet",
+      "wired": false
+     },
+     "profile": {
+      "collision_policy": "collapse",
+      "id": "evening",
+      "min_section_minutes": 30,
+      "name": "evening",
+      "shared_with": []
+     },
+     "room": {
+      "id": "living_room",
+      "name": "Living Room"
+     },
+     "schedule": {
+      "available": true,
+      "boundaries": [
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "09:42",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sunrise",
+        "start": "05:30",
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "current": true,
+        "default_priority": false,
+        "ends": "16:29",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "day",
+        "start": "09:42",
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "19:29",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "afternoon",
+        "start": "16:29",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "20:30",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "sunset",
+        "start": "19:29",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "22:00",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "night",
+        "start": "20:30",
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": null,
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sleep",
+        "start": "22:00",
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ],
+      "current": {
+       "carried_over": false,
+       "section": "day",
+       "since": "09:42",
+       "since_date": "2026-03-29"
+      },
+      "date": "2026-03-29",
+      "error": null,
+      "now": "16:00",
+      "time_zone": "Europe/London"
+     },
+     "targets": {
+      "available": true,
+      "lux_source": null,
+      "lux_target": null,
+      "maintenance_enabled": true,
+      "section": "day",
+      "units": [
+       {
+        "id": "chandelier",
+        "members": [
+         {
+          "id": "chandelier_1",
+          "name": "Chandelier 1"
+         },
+         {
+          "id": "chandelier_2",
+          "name": "Chandelier 2"
+         },
+         {
+          "id": "chandelier_3",
+          "name": "Chandelier 3"
+         }
+        ],
+        "mode": "auto",
+        "name": "Chandelier",
+        "target": null
+       },
+       {
+        "id": "reading",
+        "members": [
+         {
+          "id": "reading_lamp",
+          "name": "Reading lamp"
+         }
+        ],
+        "mode": "auto",
+        "name": "Reading",
+        "target": null
+       }
+      ],
+      "valid_from": null
+     }
+    }
+   ],
+   "/api/schedule_profiles": [
+    200,
+    {
+     "days": {
+      "default": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "09:42",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": true,
+         "default_priority": false,
+         "ends": "16:29",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "09:42"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "19:29",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "16:29"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "19:29"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": false,
+        "section": "day",
+        "since": "09:42",
+        "since_date": "2026-03-29"
+       },
+       "date": "2026-03-29",
+       "now": "16:00",
+       "time_zone": "Europe/London"
+      },
+      "evening": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "09:42",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": true,
+         "default_priority": false,
+         "ends": "16:29",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "09:42"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "19:29",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "16:29"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "19:29"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": false,
+        "section": "day",
+        "since": "09:42",
+        "since_date": "2026-03-29"
+       },
+       "date": "2026-03-29",
+       "now": "16:00",
+       "time_zone": "Europe/London"
+      }
+     },
+     "default_profile": "default",
+     "location": {
+      "available": true,
+      "error": null,
+      "time_zone": "Europe/London"
+     },
+     "rooms": [
+      {
+       "id": "living_room",
+       "name": "Living Room",
+       "profile": "evening"
+      }
+     ],
+     "schedule_profiles": [
+      {
+       "collision_policy": "collapse",
+       "id": "default",
+       "min_section_minutes": 30,
+       "name": "Default",
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      },
+      {
+       "collision_policy": "collapse",
+       "id": "evening",
+       "min_section_minutes": 30,
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      }
+     ],
+     "sections": [
+      "sunrise",
+      "day",
+      "afternoon",
+      "sunset",
+      "night",
+      "sleep"
+     ],
+     "standard": {
+      "collision_policy": "collapse",
+      "min_section_minutes": 30,
+      "sections": [
+       {
+        "id": "sunrise",
+        "priority": 100,
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "id": "day",
+        "priority": 50,
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "afternoon",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "sunset",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "night",
+        "priority": 100,
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "id": "sleep",
+        "priority": 100,
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ]
+     },
+     "version": "d2cbba3f32b77093d144e727746f53b8235765fd66163bbbb3fbf98aa272a214"
+    }
+   ]
+  },
+  "2026-10-16T11:00:00+00:00": {
+   "/api/rooms/living_room/now": [
+    200,
+    {
+     "live": {
+      "note": "Light Map's adaptive engine is built but switched off until cutover (P6). Until then ha-adaptive-light drives this room, and the scene select, guard and hold under these names are its own, so Light Map doesn't read them: what is shown here is the schedule this room will follow and what Light Map's own store holds.",
+      "title": "Adaptive runs at cutover — not live yet",
+      "wired": false
+     },
+     "profile": {
+      "collision_policy": "collapse",
+      "id": "evening",
+      "min_section_minutes": 30,
+      "name": "evening",
+      "shared_with": []
+     },
+     "room": {
+      "id": "living_room",
+      "name": "Living Room"
+     },
+     "schedule": {
+      "available": true,
+      "boundaries": [
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "10:25",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sunrise",
+        "start": "05:30",
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "current": true,
+        "default_priority": false,
+        "ends": "15:06",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "day",
+        "start": "10:25",
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "18:06",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "afternoon",
+        "start": "15:06",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "20:30",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "sunset",
+        "start": "18:06",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "22:00",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "night",
+        "start": "20:30",
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": null,
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sleep",
+        "start": "22:00",
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ],
+      "current": {
+       "carried_over": false,
+       "section": "day",
+       "since": "10:25",
+       "since_date": "2026-10-16"
+      },
+      "date": "2026-10-16",
+      "error": null,
+      "now": "12:00",
+      "time_zone": "Europe/London"
+     },
+     "targets": {
+      "available": true,
+      "lux_source": null,
+      "lux_target": null,
+      "maintenance_enabled": true,
+      "section": "day",
+      "units": [
+       {
+        "id": "chandelier",
+        "members": [
+         {
+          "id": "chandelier_1",
+          "name": "Chandelier 1"
+         },
+         {
+          "id": "chandelier_2",
+          "name": "Chandelier 2"
+         },
+         {
+          "id": "chandelier_3",
+          "name": "Chandelier 3"
+         }
+        ],
+        "mode": "auto",
+        "name": "Chandelier",
+        "target": null
+       },
+       {
+        "id": "reading",
+        "members": [
+         {
+          "id": "reading_lamp",
+          "name": "Reading lamp"
+         }
+        ],
+        "mode": "auto",
+        "name": "Reading",
+        "target": null
+       }
+      ],
+      "valid_from": null
+     }
+    }
+   ],
+   "/api/schedule_profiles": [
+    200,
+    {
+     "days": {
+      "default": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "10:25",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": true,
+         "default_priority": false,
+         "ends": "15:06",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "10:25"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "18:06",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "15:06"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "18:06"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": false,
+        "section": "day",
+        "since": "10:25",
+        "since_date": "2026-10-16"
+       },
+       "date": "2026-10-16",
+       "now": "12:00",
+       "time_zone": "Europe/London"
+      },
+      "evening": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "10:25",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": true,
+         "default_priority": false,
+         "ends": "15:06",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "10:25"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "18:06",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "15:06"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "18:06"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": false,
+        "section": "day",
+        "since": "10:25",
+        "since_date": "2026-10-16"
+       },
+       "date": "2026-10-16",
+       "now": "12:00",
+       "time_zone": "Europe/London"
+      }
+     },
+     "default_profile": "default",
+     "location": {
+      "available": true,
+      "error": null,
+      "time_zone": "Europe/London"
+     },
+     "rooms": [
+      {
+       "id": "living_room",
+       "name": "Living Room",
+       "profile": "evening"
+      }
+     ],
+     "schedule_profiles": [
+      {
+       "collision_policy": "collapse",
+       "id": "default",
+       "min_section_minutes": 30,
+       "name": "Default",
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      },
+      {
+       "collision_policy": "collapse",
+       "id": "evening",
+       "min_section_minutes": 30,
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      }
+     ],
+     "sections": [
+      "sunrise",
+      "day",
+      "afternoon",
+      "sunset",
+      "night",
+      "sleep"
+     ],
+     "standard": {
+      "collision_policy": "collapse",
+      "min_section_minutes": 30,
+      "sections": [
+       {
+        "id": "sunrise",
+        "priority": 100,
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "id": "day",
+        "priority": 50,
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "afternoon",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "sunset",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "night",
+        "priority": 100,
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "id": "sleep",
+        "priority": 100,
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ]
+     },
+     "version": "d2cbba3f32b77093d144e727746f53b8235765fd66163bbbb3fbf98aa272a214"
+    }
+   ]
+  },
+  "2026-10-25T00:30:00+00:00": {
+   "/api/rooms/living_room/now": [
+    200,
+    {
+     "live": {
+      "note": "Light Map's adaptive engine is built but switched off until cutover (P6). Until then ha-adaptive-light drives this room, and the scene select, guard and hold under these names are its own, so Light Map doesn't read them: what is shown here is the schedule this room will follow and what Light Map's own store holds.",
+      "title": "Adaptive runs at cutover — not live yet",
+      "wired": false
+     },
+     "profile": {
+      "collision_policy": "collapse",
+      "id": "evening",
+      "min_section_minutes": 30,
+      "name": "evening",
+      "shared_with": []
+     },
+     "room": {
+      "id": "living_room",
+      "name": "Living Room"
+     },
+     "schedule": {
+      "available": true,
+      "boundaries": [
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "09:40",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sunrise",
+        "start": "05:30",
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "13:47",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "day",
+        "start": "09:40",
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "16:47",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "afternoon",
+        "start": "13:47",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "20:30",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "sunset",
+        "start": "16:47",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "22:00",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "night",
+        "start": "20:30",
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": null,
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sleep",
+        "start": "22:00",
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ],
+      "current": {
+       "carried_over": true,
+       "section": "sleep",
+       "since": "22:00",
+       "since_date": "2026-10-24"
+      },
+      "date": "2026-10-25",
+      "error": null,
+      "now": "01:30",
+      "time_zone": "Europe/London"
+     },
+     "targets": {
+      "available": true,
+      "lux_source": null,
+      "lux_target": null,
+      "maintenance_enabled": false,
+      "section": "sleep",
+      "units": [
+       {
+        "id": "chandelier",
+        "members": [
+         {
+          "id": "chandelier_1",
+          "name": "Chandelier 1"
+         },
+         {
+          "id": "chandelier_2",
+          "name": "Chandelier 2"
+         },
+         {
+          "id": "chandelier_3",
+          "name": "Chandelier 3"
+         }
+        ],
+        "mode": "auto",
+        "name": "Chandelier",
+        "target": null
+       },
+       {
+        "id": "reading",
+        "members": [
+         {
+          "id": "reading_lamp",
+          "name": "Reading lamp"
+         }
+        ],
+        "mode": "auto",
+        "name": "Reading",
+        "target": null
+       }
+      ],
+      "valid_from": null
+     }
+    }
+   ],
+   "/api/schedule_profiles": [
+    200,
+    {
+     "days": {
+      "default": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "09:40",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "13:47",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "09:40"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "16:47",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "13:47"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "16:47"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": true,
+        "section": "sleep",
+        "since": "22:00",
+        "since_date": "2026-10-24"
+       },
+       "date": "2026-10-25",
+       "now": "01:30",
+       "time_zone": "Europe/London"
+      },
+      "evening": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "09:40",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "13:47",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "09:40"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "16:47",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "13:47"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "16:47"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": true,
+        "section": "sleep",
+        "since": "22:00",
+        "since_date": "2026-10-24"
+       },
+       "date": "2026-10-25",
+       "now": "01:30",
+       "time_zone": "Europe/London"
+      }
+     },
+     "default_profile": "default",
+     "location": {
+      "available": true,
+      "error": null,
+      "time_zone": "Europe/London"
+     },
+     "rooms": [
+      {
+       "id": "living_room",
+       "name": "Living Room",
+       "profile": "evening"
+      }
+     ],
+     "schedule_profiles": [
+      {
+       "collision_policy": "collapse",
+       "id": "default",
+       "min_section_minutes": 30,
+       "name": "Default",
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      },
+      {
+       "collision_policy": "collapse",
+       "id": "evening",
+       "min_section_minutes": 30,
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      }
+     ],
+     "sections": [
+      "sunrise",
+      "day",
+      "afternoon",
+      "sunset",
+      "night",
+      "sleep"
+     ],
+     "standard": {
+      "collision_policy": "collapse",
+      "min_section_minutes": 30,
+      "sections": [
+       {
+        "id": "sunrise",
+        "priority": 100,
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "id": "day",
+        "priority": 50,
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "afternoon",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "sunset",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "night",
+        "priority": 100,
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "id": "sleep",
+        "priority": 100,
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ]
+     },
+     "version": "d2cbba3f32b77093d144e727746f53b8235765fd66163bbbb3fbf98aa272a214"
+    }
+   ]
+  },
+  "2026-10-25T01:30:00+00:00": {
+   "/api/rooms/living_room/now": [
+    200,
+    {
+     "live": {
+      "note": "Light Map's adaptive engine is built but switched off until cutover (P6). Until then ha-adaptive-light drives this room, and the scene select, guard and hold under these names are its own, so Light Map doesn't read them: what is shown here is the schedule this room will follow and what Light Map's own store holds.",
+      "title": "Adaptive runs at cutover — not live yet",
+      "wired": false
+     },
+     "profile": {
+      "collision_policy": "collapse",
+      "id": "evening",
+      "min_section_minutes": 30,
+      "name": "evening",
+      "shared_with": []
+     },
+     "room": {
+      "id": "living_room",
+      "name": "Living Room"
+     },
+     "schedule": {
+      "available": true,
+      "boundaries": [
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "09:40",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sunrise",
+        "start": "05:30",
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "13:47",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "day",
+        "start": "09:40",
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "16:47",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "afternoon",
+        "start": "13:47",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "20:30",
+        "outcome": "ran",
+        "priority": 50,
+        "reason": null,
+        "section": "sunset",
+        "start": "16:47",
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": "22:00",
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "night",
+        "start": "20:30",
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "current": false,
+        "default_priority": false,
+        "ends": null,
+        "outcome": "ran",
+        "priority": 100,
+        "reason": null,
+        "section": "sleep",
+        "start": "22:00",
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ],
+      "current": {
+       "carried_over": true,
+       "section": "sleep",
+       "since": "22:00",
+       "since_date": "2026-10-24"
+      },
+      "date": "2026-10-25",
+      "error": null,
+      "now": "01:30",
+      "time_zone": "Europe/London"
+     },
+     "targets": {
+      "available": true,
+      "lux_source": null,
+      "lux_target": null,
+      "maintenance_enabled": false,
+      "section": "sleep",
+      "units": [
+       {
+        "id": "chandelier",
+        "members": [
+         {
+          "id": "chandelier_1",
+          "name": "Chandelier 1"
+         },
+         {
+          "id": "chandelier_2",
+          "name": "Chandelier 2"
+         },
+         {
+          "id": "chandelier_3",
+          "name": "Chandelier 3"
+         }
+        ],
+        "mode": "auto",
+        "name": "Chandelier",
+        "target": null
+       },
+       {
+        "id": "reading",
+        "members": [
+         {
+          "id": "reading_lamp",
+          "name": "Reading lamp"
+         }
+        ],
+        "mode": "auto",
+        "name": "Reading",
+        "target": null
+       }
+      ],
+      "valid_from": null
+     }
+    }
+   ],
+   "/api/schedule_profiles": [
+    200,
+    {
+     "days": {
+      "default": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "09:40",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "13:47",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "09:40"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "16:47",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "13:47"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "16:47"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": true,
+        "section": "sleep",
+        "since": "22:00",
+        "since_date": "2026-10-24"
+       },
+       "date": "2026-10-25",
+       "now": "01:30",
+       "time_zone": "Europe/London"
+      },
+      "evening": {
+       "boundaries": [
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "09:40",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sunrise",
+         "start": "05:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "13:47",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "day",
+         "start": "09:40"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "16:47",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "afternoon",
+         "start": "13:47"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "20:30",
+         "outcome": "ran",
+         "priority": 50,
+         "reason": null,
+         "section": "sunset",
+         "start": "16:47"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": "22:00",
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "night",
+         "start": "20:30"
+        },
+        {
+         "current": false,
+         "default_priority": false,
+         "ends": null,
+         "outcome": "ran",
+         "priority": 100,
+         "reason": null,
+         "section": "sleep",
+         "start": "22:00"
+        }
+       ],
+       "current": {
+        "carried_over": true,
+        "section": "sleep",
+        "since": "22:00",
+        "since_date": "2026-10-24"
+       },
+       "date": "2026-10-25",
+       "now": "01:30",
+       "time_zone": "Europe/London"
+      }
+     },
+     "default_profile": "default",
+     "location": {
+      "available": true,
+      "error": null,
+      "time_zone": "Europe/London"
+     },
+     "rooms": [
+      {
+       "id": "living_room",
+       "name": "Living Room",
+       "profile": "evening"
+      }
+     ],
+     "schedule_profiles": [
+      {
+       "collision_policy": "collapse",
+       "id": "default",
+       "min_section_minutes": 30,
+       "name": "Default",
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      },
+      {
+       "collision_policy": "collapse",
+       "id": "evening",
+       "min_section_minutes": 30,
+       "sections": [
+        {
+         "id": "sunrise",
+         "priority": 100,
+         "trigger": {
+          "of": [
+           {
+            "event": "sunrise",
+            "offset_minutes": 0,
+            "type": "sun"
+           },
+           {
+            "time": "05:30",
+            "type": "clock"
+           }
+          ],
+          "type": "earliest"
+         }
+        },
+        {
+         "id": "day",
+         "priority": 50,
+         "trigger": {
+          "event": "sunrise",
+          "offset_minutes": 180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "afternoon",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": -180,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "sunset",
+         "priority": 50,
+         "trigger": {
+          "event": "sunset",
+          "offset_minutes": 0,
+          "type": "sun"
+         }
+        },
+        {
+         "id": "night",
+         "priority": 100,
+         "trigger": {
+          "time": "20:30",
+          "type": "clock"
+         }
+        },
+        {
+         "id": "sleep",
+         "priority": 100,
+         "trigger": {
+          "time": "22:00",
+          "type": "clock"
+         }
+        }
+       ]
+      }
+     ],
+     "sections": [
+      "sunrise",
+      "day",
+      "afternoon",
+      "sunset",
+      "night",
+      "sleep"
+     ],
+     "standard": {
+      "collision_policy": "collapse",
+      "min_section_minutes": 30,
+      "sections": [
+       {
+        "id": "sunrise",
+        "priority": 100,
+        "trigger": {
+         "of": [
+          {
+           "event": "sunrise",
+           "offset_minutes": 0,
+           "type": "sun"
+          },
+          {
+           "time": "05:30",
+           "type": "clock"
+          }
+         ],
+         "type": "earliest"
+        }
+       },
+       {
+        "id": "day",
+        "priority": 50,
+        "trigger": {
+         "event": "sunrise",
+         "offset_minutes": 180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "afternoon",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": -180,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "sunset",
+        "priority": 50,
+        "trigger": {
+         "event": "sunset",
+         "offset_minutes": 0,
+         "type": "sun"
+        }
+       },
+       {
+        "id": "night",
+        "priority": 100,
+        "trigger": {
+         "time": "20:30",
+         "type": "clock"
+        }
+       },
+       {
+        "id": "sleep",
+        "priority": 100,
+        "trigger": {
+         "time": "22:00",
+         "type": "clock"
+        }
+       }
+      ]
+     },
+     "version": "d2cbba3f32b77093d144e727746f53b8235765fd66163bbbb3fbf98aa272a214"
+    }
+   ]
+  }
+ },
+ "writes": [
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft chandelier_1"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft chandelier_2"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft chandelier_3"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft kitchen_strip"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft porch"
+    }
+   ]
+  ],
+  [
+   "create_helper",
+   [
+    "input_boolean",
+    {
+     "icon": "mdi:light-switch",
+     "name": "LM Soft reading_lamp"
+    }
+   ]
+  ],
+  [
+   "call_service",
+   [
+    "input_boolean",
+    "turn_on",
+    {
+     "entity_id": "input_boolean.lm_soft_chandelier_1"
+    }
+   ]
+  ],
+  [
+   "call_service",
+   [
+    "input_boolean",
+    "turn_on",
+    {
+     "entity_id": "input_boolean.lm_soft_chandelier_2"
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_chandelier_1",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_1",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.chandelier_1"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_1",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.chandelier_1"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_chandelier_1",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Chandelier 1 (light.chandelier_1) follows input_boolean.lm_soft_chandelier_1. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_chandelier_1",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_1",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_1",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_chandelier_2",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_2",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.chandelier_2"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_2",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.chandelier_2"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_chandelier_2",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Chandelier 2 (light.chandelier_2) follows input_boolean.lm_soft_chandelier_2. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_chandelier_2",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_2",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_2",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_chandelier_3",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_3",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.chandelier_3"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_chandelier_3",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.chandelier_3"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_chandelier_3",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Chandelier 3 (light.chandelier_3) follows input_boolean.lm_soft_chandelier_3. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_chandelier_3",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_3",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_chandelier_3",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_kitchen_strip",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_kitchen_strip",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.kitchen_strip"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_kitchen_strip",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.kitchen_strip"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_kitchen_strip",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Kitchen strip (light.kitchen_strip) follows input_boolean.lm_soft_kitchen_strip. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_kitchen_strip",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_kitchen_strip",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_kitchen_strip",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_porch",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_porch",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.porch"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_porch",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.porch"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_porch",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Porch (light.porch) follows input_boolean.lm_soft_porch. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_porch",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_porch",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_porch",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_bridge_reading_lamp",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_reading_lamp",
+           "state": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_on",
+           "target": {
+            "entity_id": "light.reading_lamp"
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "state",
+           "entity_id": "input_boolean.lm_soft_reading_lamp",
+           "state": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "light.turn_off",
+           "target": {
+            "entity_id": "light.reading_lamp"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_bridge_reading_lamp",
+     "conditions": [],
+     "description": "Light Map soft->bulb bridge: Reading lamp (light.reading_lamp) follows input_boolean.lm_soft_reading_lamp. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_bridge_reading_lamp",
+     "mode": "restart",
+     "triggers": [
+      {
+       "entity_id": "input_boolean.lm_soft_reading_lamp",
+       "from": "off",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "input_boolean.lm_soft_reading_lamp",
+       "from": "on",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_hard_living_all_off",
+    {
+     "actions": [
+      {
+       "action": "input_boolean.turn_off",
+       "target": {
+        "entity_id": [
+         "input_boolean.lm_soft_chandelier_1",
+         "input_boolean.lm_soft_chandelier_2",
+         "input_boolean.lm_soft_chandelier_3",
+         "input_boolean.lm_soft_reading_lamp"
+        ]
+       }
+      }
+     ],
+     "alias": "lm_hard_living_all_off",
+     "conditions": [
+      {
+       "condition": "template",
+       "value_template": "{{ trigger.from_state is not none and trigger.to_state is not none }}"
+      }
+     ],
+     "description": "Light Map hard switch: All off button turns switching group All living room lights (4 bulbs) off. Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_hard_living_all_off",
+     "mode": "queued",
+     "triggers": [
+      {
+       "entity_id": "event.living_room_button",
+       "not_from": [
+        "unavailable",
+        "unknown"
+       ],
+       "not_to": [
+        "unavailable",
+        "unknown"
+       ],
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ],
+  [
+   "save_automation_config",
+   [
+    "lm_hard_reading_switch",
+    {
+     "actions": [
+      {
+       "choose": [
+        {
+         "conditions": [
+          {
+           "condition": "trigger",
+           "id": "on"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "input_boolean.turn_on",
+           "target": {
+            "entity_id": [
+             "input_boolean.lm_soft_reading_lamp"
+            ]
+           }
+          }
+         ]
+        },
+        {
+         "conditions": [
+          {
+           "condition": "trigger",
+           "id": "off"
+          }
+         ],
+         "sequence": [
+          {
+           "action": "input_boolean.turn_off",
+           "target": {
+            "entity_id": [
+             "input_boolean.lm_soft_reading_lamp"
+            ]
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ],
+     "alias": "lm_hard_reading_switch",
+     "conditions": [],
+     "description": "Light Map hard switch: Reading switch is followed by Reading lamp (light.reading_lamp). Generated by Light Map; edits made in Home Assistant are overwritten on deploy.",
+     "id": "lm_hard_reading_switch",
+     "mode": "queued",
+     "triggers": [
+      {
+       "entity_id": "switch.reading_relay",
+       "from": "off",
+       "id": "on",
+       "to": "on",
+       "trigger": "state"
+      },
+      {
+       "entity_id": "switch.reading_relay",
+       "from": "on",
+       "id": "off",
+       "to": "off",
+       "trigger": "state"
+      }
+     ]
+    }
+   ]
+  ]
+ ]
+}

@@ -5,20 +5,23 @@ truth; update both together.
 
 Parallel build in this repo: the live `ha-adaptive-light` keeps running untouched until P6.
 
-**Current phase: P5.2b** (P0–P5.2a done: the scaffold, the inventory with stable bulb
+**Current phase: P6a** (P0–P5.2b done: the scaffold, the inventory with stable bulb
 identity across HA entity renames, the switching plane with its deploy, the Map tab with its
 HTTP API and deploy-with-preview, the observation core (the WebSocket observer, per-bulb
 heartbeats, reactive detection, the CSV + SQLite store, the event log and the Log tab, plus a
 Host-header allowlist on the API), ignored lights, the per-room `adaptive_config` with its
-editor, the `al_` generator with its deploy lane and the almanac attribute contract, and the
-adaptive engine: the schedule profiles (config version 5) and the ported scheduler, the
-analyser pooling per-bulb readings per learning unit, the almanac's store and publish, the
-runtime loop, and the bridge's gated fallback, all behind the cutover switch, which stays
-off until P6. P5.2b is the adaptive views: the read-only Now / Analysis / Almanac tabs and
-the schedule-profile editor, with uPlot vendored for the Analysis chart. They read the
-config, HA's location and Light Map's own store; a live `al_` entity, which the old system
-owns until P6, only with the cutover switch on. No engine or generator change; section
-display names are deferred. P6, the cutover, comes next).
+editor, the `al_` generator with its deploy lane and the almanac attribute contract, the
+adaptive engine (the schedule profiles and the ported scheduler, the analyser pooling
+per-bulb readings per learning unit, the almanac's store and publish, the runtime loop, the
+bridge's gated fallback), and the adaptive views (the read-only Now / Analysis / Almanac
+tabs and the schedule-profile editor), all behind the cutover switch, which stays off until
+P6b. P6a is the last code before the cutover: the scheduler's clock changes (a section whose
+start the clocks skip on a spring-forward day starts at the gap's end, so none is reported
+as run yet never in force; `tools/sweep.py` checks it, at clock-changing sites too), the
+crossover report counting Light Map's own `al_` automations as its own, and the Map's deploy
+applying the module lanes after `lm_` under one fingerprint. All of it is pure computation
+or gated on the cutover switch: with it off, the live app generates, previews, applies and
+writes exactly what P5.2b did. P6b, the cutover itself, done by hand, comes next).
 
 ## Phases
 
@@ -53,14 +56,21 @@ display names are deferred. P6, the cutover, comes next).
     live `al_` entity only with the cutover switch on) and the schedule-profile editor,
     with uPlot vendored for the Analysis chart. No engine or generator change; the
     sections' display names are deferred (they need a generator change).
-- **P6 — Cutover.** Deploy against live HA; remove the old `al_*` system; turn the cutover
-  switch on and add the `al_` lane's apply to the Map's deploy; re-express the house; start
-  the almanac (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old
-  repo kept deployable as rollback until Light Map has run clean for a few days.
+- **P6 — Cutover.** In two steps:
+  - **P6a — Final pre-cutover code.** The scheduler's clock changes (a section whose start
+    the clocks skip is moved to the gap's end, never reported as run yet never in force,
+    and `tools/sweep.py` checks it at clock-changing sites), the crossover report counting
+    Light Map's own `al_` automations as its own, and the Map's deploy applying the module
+    lanes after `lm_` under one fingerprint. All of it pure computation or behind the
+    cutover switch, which stays off: the live app's output is P5.2b's byte for byte.
+  - **P6b — Cutover**, by hand against the real HA: remove the old `al_*` system; turn the
+    cutover switch on; deploy (`lm_`, then `al_`); re-express the house; start the almanac
+    (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old repo kept
+    deployable as rollback until Light Map has run clean for a few days.
 
 ## Coexistence during the parallel build
 
-P0–P5.2 touch only new HA artefacts (soft switches, bridge automations, Area assignments) and
+P0–P6a touch only new HA artefacts (soft switches, bridge automations, Area assignments) and
 can coexist with the live adaptive system, as long as the new bridges stay unbound (no hard
 switches; bridge not yet authoritative) until cutover. That coexistence boundary is the main
 thing to get right during the parallel build. Deploying the plane never drives a bulb (each
@@ -70,7 +80,7 @@ one and marks every live bulb and group.
 
 **The cutover switch** (P5.1): the adaptive lane's `al_` names are the live
 `ha-adaptive-light`'s own, so the composition root wires the adaptive module in only when
-`ADAPTIVE_ENABLED` (`app/main.py`) is on, and it stays off until P6. Off, nothing
+`ADAPTIVE_ENABLED` (`app/main.py`) is on, and it stays off until P6b. Off, nothing
 generates, previews or writes `al_`, no adaptive runtime runs (nothing fires a scene or
 publishes an almanac), the switching plane's output is byte-identical to P5.0's, and the
 adaptive views read no live `al_` entity (P5.2b). See `docs/DESIGN.md`, "The adaptive generator".

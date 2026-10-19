@@ -244,7 +244,8 @@ class BrowserTest(unittest.TestCase):
 
     def test_module_lanes_in_the_deploy_dialog(self):
         # The cutover switch on, in this test's scope only (the live app keeps it off until
-        # P6): the dialog shows the al_ lane read-only and applies lm_ alone.
+        # P6b): the dialog shows the al_ lane after the plan and applies it after lm_ once
+        # it is shown ready (P6a).
         with tempfile.TemporaryDirectory() as directory, adaptive_wired():
             path = Path(directory) / "config.json"
             config.save(path, committed_config())
@@ -252,10 +253,10 @@ class BrowserTest(unittest.TestCase):
             app = create_app(ha=ha, config_path=path, verify_delay=0)
             with serve(app) as url:
                 report = self.run_script(LANES_SCRIPT, url)
-            self.assertEqual(len(report["steps"]), 2)
+            self.assertEqual(len(report["steps"]), 4)
             self.assertIn("lm_bridge_chandelier_1", ha.automations)
-            self.assertEqual([i for i in ha.automations if i.startswith("al_")], [])
-            self.assertNotIn("input_select", ha.helpers)
+            self.assertIn("al_maint_living_room", ha.automations)
+            self.assertEqual(sorted(ha.helpers["input_select"]), ["al_scene_living_room"])
             self.assertEqual(ha.fired, [])
 
     def test_the_adaptive_editor(self):

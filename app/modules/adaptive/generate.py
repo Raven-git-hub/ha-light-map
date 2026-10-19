@@ -369,7 +369,7 @@ def helpers(config: Mapping[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
             "name": scene_select_name(room_id),
             "icon": SCENE_ICON,
             # The canonical ids, so the select's state is the section id every template
-            # reads. Display names arrive with P5.2's schedule editor.
+            # reads. Display names are deferred (docs/DESIGN.md, "Section display names").
             "options": list(SECTIONS),
         }
     return {"input_boolean": booleans, "input_select": selects}

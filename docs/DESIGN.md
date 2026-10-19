@@ -496,7 +496,9 @@ Area or device isn't found; the live ha-adaptive-light's `al_` automations are f
 the HA groups with mapped bulbs among their members (from HA's states), and the names the
 plane would generate that something else holds (a YAML helper, an automation entity id
 taken by another automation, so ours would load as `..._2`). What couldn't be checked is
-listed too, so an empty report is never mistaken for a clean one.
+listed too, so an empty report is never mistaken for a clean one. With a module lane wired
+in (P6a), the automations it generates count as Light Map's too, and its names are checked
+alike (see "The `al_` deploy lane").
 
 **Area writes** (`deploy_areas`) make HA's Areas match the committed room snapshot, through
 the inventory's own verified `move_bulb`. Every move is checked first (`inventory.check_move`
@@ -785,16 +787,20 @@ root (`app/main.py`), **off until P6**:
   generates, previews or writes `al_`, and the lifespan makes no adaptive runtime (P5.2a):
   nothing fires a scene, raises a hold, publishes an almanac, or hooks a section or a guard
   into the observer.
-- **On** (the tests, and P6): `al` is registered and generated, `core.deploy` reconciles it
-  as its own lane, the deploy preview shows its plan (read-only), adaptive bulbs' bridges
-  carry the fragment, and the lifespan starts the runtime.
+- **On** (the tests, and from P6b): `al` is registered and generated, `core.deploy`
+  reconciles it as its own lane, the Map's deploy previews it and (since P6a) applies it
+  after `lm_` (see "Applying the module lanes"), the crossover report counts its own
+  automations as Light Map's, adaptive bulbs' bridges carry the fragment, and the lifespan
+  starts the runtime.
 
 It is a constant, not an environment variable, so turning it on is a reviewed code change
 made with the cutover, never a deployment setting someone could set early (in a compose
 file or an `.env` copied from a guide). Tests turn it on in a scope of their own
 (`app.main.wire_modules(adaptive=True)` with the registries patched), never in the live
-composition root. Even on, the Map's deploy applies only the `lm_` lane: applying `al_`
-from the Map arrives with the cutover (P6), which removes the old system first.
+composition root. Turning it on is P6b's, done by hand against the real HA after the old
+system's `al_` artefacts are removed. P6a, the last code before it, changes nothing the
+switch-off app generates, previews, applies or writes (`tests/golden/switch_off.json`, as
+well as `lm_only.yaml`, holds it to P5.2b's output byte for byte).
 
 ### The two-plane rework
 
@@ -985,10 +991,51 @@ remove, verify after every write), with two additions:
   deployed first), and the room's lux and presence sensors (the deploy-time existence check
   P5.0 promised for them).
 
-The crossover report still counts only the `lm_` lane as Light Map's, so the live old
-system's `al_` automations stay flagged as foreign drivers; with the switch on, Light Map's
-own `al_` automations are flagged alike, being indistinguishable by name (P6 removes the
-old ones).
+**The crossover report** (settled in P6a). With the switch off every `al_` automation is
+the old system's, and is flagged as a foreign driver (`adaptive_light`), as before. With it
+on, an automation whose id the `al_` lane generates for the config is Light Map's own, like
+an `lm_` one, and isn't listed; an `al_` one it doesn't generate (the predecessor's
+`al_maintenance_<room>`, a room's scenes left behind once the room is unflagged, any other
+leftover) is still flagged. Where the two systems' names coincide (the predecessor's scenes
+are `al_scene_<room>_<section>` too) nothing can tell them apart, which is why P6b removes
+the old system's automations before the lane's first deploy; until then such an automation
+reads as Light Map's here, and the lane's plan shows it as an update. The names check
+(`collisions`) covers each wired lane as it covers `lm_`: an automation entity id the lane
+would take held by another automation, or a helper id held by one it can't manage.
+
+### Applying the module lanes (settled in P6a)
+
+With the switch on, the Map's deploy applies every wired lane, not only `lm_`. Off (until
+P6b) no module lane is registered, and it is exactly the switching deploy it was: the same
+plan, the same fingerprint, the same writes and the same answer.
+
+- **Order.** `lm_` first, then each module lane in the order it was registered
+  (`core.generate.namespaces()`): the soft switches, and the bridges carrying the
+  fragment, must exist before `al_` commands them. Each lane is planned, applied and
+  verified on its own, as `core.deploy` always did it, so no plan touches another lane's
+  artefacts, and a lane is verified before the next one is written.
+- **One fingerprint.** The preview's `fingerprint` covers every lane it shows: with module
+  lanes wired, one digest over the `lm_` plan and each module lane's plan, or the reason it
+  would be refused, in the order they are applied; with none (the switch off) it is the
+  `lm_` plan's own digest, as in P5.2b. The apply plans every lane again before writing
+  anything and is refused (409 `preview_stale`) if they digest differently. One digest
+  rather than one per lane, because the dialog shows the whole deploy and is approved as a
+  whole: a lane refused in the preview is part of what was shown, and applying it the
+  moment it became ready would apply something nobody saw.
+- **A lane refused in the preview is not applied.** Most often that is the first deploy with
+  the switch on in a house whose plane isn't deployed yet: `al_` addresses soft switches the
+  `lm_` plan is about to create, so it is refused until they exist. The deploy applies
+  `lm_`, reports `al_` as not applied with its reason, and the next preview shows its plan.
+- **Each module lane is planned again just before it is written.** `lm_` changes nothing a
+  module lane's plan reads (the lane's own artefacts and the entities it addresses), so the
+  plan must be the one the preview showed; if HA has moved on in between, the lane isn't
+  applied (409 `preview_stale`, with `deployed` naming the lanes that were), and the next
+  preview starts from whatever HA then holds.
+- **A lane that fails or doesn't verify stops the deploy there** (502 `deploy_failed`, with
+  `deployed`): the lanes before it stand, verified, and the next deploy reconciles the
+  rest. Each lane deployed is recorded in the event log.
+- The answer is the `lm_` lane's summary (`result`), as before, and with module lanes wired,
+  `modules`: per lane, whether it was `deployed`, with its summary, or why it wasn't.
 
 ---
 
@@ -1055,7 +1102,7 @@ config.
 profile, a date and a place in, the day's six boundaries out, each run or collapsed with
 its reason), testable offline across a whole year, which matters because its failure modes
 are seasonal. Two departures, each a day the predecessor got wrong (found by P5.2a's
-review): its clamp could move a section past midnight, even after the next day's first
+review; a third, the clock changes, below): its clamp could move a section past midnight, even after the next day's first
 boundary, where it was reported as run but never in force (now it collapses instead, as
 above); and it compared times by the wall clock, so where the clocks go back across a
 boundary (Beirut, at midnight) the repeated hour read as before the boundary again, which a
@@ -1064,17 +1111,52 @@ compares instants). Sun times are computed locally (`astral`) from HA's own loca
 longitude, elevation and time zone, from `/api/config`): HA's `sun.sun` only knows the next
 event, so it can't say when today's sunrise was, which catching up after a restart needs.
 
+**Clock changes** (settled in P6a). The predecessor also worked the day out by the wall
+clock, which a spring-forward day breaks. A boundary at 02:30 on a day the clocks jump from
+02:00 to 03:00 is a time that never happens, yet it was reported as run (so the Now tab
+showed it), while the runtime, which picks the section in force by instant, read it as 03:30
+(Python's reading of a skipped time) and never chose it when a section the wall clock put
+after it, at 03:00, came into force first. A section could run on paper and never be in
+force. So the scheduler now reasons in real time throughout:
+
+- **A clock time the clocks skip starts when they go forward past it**, at the end of the
+  gap: 02:30 starts at 03:00, the first moment the clock reads past it. That keeps its place
+  in the day's order, where Python's reading (and Java's, and iCalendar's) shifts it by the
+  gap's length, to 03:30, which can jump it past a section the profile puts after it. The
+  Now tab and the schedule editor show the time it really starts, marked as moved, with why.
+  A time in an hour the clocks repeat is its first occurrence, as before.
+- **A sun offset is elapsed time**, as HA's own sun trigger takes it: "three hours after
+  sunrise" is three real hours, so a sun-relative boundary is always a real instant.
+- **Order, the minimum section, a clamp's move and the day's end are measured between
+  instants**, so a section's length is how long it really lasts across the change, and two
+  sections the wall clock puts 30 minutes apart across a skipped hour collide.
+- **The day is its real span**: from its first minute that happens (00:00, or the gap's end
+  where the clocks skip midnight, as in Beirut or Santiago) to its last (23:59, or the
+  minute before the gap where they skip the day's end, as in Nuuk). A boundary that would
+  start outside it is clamped to it, as an offset's always was.
+
+So every section reported as run is in force from its start to its end, exactly as the
+runtime picks it, and `tools/sweep.py` checks that on every day it computes (below). The
+fall-back handling is unchanged: `active_section_at` compares instants, so the repeated hour
+never takes a section back.
+
 It is **level-triggered**: `active_section_at` says which section is in force at a moment
 (looking back up to two days, since before the day's first boundary the last section of
 yesterday is still in force), and the runtime fires a crossover whenever that differs from
 what it last fired. Normal running, a start after downtime, a dropped connection and a
 clock change all take the same path.
 
-`tools/sweep.py` runs a year of days at five latitudes (the equator to Tromsø) for each
-profile, listing every collapse with its dates and reasons, and fails on an *unexpected*
-one: a section neither run nor collapsed with a reason, kept boundaries out of
-chronological or canonical order, two kept sections closer than the minimum, or one
-starting outside its day (the predecessor's clamp).
+`tools/sweep.py` runs a year of days for each profile at eleven sites: five latitudes (the
+equator to Tromsø) and six chosen for their clock changes (New York's at 02:00, Sydney's
+southern ones, Santiago's and Beirut's at midnight, Nuuk's at the day's end, Lord Howe's
+half hour). It lists every collapse with its dates and reasons, and fails on an
+*unexpected* one: a section neither run nor collapsed with a reason, kept boundaries out of
+chronological or canonical order, two kept sections closer than the minimum, one starting
+outside its day (the predecessor's clamp) or at a time the clocks skip, and (P6a) a section
+reported as run that the runtime's own choice (`active_section_at`) doesn't put in force from
+its start to its end, a non-empty stretch of its day. The tests also sweep probe profiles,
+clock times through the night that land in each site's skipped and repeated hours, over
+every clock-change day.
 
 ### The analyser
 

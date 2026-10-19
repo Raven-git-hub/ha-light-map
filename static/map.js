@@ -1532,11 +1532,12 @@
       );
     } else {
       const rows = planRows(preview.plan);
-      parts.push(h("h3", {}, "Plan: the lm_ lane only"));
+      parts.push(h("h3", {}, preview.modules ? "Plan: the lm_ lane, first" : "Plan: the lm_ lane only"));
       if (!rows.length) {
-        parts.push(
-          h("div", { class: "box ok nothing" }, "Home Assistant already matches the config: nothing to deploy."),
-        );
+        const nothing = preview.modules
+          ? "The lm_ lane already matches the config: nothing to do there."
+          : "Home Assistant already matches the config: nothing to deploy.";
+        parts.push(h("div", { class: "box ok nothing" }, nothing));
       } else {
         parts.push(
           h(
@@ -1583,14 +1584,22 @@
     return [...parts, ...modulesSection(preview.modules), ...crossoverSection(preview.crossover)];
   }
 
-  // Module lanes (the adaptive al_ lane), present only once the cutover switch wires one in:
-  // read-only, since this dialog applies the lm_ lane alone.
+  // Module lanes (the adaptive al_ lane), present only once the cutover switch wires one in
+  // (P6a): the deploy applies each one shown ready after the lm_ lane, and one refused here
+  // not at all, so the next preview shows its plan.
   function modulesSection(modules) {
     if (!modules) return [];
-    const parts = [h("h3", {}, "Module lanes (read-only)"), h("p", { class: "muted" }, modules.note)];
+    const parts = [h("h3", {}, "Module lanes, after lm_"), h("p", { class: "muted" }, modules.note)];
     for (const [prefix, lane] of Object.entries(modules.lanes)) {
       if (!lane.ready) {
-        parts.push(h("div", { class: "box warn module-lane" }, h("p", {}, `${prefix}_ would be refused:`), list(lane.refused)));
+        parts.push(
+          h(
+            "div",
+            { class: "box warn module-lane" },
+            h("p", {}, `${prefix}_ would be refused, so this deploy won’t apply it:`),
+            list(lane.refused),
+          ),
+        );
         continue;
       }
       const rows = planRows(lane.plan);
@@ -1598,7 +1607,7 @@
         h(
           "div",
           { class: "box module-lane" },
-          h("p", {}, `${prefix}_: ${rows.length ? `${plural(rows.length, "step")}, not applied here` : "nothing to do"}`),
+          h("p", {}, `${prefix}_: ${rows.length ? `${plural(rows.length, "step")}, applied after lm_` : "nothing to do"}`),
           rows.length ? list(rows, ([verb, kind, id]) => `${verb} ${KIND_LABEL[kind] || kind} ${id}`) : null,
         ),
       );
@@ -1606,16 +1615,38 @@
     return parts;
   }
 
-  function deployResult(result) {
+  // The steps a deploy would take: the lm_ lane's, and each ready module lane's.
+  function deploySteps(preview) {
+    if (!preview?.ready) return 0;
+    const lanes = Object.values(preview.modules?.lanes || {}).filter((lane) => lane.ready);
+    return [preview.plan, ...lanes.map((lane) => lane.plan)].reduce((n, plan) => n + planRows(plan).length, 0);
+  }
+
+  // What each module lane did, under the lm_ lane's result (only with the cutover switch on).
+  function modulesResult(modules) {
+    if (!modules) return [];
+    return Object.entries(modules).map(([prefix, lane]) =>
+      lane.deployed
+        ? deployResult(lane.result, `The ${prefix}_ lane: deployed and verified.`, "module-result")
+        : h(
+            "div",
+            { class: "box warn module-result" },
+            h("p", {}, `${prefix}_ was not applied: it was refused in the preview. Preview again to see its plan.`),
+            list(lane.refused),
+          ),
+    );
+  }
+
+  function deployResult(result, title = "Deployed and verified.", extra = null) {
     const count = (label) => Object.values(result[label]).reduce((n, ids) => n + ids.length, 0);
     const unsynced = Object.entries(result.unsynced);
     return h(
       "div",
-      { class: "box ok deploy-result" },
+      { class: extra ? `box ok deploy-result ${extra}` : "box ok deploy-result" },
       h(
         "p",
         {},
-        h("strong", {}, "Deployed and verified."),
+        h("strong", {}, title),
         ` Created ${count("created")}, updated ${count("updated")}, removed ${count("removed")}.`,
       ),
       Object.keys(result.synced).length
@@ -1642,9 +1673,14 @@
         );
         const go = h("button", { class: "primary deploy-confirm", disabled: true }, "Deploy to Home Assistant");
         const cancel = h("button", { class: "cancel", onclick: () => close() }, "Cancel");
+        const intro = h(
+          "p",
+          {},
+          "Creates, updates and removes Light Map’s soft switches and automations (the lm_ lane) in Home Assistant, then re-reads HA to verify. It never touches anything outside that lane, never writes Areas, and never calls a light service.",
+        );
         let preview = null;
         const update = () => {
-          const steps = preview?.ready ? planRows(preview.plan).length : 0;
+          const steps = deploySteps(preview);
           go.disabled = !steps || (preview.going_live.length > 0 && !ack.checked);
         };
         ack.addEventListener("change", update);
@@ -1657,6 +1693,11 @@
             return;
           }
           fill(out, note ? h("div", { class: "box warn" }, note) : null, ...deployPreview(preview));
+          if (preview.modules) {
+            // The cutover switch on (P6a): the module lanes are deployed too, after lm_.
+            intro.textContent =
+              "Creates, updates and removes Light Map’s soft switches and automations (the lm_ lane), then each module lane’s helpers and automations, in Home Assistant, re-reading HA to verify each lane before the next. It never touches anything outside Light Map’s lanes, never writes Areas, and never calls a light service.";
+          }
           ackLabel.hidden = !(preview.ready && preview.going_live.length);
           ack.checked = false;
           update();
@@ -1667,14 +1708,19 @@
           errors.replaceChildren();
           try {
             const done = await close.during(api("POST", "/api/deploy", { fingerprint: preview.fingerprint }));
-            fill(out, deployResult(done.result));
+            fill(out, deployResult(done.result), ...modulesResult(done.modules));
             go.hidden = true;
             ackLabel.hidden = true;
             cancel.textContent = "Close";
           } catch (err) {
             go.textContent = "Deploy to Home Assistant";
             if (err.error === "preview_stale")
-              await load("What a deploy would do changed while you were reviewing: this is the new preview.");
+              // A module lane found stale once lm_ was written says what was deployed.
+              await load(
+                err.body?.deployed
+                  ? err.message
+                  : "What a deploy would do changed while you were reviewing: this is the new preview.",
+              );
             else {
               showError(errors, err);
               update();
@@ -1685,11 +1731,7 @@
         return h(
           "div",
           { class: "deploy-preview" },
-          h(
-            "p",
-            {},
-            "Creates, updates and removes Light Map’s soft switches and automations (the lm_ lane) in Home Assistant, then re-reads HA to verify. It never touches anything outside that lane, never writes Areas, and never calls a light service.",
-          ),
+          intro,
           out,
           errors,
           ackLabel,

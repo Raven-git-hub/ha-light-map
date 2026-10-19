@@ -8,7 +8,8 @@ from unittest import mock
 from app.core import config, deploy, generate, inventory, switching
 from app.core.config import ConfigError
 from app.core.deploy import DeployError
-from tests.fakes import FakeHA, committed_config
+from app.core.ha import HAError
+from tests.fakes import FakeHA, adaptive_wired, committed_config
 
 BULBS = ["chandelier_1", "chandelier_2", "chandelier_3", "kitchen_strip", "porch", "reading_lamp"]
 SOFTS = [f"lm_soft_{b}" for b in BULBS]
@@ -753,6 +754,102 @@ class CrossoverTest(unittest.IsolatedAsyncioTestCase):
                 "(My porch): Light Map's lm_bridge_porch would load as automation.lm_bridge_porch_2",
             ],
         )
+
+    async def test_with_a_module_lane_wired_its_own_automations_are_light_maps(self):
+        # P6a. With the cutover switch on, an automation the al_ lane generates is Light
+        # Map's own, like an lm_ one; an al_ one it doesn't generate (the old system's
+        # maintenance, left behind) is still flagged as the old system's.
+        leftover = {
+            "id": "al_maintenance_living_room",
+            "alias": "AL Lux Maintenance",
+            "triggers": [],
+            "actions": [
+                {"action": "light.turn_on", "target": {"entity_id": ["light.reading_lamp"]}}
+            ],
+        }
+        ha = FakeHA(automations=[self.PORCH])
+        with adaptive_wired():
+            await deploy.deploy(ha, committed_config(), "lm", delay=0)
+            await deploy.deploy(ha, committed_config(), "al", delay=0)
+            # (The al_ deploy removes such a leftover; this one came back after it.)
+            ha.automations[leftover["id"]] = leftover
+            mark = len(ha.calls)
+            report = await deploy.crossover(ha, committed_config())
+        self.assertEqual(writes(ha, mark), [])
+        self.assertEqual(
+            [(d["id"], d["adaptive_light"]) for d in report["drivers"]],
+            [("al_maintenance_living_room", True), ("1700000000000", False)],
+        )
+        self.assertEqual((report["collisions"], report["errors"]), ([], []))
+        # Off (the live app until P6b), the same HA: every al_ automation is the old
+        # system's, Light Map's own among them, since nothing tells the two apart by name.
+        report = await deploy.crossover(ha, committed_config())
+        drivers = {d["id"]: d for d in report["drivers"]}
+        self.assertLessEqual(
+            {"al_maintenance_living_room", "al_maint_living_room", "al_scene_living_room_day"},
+            set(drivers),
+        )
+        self.assertTrue(all(d["adaptive_light"] for i, d in drivers.items() if i.startswith("al_")))
+
+    async def test_an_old_automation_under_one_of_light_maps_own_ids_reads_as_its_own(self):
+        # Where the two systems' names coincide (the predecessor's scenes are
+        # al_scene_<room>_<section> too) nothing can tell them apart: on, it is counted as
+        # Light Map's, which is why P6b removes the old system's automations first. The
+        # al_ lane's plan shows it as an update.
+        ha = FakeHA(automations=[{**self.OLD_SCENE, "id": "al_scene_living_room_day"}])
+        with adaptive_wired():
+            report = await deploy.crossover(ha, committed_config())
+        self.assertEqual(report["drivers"], [])
+        report = await deploy.crossover(ha, committed_config())
+        self.assertEqual([d["id"] for d in report["drivers"]], ["al_scene_living_room_day"])
+
+    async def test_a_module_lanes_names_are_checked_too(self):
+        ha = FakeHA(
+            yaml_helpers=("al_active_living_room",),
+            automations=[{"id": "1700000000002", "alias": "x", "triggers": [], "actions": []}],
+        )
+        ha.states.append(
+            {
+                "entity_id": "automation.al_watchdog_stale_living_room",
+                "state": "on",
+                "attributes": {"friendly_name": "Mine", "id": "1700000000002"},
+            }
+        )
+        with adaptive_wired():
+            report = await deploy.crossover(ha, committed_config())
+        self.assertEqual(
+            report["collisions"],
+            [
+                "input_boolean.al_active_living_room is already in HA but isn't one of Light "
+                "Map's UI-managed helpers (a YAML helper, or another helper's entity renamed to "
+                "it?): the deploy is refused until the id is freed",
+                "automation.al_watchdog_stale_living_room is already taken by automation id "
+                "1700000000002 (Mine): Light Map's al_watchdog_stale_living_room would load as "
+                "automation.al_watchdog_stale_living_room_2",
+            ],
+        )
+        # Off, the al_ names are no business of the report.
+        self.assertEqual((await deploy.crossover(ha, committed_config()))["collisions"], [])
+        # A module lane's names HA can't be read for are listed as unchecked; the switching
+        # plane's report still stands.
+        real = ha.list_helpers
+
+        async def failing(domain):
+            if domain == "input_select":
+                raise HAError("input_select/list failed: unknown command")
+            return await real(domain)
+
+        ha.list_helpers = failing
+        with adaptive_wired():
+            report = await deploy.crossover(ha, committed_config())
+        self.assertEqual(
+            report["errors"],
+            [
+                "could not read HA's helpers to check the al_ lane's names: input_select/list "
+                "failed: unknown command"
+            ],
+        )
+        self.assertEqual(report["collisions"], [])
 
     async def test_an_ha_without_search_says_so(self):
         report = await deploy.crossover(FakeHA(search_fails=True), committed_config())

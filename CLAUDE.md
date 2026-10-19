@@ -152,8 +152,8 @@ uvicorn app.main:app --port 8099   # then GET /healthz -> {"status":"ok"}
 
 ## Coexistence
 
-Until cutover (P6) Light Map is built beside the live `ha-adaptive-light`. P0–P5.2 touch
-only new HA artefacts (P5.0 to P5.2 add none to the live HA), and the new bridges stay
+Until cutover (P6b) Light Map is built beside the live `ha-adaptive-light`. P0–P6a touch
+only new HA artefacts (P5.0 to P6a add none to the live HA), and the new bridges stay
 unbound (no hard switches; bridge not yet authoritative). Don't cross that boundary early.
 Deploying must never drive a bulb: a soft switch is set to its bulb's state before its
 bridge goes live, and nothing in a deploy calls a light service.
@@ -161,14 +161,17 @@ bridge goes live, and nothing in a deploy calls a light service.
 **The cutover switch.** The adaptive lane's `al_` names are the ones the live system uses on
 the same HA (even its helpers' names), so writing `al_` before P6 would adopt and rewrite or
 remove the old system's artefacts. The adaptive module is wired in by `app/main.py` only
-when `ADAPTIVE_ENABLED` is on, and it is **off until P6**: `core.generate.namespaces()` is
-`["lm"]`, no bridge-brightness provider is registered, no adaptive runtime is made (nothing
-fires a scene, raises a hold, publishes an almanac, or registers a section or guard with the
-observer), and the generated `lm_` lane is byte-identical to P5.0's (held to
-`tests/golden/lm_only.yaml`). Never turn it on in the live
+when `ADAPTIVE_ENABLED` is on, and it is **off until P6b** (the cutover, done by hand):
+`core.generate.namespaces()` is `["lm"]`, no bridge-brightness provider is registered, no
+adaptive runtime is made (nothing fires a scene, raises a hold, publishes an almanac, or
+registers a section or guard with the observer), and the generated `lm_` lane is
+byte-identical to P5.0's (held to `tests/golden/lm_only.yaml`). Never turn it on in the live
 composition root before cutover; tests turn it on in their own scope
-(`tests.fakes.adaptive_wired`). Even on, the Map's deploy applies only `lm_`; the `al_`
-plan is previewed read-only.
+(`tests.fakes.adaptive_wired`). On, the Map's deploy applies `lm_` first, then each module
+lane, each planned again, checked against the preview and verified, under one fingerprint
+that covers every lane, and the crossover report counts the automations a wired lane
+generates as Light Map's own (P6a). Off, there is no module lane: the deploy, its
+fingerprint and the report are P5.2b's, held to `tests/golden/switch_off.json`.
 
 **The adaptive views read beside the live system** (P5.2b). The Now / Analysis / Almanac
 tabs take the schedule from the config and HA's location and the learned data from Light

@@ -1,9 +1,10 @@
 // Drives the Map's deploy dialog in headless Chromium against a running Light Map with the
 // cutover switch on (wired by tests/test_ui.py in its own scope; the live app keeps it off
-// until P6): the adaptive al_ lane shows read-only beside the plan, first refused (the
-// switching plane isn't deployed, so its soft switches are missing), then, after the lm_
-// deploy, as steps that the dialog doesn't apply. Prints one JSON line ({ok, steps,
-// errors}) and exits non-zero on failure.
+// until P6b): the adaptive al_ lane shows after the plan, first refused (the switching
+// plane isn't deployed, so its soft switches are missing) and so not applied by the lm_
+// deploy; then as steps the next deploy applies after lm_ (P6a), even with nothing left
+// for lm_ to do; then as nothing to do. Prints one JSON line ({ok, steps, errors}) and
+// exits non-zero on failure.
 //
 //   node tests/ui/lanes_ui.cjs http://127.0.0.1:PORT [screenshot-dir]
 
@@ -46,26 +47,51 @@ const dialog = (name) => `dialog[data-dialog="${name}"]`;
       await page.click("#deploy-button");
       await page.waitForSelector(`${popup} .module-lane`);
       const text = await page.textContent(popup);
-      assert.match(text, /Module lanes \(read-only\)/);
-      assert.match(text, /applies the lm_ lane only/);
-      assert.match(await page.textContent(`${popup} .module-lane`), /al_ would be refused/);
+      assert.match(text, /Plan: the lm_ lane, first/);
+      assert.match(text, /Module lanes, after lm_/);
+      assert.match(text, /applies each lane shown ready here after the lm_ lane/);
+      assert.match(await page.textContent(`${popup} .module-lane`), /al_ would be refused, so this deploy won’t apply it/);
       assert.match(await page.textContent(`${popup} .module-lane`), /deploy the switching plane first/);
       await shot(page, "lanes-01-refused");
     });
 
-    await step("the deploy applies lm_ only; the al_ plan then lists its steps", async () => {
+    await step("the deploy applies lm_ and says al_ wasn't, since it was refused", async () => {
       await page.check(`${popup} input.ack`);
       await page.click(`${popup} .deploy-confirm`);
       await page.waitForSelector(`${popup} .deploy-result`);
+      assert.match(await page.textContent(`${popup} .deploy-result`), /Deployed and verified\./);
+      assert.match(await page.textContent(`${popup} .module-result`), /al_ was not applied: it was refused in the preview/);
       await page.click(`${popup} button.cancel`);
       await page.waitForSelector(popup, { state: "detached" });
+    });
+
+    await step("the al_ plan then lists its steps, and the deploy applies them after lm_", async () => {
       await page.click("#deploy-button");
       await page.waitForSelector(`${popup} .module-lane li`);
+      assert.match(await page.textContent(popup), /The lm_ lane already matches the config: nothing to do there/);
+      assert.match(await page.textContent(popup), /then each module lane’s helpers and automations/);
       const lane = await page.textContent(`${popup} .module-lane`);
-      assert.match(lane, /al_: 12 steps, not applied here/);
+      assert.match(lane, /al_: 12 steps, applied after lm_/);
       assert.match(lane, /create select al_scene_living_room/);
       assert.match(lane, /create automation al_maint_living_room/);
       await shot(page, "lanes-02-planned");
+      // Nothing is left for lm_, but the deploy still has al_'s steps to take.
+      assert.equal(await page.$eval(`${popup} .deploy-confirm`, (b) => b.disabled), false);
+      await page.click(`${popup} .deploy-confirm`);
+      await page.waitForSelector(`${popup} .module-result`);
+      const result = await page.textContent(`${popup} .module-result`);
+      assert.match(result, /The al_ lane: deployed and verified\./);
+      assert.match(result, /Created 12, updated 0, removed 0\./);
+      await shot(page, "lanes-03-deployed");
+      await page.click(`${popup} button.cancel`);
+      await page.waitForSelector(popup, { state: "detached" });
+    });
+
+    await step("then nothing is left to do in either lane", async () => {
+      await page.click("#deploy-button");
+      await page.waitForSelector(`${popup} .module-lane`);
+      assert.match(await page.textContent(`${popup} .module-lane`), /al_: nothing to do/);
+      assert.equal(await page.$eval(`${popup} .deploy-confirm`, (b) => b.disabled), true);
     });
   } catch (err) {
     errors.push(err.stack || String(err));
