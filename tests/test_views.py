@@ -11,8 +11,10 @@ scope, `adaptive_wired`) the Now tab's live fields come from HA.
 
 import copy
 import json
+import sqlite3
 import unittest
 from datetime import date, datetime, time, timezone
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from app import main
@@ -482,6 +484,20 @@ class AnalysisTest(ViewCase):
         self.assertEqual(clock["time_zone"], "UTC")
         self.assertIn("days are counted in UTC", clock["note"])
 
+    def test_a_store_that_fails_under_a_read_is_a_503_not_a_500(self):
+        with mock.patch.object(
+            self.store(), "query", side_effect=sqlite3.DatabaseError("disk I/O error")
+        ):
+            for tab in ("analysis", "almanac"):
+                with self.subTest(tab=tab):
+                    body = self.get(f"/api/rooms/living_room/{tab}", 503)
+                    self.assertEqual(body["error"], "store_unavailable")
+                    self.assertIn("disk I/O error", body["detail"])
+            # The Now tab keeps its schedule and says the targets can't be read.
+            view = self.get("/api/rooms/living_room/now")
+            self.assertTrue(view["schedule"]["available"])
+            self.assertFalse(view["targets"]["available"])
+
     def test_without_the_store(self):
         self.client.app.state.data = None
         self.assertEqual(
@@ -533,6 +549,14 @@ class AlmanacTest(ViewCase):
         self.assertEqual(view["sections"][1]["units"]["chandelier"]["target"], None)
         self.assertNotIn("2026-10-01", json.dumps(view))
         self.assert_no_al_read()
+
+    def test_with_the_switch_on_it_still_reads_the_store_not_the_sensor(self):
+        # After cutover the sensor is Light Map's own publish, but the store is still where
+        # it comes from: the tab never reads it back from HA.
+        with adaptive_wired():
+            view = self.get("/api/rooms/living_room/almanac")
+        self.assertTrue(view["adaptive_live"])
+        self.assertEqual([name for name, _ in self.ha.calls], ["get_config"])
 
     def test_the_snapshot_in_force_with_its_targets_and_knobs(self):
         seed(self.store())
@@ -783,7 +807,45 @@ class ScheduleEditorTest(ViewCase):
         self.assertIsNotNone(checked["days"]["default"])
         self.assert_unchanged(before)
         self.assertEqual(self.get("/api/log?category=config")["entries"], [])
-        self.assertEqual(self.ha.writes, [])
+        self.assert_no_al_read()  # nor did it read a state, or write anything to HA
+
+    def test_a_trigger_nested_too_deep_is_refused_not_a_crash(self):
+        # The schema's trigger grammar sets no depth; one nested hundreds of levels down
+        # used to exhaust the recursion limit inside the validator (a bare 500).
+        view = self.editor()
+        trigger = {"type": "clock", "time": "20:30"}
+        for _ in range(400):
+            trigger = {"type": "earliest", "of": [trigger, {"type": "clock", "time": "21:00"}]}
+        profiles = copy.deepcopy(view["schedule_profiles"])
+        profiles[1]["sections"][4]["trigger"] = trigger
+        before = self.path.read_text()
+        checked = self.client.post(
+            "/api/schedule_profiles/check", json={"schedule_profiles": profiles}
+        )
+        self.assertEqual(checked.status_code, 200, checked.text)
+        self.assertEqual(checked.json()["problems"], [config.TOO_DEEP])
+        self.assertNotIn("trigger", json.dumps(checked.json()["days"]))  # never echoed back
+        body = self.assert_error(self.put(profiles, view["version"]), 422, "invalid_config")
+        self.assertEqual(body["problems"], [config.TOO_DEEP])
+        self.assert_unchanged(before)
+
+    def test_deleting_a_profile_makes_an_open_room_editor_stale(self):
+        # The room editor's picker offered the profile; deleted in the schedule editor, the
+        # room editor's save is a reload (409), not a 422 about a missing profile.
+        view = self.editor()
+        profiles = copy.deepcopy(view["schedule_profiles"])
+        profiles.append({"id": "weekend", "name": "Weekend", **config.standard_schedule()})
+        self.assertEqual(self.put(profiles, view["version"]).status_code, 200)
+        living = self.get("/api/rooms/living_room/adaptive_config")
+        block = copy.deepcopy(living["adaptive_config"])
+        block["schedule_profile"] = "weekend"
+        view = self.editor()
+        self.assertEqual(self.put(view["schedule_profiles"][:2], view["version"]).status_code, 200)
+        response = self.client.put(
+            "/api/rooms/living_room/adaptive_config",
+            json={"adaptive_config": block, "base": living["version"]},
+        )
+        self.assert_error(response, 409, "edit_stale")
 
     def test_without_has_location_the_editor_still_edits(self):
         self.ha.location = {}
@@ -793,6 +855,24 @@ class ScheduleEditorTest(ViewCase):
         profiles = copy.deepcopy(view["schedule_profiles"])
         profiles[0]["name"] = "Standard"
         self.assertEqual(self.put(profiles, view["version"]).status_code, 200)
+
+
+class FirstRunTest(ViewCase):
+    def initial(self):
+        return None  # a fresh install: no config saved yet
+
+    def test_the_schedule_waits_for_the_first_sync(self):
+        # Saving would create a config holding no rooms, and the Map would then take the
+        # house as synced (and let a room be created into it): refused, as creating a room is.
+        view = self.get("/api/schedule_profiles")
+        self.assertEqual([p["id"] for p in view["schedule_profiles"]], ["default"])
+        response = self.client.put(
+            "/api/schedule_profiles",
+            json={"schedule_profiles": view["schedule_profiles"], "base": view["version"]},
+        )
+        self.assert_error(response, 409, "sync_first")
+        self.assertFalse(self.path.exists())
+        self.assert_error(self.client.post("/api/rooms", json={"name": "Attic"}), 409, "sync_first")
 
 
 if __name__ == "__main__":

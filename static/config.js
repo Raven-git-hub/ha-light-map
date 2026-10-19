@@ -555,6 +555,9 @@
         id: "profile-select",
         onchange: (event) => {
           ed.draft.schedule_profile = event.target.value;
+          // The link to the schedule editor follows the profile picked (no redraw here).
+          const link = event.target.closest(".profile")?.querySelector("a.edit-schedule");
+          if (link) link.href = `#schedule/${encodeURIComponent(event.target.value)}`;
           changed();
         },
       },

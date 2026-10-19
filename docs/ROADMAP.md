@@ -52,7 +52,7 @@ display names are deferred. P6, the cutover, comes next).
   - **P5.2b — Adaptive views.** The Now / Analysis / Almanac tabs (read-only, reading a
     live `al_` entity only with the cutover switch on) and the schedule-profile editor,
     with uPlot vendored for the Analysis chart. No engine or generator change; the
-    sections' display names are deferred (they need one).
+    sections' display names are deferred (they need a generator change).
 - **P6 — Cutover.** Deploy against live HA; remove the old `al_*` system; turn the cutover
   switch on and add the `al_` lane's apply to the Map's deploy; re-express the house; start
   the almanac (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old

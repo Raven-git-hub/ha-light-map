@@ -522,9 +522,11 @@ room with bulbs to observe, and, only with the cutover switch on, the adaptive r
   runs on demand and records nothing.
 - **The schedule editor** (P5.2b) saves the whole `schedule_profiles` list against a
   `version` covering the profiles and which profile each adaptive room selects (409
-  `edit_stale` otherwise), validate-then-write, config only. It keeps `default`, deletes
-  only a profile no room selects, and warns that a profile is shared by every room that
-  selects it. See `docs/DESIGN.md`, "The adaptive views".
+  `edit_stale` otherwise), validate-then-write, config only, and like creating a room it
+  waits for the first sync (409 `sync_first`). It keeps `default`, deletes only a profile no
+  room selects, and warns that a profile is shared by every room that selects it. The
+  adaptive editor's `version` covers the profile ids its picker offers. See
+  `docs/DESIGN.md`, "The adaptive views".
 - **A Map edit commits only its own change** to the snapshot; whatever else HA changed waits
   for a reviewed sync.
 - **Coexistence.** An edit that makes a hard switch drive something new is refused (409
@@ -597,7 +599,7 @@ Parallel build in this repo; the live `ha-adaptive-light` keeps running untouche
   - **P5.2b — Adaptive views.** The Now / Analysis / Almanac tabs (read-only, reading a
     live `al_` entity only with the cutover switch on) and the schedule-profile editor,
     with uPlot vendored for the Analysis chart. No engine or generator change; the
-    sections' display names are deferred (they need one).
+    sections' display names are deferred (they need a generator change).
 - **P6 — Cutover.** Deploy against live HA; remove the old `al_*` system; turn the cutover
   switch on and add the `al_` lane's apply to the Map's deploy; re-express the house; start
   the almanac (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old

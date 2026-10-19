@@ -165,13 +165,27 @@
   border-left: 2px solid var(--fg);
 }
 
+/* Each tick under its hour: centred on it, the two ends kept inside the bar. */
 .day-ticks {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 1.1rem;
   margin-top: 0.2rem;
   font-size: 0.75rem;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+.day-ticks span {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+.day-ticks span:first-child {
+  transform: none;
+}
+
+.day-ticks span:last-child {
+  transform: translateX(-100%);
 }
 
 /* -- Tables --------------------------------------------------------------------------- */
@@ -265,7 +279,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-.almanac-table .knob-head:first-of-type {
+.almanac-table .first {
   border-left: 1px solid var(--line);
 }
 

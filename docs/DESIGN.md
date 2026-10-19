@@ -739,7 +739,9 @@ the editor is open changes which bulbs the editor may offer without always touch
 block (a switched-only bulb's doesn't), and the stale editor's save would then fail
 validation (an ignored bulb made adaptive: a 422 the user can't act on) rather than say
 the room changed. With the roster in the base it is a clean 409 `edit_stale`, and the
-editor reloads.
+editor reloads. Since P5.2b the `version` also covers the ids of the schedule profiles its
+picker offers: a profile can now be deleted (in the schedule editor), and one deleted while
+it is selected here made this editor's save a 422 about a missing profile.
 
 **Version 4.** P5.0 bumps the config to version 4. A version-3 adaptive room gets
 `adaptive_bulbs` = its bulbs that are in its learning units (what a version-3 unit meant:
@@ -1234,7 +1236,9 @@ is checked before it drives anything.
 
 ### Now
 
-`GET /api/rooms/{room}/now`. Today's schedule: the room's profile computed for today at HA's
+`GET /api/rooms/{room}/now`. First the live state, or with the switch off the not-live note
+in its place, so the tab says at once whether adaptive is driving the room. Then today's
+schedule: the room's profile computed for today at HA's
 location (`scheduler.compute_day`, times in HA's time zone, as `HH:MM`), each section with
 its start and end, its trigger and effective priority, and whether it runs, was moved (a
 `clamp`) or is skipped today and why. The section in force now is highlighted, with a NOW
@@ -1242,8 +1246,7 @@ badge as well as colour (`scheduler.active_section_at`; before the day's first b
 is yesterday's last section, and the tab says so). Above it, the profile's name, the other
 rooms that share it, and a link to edit it. Below, the current section's unit targets as the
 store's almanac would publish them now (`almanac.payload`: `off` for a unit held off, the
-learned brightness, or nothing learned yet) and its lux target, then the live state (or the
-not-live note). Without HA's location there is no schedule (a sun-relative boundary needs
+learned brightness, or nothing learned yet) and its lux target. Without HA's location there is no schedule (a sun-relative boundary needs
 the place), and the tab says why rather than guess.
 
 ### Analysis
@@ -1280,7 +1283,7 @@ its mode and days analysed. Per section, each unit's effective target exactly as
 resolves it (`almanac.payload`) beside the learned brightness behind it and the date that
 row took effect, and the section's lux target (learned, else the seed above 0) and knobs as
 the publish reads them (the config's, as it is now). History the store keeps for units the
-room no longer has is counted, not shown.
+room no longer has is named under the table (their ids), not shown in it.
 
 ### The schedule editor
 
@@ -1308,7 +1311,15 @@ rooms that use the profile on screen and warns that saving changes each of them.
 - `PUT /api/schedule_profiles`: the whole list, against the `version` it was shown
   (`base`; 409 `edit_stale`), validate-then-write, recorded in the event log with what
   changed. Config only: nothing reaches HA, and the runtime reads a profile at its next tick
-  once it runs (P6).
+  once it runs (P6). Refused (409 `sync_first`) before the first sync has saved a config,
+  as creating a room is: a save would create a config holding no rooms, and the Map would
+  then take the house as synced.
+
+The check and the days run in a worker thread, off the event loop, since the editor sends a
+draft every time it changes. A trigger nested hundreds of levels deep (`earliest` within
+`earliest`, over and over: the schema's grammar sets no depth) is refused as too deep to
+check, by the config's own load (`config.TOO_DEEP`), rather than exhausting the recursion
+limit inside the schema validator.
 
 The `version` covers the profiles and which profile each adaptive room selects. The editor
 shows the rooms a profile is shared with, and offers to delete a profile no room uses: a

@@ -98,6 +98,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -120,7 +121,7 @@ from app.core.deploy import DeployError, StalePreview
 from app.core.ha import HAAuthError, HAClient, HAError
 from app.core.inventory import InventoryError, NotFound
 from app.core.observe import Observer
-from app.core.store import LEVELS, Store
+from app.core.store import LEVELS, Store, StoreError
 from app.modules.adaptive import almanac as adaptive_almanac
 from app.modules.adaptive import analyser, scheduler
 from app.modules.adaptive import generate as adaptive_generate
@@ -454,17 +455,22 @@ def room_version(room: Mapping[str, Any]) -> str:
 
 def editor_version(doc: Mapping[str, Any], room: Mapping[str, Any]) -> str:
     """What the adaptive editor's save is made against: the room's adaptive flag and block
-    (`room_version`) and its active-bulb roster. A bulb ignored, moved out or synced in from
-    another tab while the editor is open changes which bulbs the editor may offer without
-    always touching the block (a switched-only bulb's doesn't), so with the block alone a
-    stale editor that then made an ignored bulb adaptive got a validation error (422) the
-    user couldn't act on, rather than a reload (409 `edit_stale`)."""
+    (`room_version`), its active-bulb roster, and the schedule profiles it may choose from.
+    A bulb ignored, moved out or synced in from another tab while the editor is open changes
+    which bulbs the editor may offer without always touching the block (a switched-only
+    bulb's doesn't), so with the block alone a stale editor that then made an ignored bulb
+    adaptive got a validation error (422) the user couldn't act on, rather than a reload
+    (409 `edit_stale`). A profile created or deleted in the schedule editor is the same
+    case for the profile picker."""
     roster = sorted(
         bulb["id"]
         for home, bulb in inventory.active_bulbs(doc)
         if home is not None and home["id"] == room["id"]
     )
-    return fingerprint({"room": room_version(room), "bulbs": roster})
+    # The profiles its picker offers (P5.2b): one deleted in the schedule editor while this
+    # editor is open, and selected in it, made its save a 422 about a missing profile.
+    profiles = [p.get("id") for p in doc.get("schedule_profiles", [])]
+    return fingerprint({"room": room_version(room), "bulbs": roster, "profiles": profiles})
 
 
 def _commit(
@@ -1195,6 +1201,13 @@ def _data(request: Request, what: str) -> Store:
     return data
 
 
+def _store_failed(what: str, exc: Exception) -> ApiError:
+    """A store that fails under a read (closed by a shutdown, a broken database): said as
+    the tab's own answer, as when there is no store, never a bare 500."""
+    log.warning("reading the store for %s failed: %r", what.lower(), exc)
+    return ApiError(503, "store_unavailable", f"{what} is not available: the store failed ({exc})")
+
+
 def _units(doc: Mapping[str, Any], room: Mapping[str, Any]) -> list[dict[str, Any]]:
     """A room's learning units, sorted by id (the almanac's order), each with its members'
     names, from the module's own reading of them (`learning_units`: active bulbs only)."""
@@ -1411,16 +1424,19 @@ async def adaptive_analysis(request: Request, room_id: str) -> dict[str, Any]:
             "sections": [{"section": s, "learned": False} for s in config_mod.SECTIONS],
         }
     # Off the event loop: a lookback's readings can take a moment to pool.
-    rolled = await asyncio.to_thread(
-        analyser.analyse_room,
-        data,
-        room["id"],
-        {u["id"]: [m["id"] for m in u["members"]] for u in units},
-        cfg,
-        local.date(),
-        tz=local.tzinfo,
-        presence_configured=bool(block.get("presence_sensors")),
-    )
+    try:
+        rolled = await asyncio.to_thread(
+            analyser.analyse_room,
+            data,
+            room["id"],
+            {u["id"]: [m["id"] for m in u["members"]] for u in units},
+            cfg,
+            local.date(),
+            tz=local.tzinfo,
+            presence_configured=bool(block.get("presence_sensors")),
+        )
+    except (StoreError, sqlite3.Error) as exc:
+        raise _store_failed("The analysis", exc) from exc
     meta = rolled.get("_meta") or {}
     days = meta.get("days_analysed", 0)
     sections = []
@@ -1472,7 +1488,10 @@ async def adaptive_almanac_view(request: Request, room_id: str) -> dict[str, Any
     data = _data(request, "The almanac")
     provider, error = await _location(request)
     local, clock = _day_clock(request, provider, error)
-    rows = adaptive_almanac.latest(data, room["id"], today=local.date())
+    try:
+        rows = adaptive_almanac.latest(data, room["id"], today=local.date())
+    except (StoreError, sqlite3.Error) as exc:
+        raise _store_failed("The almanac", exc) from exc
     published = adaptive_almanac.payload(room, rows)
     units = _units(doc, room)
     block = room["adaptive_config"]
@@ -1540,21 +1559,35 @@ async def adaptive_almanac_view(request: Request, room_id: str) -> dict[str, Any
 
 
 async def _schedule_days(request: Request, profiles: Sequence[Any]) -> dict[str, Any]:
-    """Each profile's day today at HA's location (`schedule_day`), by id, for the editor:
-    None for a profile that can't be computed (a draft's malformed trigger), and
-    `location` saying whether HA's location could be read at all."""
+    """Each profile's day today at HA's location (`schedule_day`, less each boundary's
+    trigger), by id, for the editor: None for a profile that can't be computed (a draft's
+    malformed trigger), and `location` saying whether HA's location could be read at all."""
     provider, error = await _location(request)
     if provider is None:
         return {"location": {"available": False, "error": error}, "days": {}}
     now = request.app.state.clock()
-    days: dict[str, Any] = {}
-    for profile in profiles:
-        if not isinstance(profile, Mapping) or not isinstance(profile.get("id"), str):
-            continue
-        try:
-            days[profile["id"]] = schedule_day(profile, provider, now, provider.tzinfo)
-        except Exception:  # noqa: BLE001 - a draft may be anything; its problems say what
-            days[profile["id"]] = None
+
+    def compute() -> dict[str, Any]:
+        days: dict[str, Any] = {}
+        for profile in profiles:
+            if not isinstance(profile, Mapping) or not isinstance(profile.get("id"), str):
+                continue
+            try:
+                day = schedule_day(profile, provider, now, provider.tzinfo)
+            except Exception:  # noqa: BLE001 - a draft may be anything; its problems say what
+                days[profile["id"]] = None
+                continue
+            # Without the triggers: the editor has its own, and a draft's, echoed back, could
+            # be one nested deeper than the response can be serialised (a 500).
+            day["boundaries"] = [
+                {k: v for k, v in b.items() if k != "trigger"} for b in day["boundaries"]
+            ]
+            days[profile["id"]] = day
+        return days
+
+    # Off the event loop, as the check's validation is: the editor sends a draft every time
+    # it changes, and a large one would hold up every other request and the observer.
+    days = await asyncio.to_thread(compute)
     return {
         "location": {
             "available": True,
@@ -1654,11 +1687,14 @@ async def check_schedule_profiles(request: Request, body: ScheduleProfilesDraft)
     made, and a problem before Save."""
     doc = _store(request).read()
     proposed = {**doc, "schedule_profiles": body.schedule_profiles}
-    try:
-        profiles = config_mod.checked(proposed)["schedule_profiles"]
-        problems: list[str] = []
-    except ConfigError as exc:
-        profiles, problems = body.schedule_profiles, exc.problems
+
+    def check() -> tuple[list[Any], list[str]]:
+        try:
+            return config_mod.checked(proposed)["schedule_profiles"], []
+        except ConfigError as exc:
+            return body.schedule_profiles, exc.problems
+
+    profiles, problems = await asyncio.to_thread(check)
     return {"problems": problems, **await _schedule_days(request, profiles)}
 
 
@@ -1666,13 +1702,24 @@ async def check_schedule_profiles(request: Request, body: ScheduleProfilesDraft)
 async def save_schedule_profiles(request: Request, body: ScheduleProfilesEdit) -> dict[str, Any]:
     """Replace the whole `schedule_profiles` list, from the schedule editor (P5.2b).
 
-    Made against the `version` the editor showed (`base`, `schedule_version`; 409
+    Refused (409 `sync_first`) before the first sync has saved a config, as creating a room
+    is. Made against the `version` the editor showed (`base`, `schedule_version`; 409
     `edit_stale` otherwise), validated before it is written (`default` kept, six sections
     in canonical order each with a well-formed trigger, every room's profile still there),
     and recorded in the event log with what changed. Config only: never reads or writes HA;
     a profile reaches the rooms that select it through the runtime, from cutover (P6)."""
     async with _store(request).lock:
         doc = _store(request).read()
+        if not _store(request).exists():
+            # Before the first reviewed sync there is no config: saving the profiles would
+            # create one holding no rooms, and the Map would take the house as synced (and
+            # let a room be created into it), skipping the review of everything else.
+            raise ApiError(
+                409,
+                "sync_first",
+                "No config has been saved yet: sync from HA on the Map first, so the rooms it "
+                "builds are reviewed before anything is saved.",
+            )
         _check_base(body.base, schedule_version(doc), "The schedule", "the schedule editor")
         proposed = config_mod.checked({**doc, "schedule_profiles": body.schedule_profiles})
         changes = schedule_changes(doc.get("schedule_profiles", []), proposed["schedule_profiles"])

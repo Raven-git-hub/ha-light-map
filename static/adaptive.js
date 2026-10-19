@@ -43,8 +43,20 @@
   window.addEventListener("resize", () => {
     fitLabels();
     pruneCharts();
-    for (const chart of charts) chart.plot.setSize({ width: chartWidth(chart.wrap), height: chart.height });
+    for (const chart of charts) {
+      // A zoom changes the pixel ratio too: the dashes follow it (see sectionChart).
+      if (chart.ratio !== devicePixelRatio) {
+        chart.ratio = devicePixelRatio;
+        chart.plot.series.slice(1).forEach((s, i) => {
+          s.dash = scaled(chart.dashes[i]);
+        });
+      }
+      chart.plot.setSize({ width: chartWidth(chart.wrap), height: chart.height });
+    }
   });
+  // Leaving for another view drops its charts (they are detached once the router has
+  // replaced the view): uPlot keeps every live chart in its own scroll and resize lists.
+  window.addEventListener("hashchange", () => setTimeout(pruneCharts));
 
   async function show(tab, main, roomId) {
     destroyCharts();
@@ -111,7 +123,8 @@
   // A view's read failed: say why where the view would be. An expected answer (the room
   // isn't adaptive any more, the store didn't open) isn't also raised as a notice.
   function unavailable(body, err) {
-    if (body.isConnected) fill(body, h("div", { class: "box error view-unavailable" }, err.message));
+    if (!body.isConnected) return; // the view was left: its failure isn't the next view's
+    fill(body, h("div", { class: "box error view-unavailable" }, err.message));
     if (!(err instanceof ApiError) || !EXPECTED.includes(err.error)) fail(err);
   }
 
@@ -311,7 +324,11 @@
       { class: "day-bar-wrap" },
       h(
         "div",
-        { class: "day-bar", role: "img", "aria-label": `Today: ${label}. It is ${schedule.now}.` },
+        {
+          class: "day-bar",
+          role: "img",
+          "aria-label": `Today: ${label || "no section starts"}. It is ${schedule.now}.`,
+        },
         segments.map((s) => {
           const width = ((s.to - s.from) / 1440) * 100;
           const slot = s.section ? SECTIONS.indexOf(s.section) + 1 : 0;
@@ -334,7 +351,7 @@
       h(
         "div",
         { class: "day-ticks", "aria-hidden": "true" },
-        ["00:00", "06:00", "12:00", "18:00", "24:00"].map((t) => h("span", {}, t)),
+        ["00:00", "06:00", "12:00", "18:00", "24:00"].map((t, i) => h("span", { style: `left: ${i * 25}%` }, t)),
       ),
     );
   }
@@ -676,8 +693,16 @@
     if (typeof uPlot === "function") return Promise.resolve();
     chartLibrary ||= new Promise((resolve) => {
       const script = h("script", { src: CHART_LIBRARY });
-      script.addEventListener("load", resolve);
-      script.addEventListener("error", resolve);
+      const done = () => {
+        if (typeof uPlot !== "function") {
+          // Not cached as loaded: the next drawing tries again.
+          chartLibrary = null;
+          script.remove();
+        }
+        resolve();
+      };
+      script.addEventListener("load", done);
+      script.addEventListener("error", done);
       document.head.append(script);
     });
     return chartLibrary;
@@ -685,6 +710,13 @@
 
   function token(name) {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  // uPlot scales a line's width by the pixel ratio but hands its dash pattern to the canvas
+  // as given, so on a HiDPI screen a [2, 4] pattern drew at half size (sub-pixel dots) and
+  // stopped matching the legend's key. Scaled here, the dashes are drawn in CSS pixels.
+  function scaled(dash) {
+    return dash.map((d) => d * (devicePixelRatio || 1));
   }
 
   function chartWidth(wrap) {
@@ -734,6 +766,7 @@
   // section, and the readout under it lists every series there.
   function sectionChart(wrap, readout, spec, title) {
     if (typeof uPlot !== "function") {
+      wrap.removeAttribute("tabindex");
       fill(wrap, h("p", { class: "muted" }, "The chart didn’t load; the table below has every value."));
       return;
     }
@@ -743,14 +776,20 @@
     const surface = token("--panel");
     const font = "12px system-ui, -apple-system, 'Segoe UI', sans-serif";
     const series = spec.series.map((s) => ({ ...s, stroke: token(s.color) }));
-    wrap.setAttribute("role", "img");
+    // A group, not an image: it takes the keyboard (the arrows walk the sections).
+    wrap.setAttribute("role", "group");
+    wrap.setAttribute("aria-roledescription", "chart");
     wrap.setAttribute(
       "aria-label",
       `${title} by section${series.length > 1 ? ` for ${series.map((s) => s.name).join(", ")}` : ""}. Use the arrow keys for each section’s values; the table below has them all.`,
     );
     const hint = "Point at the chart, or focus it and use the arrow keys, for a section’s values.";
+    // Refilled only when the section changes: the readout is a live region, and every
+    // pointer move inside one section would otherwise announce it again.
+    let shown;
     const showReadout = (idx) => {
-      if (!readout) return;
+      if (!readout || idx === shown) return;
+      shown = idx;
       if (idx === null || idx === undefined) {
         fill(readout, hint);
         return;
@@ -804,7 +843,7 @@
           label: s.name,
           stroke: s.stroke,
           width: 2,
-          dash: s.dash,
+          dash: scaled(s.dash),
           spanGaps: false,
           points: { show: true, size: 10, width: 2, stroke: surface, fill: s.stroke },
         })),
@@ -817,7 +856,7 @@
       },
     };
     const plot = new uPlot(opts, [xs, ...series.map((s) => s.values)], wrap);
-    charts.push({ plot, wrap, height: spec.height });
+    charts.push({ plot, wrap, height: spec.height, dashes: series.map((s) => s.dash), ratio: devicePixelRatio });
     let focused = null;
     wrap.addEventListener("keydown", (event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -973,7 +1012,7 @@
               {},
               h("th", { scope: "col", class: "section-head" }, "Section"),
               units.map((u) => h("th", { scope: "col", dataset: { unit: u.id } }, u.name)),
-              knobs.map(([title]) => h("th", { scope: "col", class: "knob-head" }, title)),
+              knobs.map(([title], i) => h("th", { scope: "col", class: `knob-head${i ? "" : " first"}` }, title)),
             ),
           ),
           h(
@@ -996,7 +1035,9 @@
                     cell.valid_from ? h("span", { class: "muted small block" }, `since ${cell.valid_from}`) : null,
                   );
                 }),
-                knobs.map(([title, value]) => h("td", { dataset: { knob: title } }, value(s))),
+                knobs.map(([title, value], i) =>
+                  h("td", { class: i ? null : "first", dataset: { knob: title } }, value(s)),
+                ),
               ),
             ),
           ),

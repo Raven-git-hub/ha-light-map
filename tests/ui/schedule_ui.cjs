@@ -39,8 +39,7 @@ const waitToday = (page, section, pattern) =>
     ([selector, source]) => new RegExp(source).test(document.querySelector(selector)?.textContent || ""),
     [today(section), pattern.source],
   );
-const saved = (page) =>
-  page.evaluate(async () => (await (await fetch("/api/config")).json()).schedule_profiles);
+const saved = (page) => page.evaluate(async () => (await (await fetch("/api/config")).json()).schedule_profiles);
 
 (async () => {
   const browser = await chromium.launch(process.env.LM_CHROMIUM ? { executablePath: process.env.LM_CHROMIUM } : {});
@@ -75,7 +74,10 @@ const saved = (page) =>
       await page.click(`${item("evening")} .select-profile`);
       await page.waitForSelector('.profile-card[data-profile="evening"]');
       assert.equal(new URL(page.url()).hash, "#schedule/evening");
-      assert.match(await page.textContent(".shared-warning"), /Used by one room: Living Room\. Saving changes the schedule of that room\./);
+      assert.match(
+        await page.textContent(".shared-warning"),
+        /Used by one room: Living Room\. Saving changes the schedule of that room\./,
+      );
       assert.ok(await page.isDisabled(`${item("evening")} .delete-profile`)); // a room follows it
       assert.match(await page.getAttribute(`${item("evening")} .delete-profile`, "title"), /Living Room follows it/);
       await shot(page, "01-schedule");
@@ -95,26 +97,48 @@ const saved = (page) =>
     await step("an invalid field holds Save until it is fixed", async () => {
       await page.fill(`${row("day")} .trigger-offset`, "800");
       assert.ok(await page.$eval(`${row("day")} .trigger-offset`, (el) => el.classList.contains("invalid")));
-      assert.match(await page.textContent("#schedule-problems"), /evening: Day: an offset is a whole number of minutes, −720 to 720/);
+      assert.match(
+        await page.textContent("#schedule-problems"),
+        /evening: Day: an offset is a whole number of minutes, −720 to 720/,
+      );
       assert.ok(await page.isDisabled("#schedule-save"));
       await page.fill(`${row("day")} .trigger-offset`, "150");
       assert.equal((await page.textContent("#schedule-problems")).trim(), "");
       await waitToday(page, "day", /^09:55$/); // sunrise (07:25) + 2 h 30 min
-      // A priority over the trigger's default (shown as the field's placeholder).
+      // A priority over the trigger's default (shown as the field's placeholder). One the
+      // browser can't parse ("1e" reads as "") is invalid, never taken as "the default".
       assert.equal(await page.getAttribute(`${row("day")} .priority-input`, "placeholder"), "default");
+      await page.click(`${row("day")} .priority-input`, { clickCount: 3 });
+      await page.keyboard.type("1e");
+      assert.ok(await page.$eval(`${row("day")} .priority-input`, (el) => el.classList.contains("invalid")));
+      assert.match(await page.textContent("#schedule-problems"), /Day: a priority is a whole number/);
+      assert.ok(await page.isDisabled("#schedule-save"));
       await page.fill(`${row("day")} .priority-input`, "120");
       assert.ok(await page.isEnabled("#schedule-save"));
     });
 
     await step("a trigger changes shape, and the profile is renamed", async () => {
-      await page.selectOption(`${row("night")} .trigger[data-depth="0"] > select.trigger-type`, "earliest");
+      const type = `${row("night")} .trigger[data-depth="0"] > select.trigger-type`;
+      // From the keyboard: each arrow changes the type and redraws, and the focus stays on
+      // the select; coming back restores the trigger as it was.
+      await page.focus(type);
+      await page.keyboard.press("ArrowDown");
+      await page.waitForSelector(`${row("night")} .trigger-event`);
+      assert.equal(await page.evaluate(() => document.activeElement.dataset.focus), "evening:night:t:type");
+      await page.keyboard.press("ArrowUp");
+      await page.waitForSelector(`${row("night")} .trigger-time`);
+      assert.equal(await page.inputValue(`${row("night")} .trigger-time`), "20:30");
+      assert.equal(await page.evaluate(() => document.activeElement.dataset.focus), "evening:night:t:type");
+
+      await page.selectOption(type, "earliest");
       await page.waitForSelector(`${row("night")} .components .trigger-time`);
       const times = await page.$$(`${row("night")} .components .trigger-time`);
       assert.equal(times.length, 2);
       assert.equal(await times[0].inputValue(), "20:30"); // the clock it was, kept as a component
       assert.ok(await page.isDisabled(`${row("night")} .remove-component`)); // two at least
+      await times[0].fill("21:15");
       await times[1].fill("21:00");
-      await waitToday(page, "night", /^20:30$/);
+      await waitToday(page, "night", /^21:00$/); // the earlier of the two, as checked
       await page.fill(".profile-name-input", "Evenings");
       assert.equal(await page.textContent(`${item("evening")} .profile-label`), "Evenings");
     });
@@ -127,13 +151,17 @@ const saved = (page) =>
       await page.waitForSelector(dialog("confirm"), { state: "detached" });
       assert.equal(new URL(page.url()).hash, "#schedule/evening");
       assert.equal(await page.inputValue(`${row("sleep")} .trigger-time`), "22:30"); // the draft stays
+      assert.equal(await page.inputValue(`${row("night")} .components .trigger-time >> nth=0`), "21:15");
       assert.equal(await stateText(page), "Unsaved changes");
     });
 
     await step("save: the config holds the edits", async () => {
       await page.click("#schedule-save");
       await page.waitForSelector("#notices .notice.ok");
-      assert.match(await page.textContent("#notices .notice.ok"), /Saved the schedule profiles \(\d+ changes\)\. Nothing is deployed/);
+      assert.match(
+        await page.textContent("#notices .notice.ok"),
+        /Saved the schedule profiles \(\d+ changes\)\. Nothing is deployed/,
+      );
       await page.waitForFunction(() => document.querySelector("#schedule-state")?.textContent === "Saved");
       const evening = (await saved(page)).find((p) => p.id === "evening");
       assert.equal(evening.name, "Evenings");
@@ -175,7 +203,10 @@ const saved = (page) =>
       // Straight from the field to Save, as a hand would: the click must land.
       await page.click("#schedule-save");
       await page.waitForSelector("#notices .notice.error");
-      assert.match(await page.textContent("#notices .notice.error"), /The schedule has changed since the schedule editor showed it/);
+      assert.match(
+        await page.textContent("#notices .notice.error"),
+        /The schedule has changed since the schedule editor showed it/,
+      );
       await page.waitForFunction(() => document.querySelector("#schedule-state")?.textContent === "Saved");
       assert.equal(await page.inputValue(".profile-name-input"), "Weekend"); // reloaded as it is
       assert.equal(await page.textContent(`${item("default")} .profile-label`), "Standard");

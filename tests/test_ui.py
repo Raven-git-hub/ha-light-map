@@ -368,7 +368,7 @@ class BrowserTest(unittest.TestCase):
                 sections["night"]["trigger"],
                 {
                     "type": "earliest",
-                    "of": [{"type": "clock", "time": "20:30"}, {"type": "clock", "time": "21:00"}],
+                    "of": [{"type": "clock", "time": "21:15"}, {"type": "clock", "time": "21:00"}],
                 },
             )
             self.assertEqual(profiles[1]["name"], "Weekend")

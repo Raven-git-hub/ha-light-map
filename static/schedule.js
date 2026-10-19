@@ -50,7 +50,14 @@
   // save said.
   let sx = null;
   let checkTimer = null;
+  // Bumped by every edit, so a check still in flight for an older draft is never applied
+  // to a newer one.
   let checkSeq = 0;
+  // A failing check is said once, not at every edit, until one succeeds.
+  let checkFailing = false;
+  // The control to focus after the next redraw, when it isn't the one focused now (a new
+  // profile's name field).
+  let pendingFocus = null;
 
   LM.view("schedule", render, { tab: "config" });
 
@@ -64,7 +71,7 @@
       ),
     );
     // A save in flight lands whether or not the view stays.
-    LM.protect(() => Boolean(sx && dirty() && !sx.saving), "Your schedule changes");
+    LM.protect(() => Boolean(sx && edited() && !sx.saving), "Your schedule changes");
     await load(profileId);
   }
 
@@ -84,12 +91,16 @@
   async function load(profileId) {
     const el = host();
     if (!el) return;
+    // Inert until redrawn: an edit typed while the editor reloads (after a save) would be
+    // lost, or land on a draft that is gone.
+    el.inert = true;
     sx = null;
     clearTimeout(checkTimer);
     let view;
     try {
       view = await api("GET", "/api/schedule_profiles");
     } catch (err) {
+      el.inert = false;
       if (el.isConnected) fill(el, nav(), h("div", { class: "box error editor-unavailable" }, err.message));
       fail(err);
       return;
@@ -107,6 +118,8 @@
       checked: [],
       serverProblems: [],
       saving: false,
+      // Per trigger, the shapes it has had: switching its type back restores the one before.
+      shapes: {},
     };
     draw();
   }
@@ -124,7 +137,10 @@
     return JSON.stringify(value ?? null);
   }
 
+  // dirty: what Save would change; edited: that, or a field holding something not yet in
+  // the draft (invalid), which Revert drops and leaving asks about.
   const dirty = () => canon(sx.draft) !== sx.baseline;
+  const edited = () => dirty() || Object.keys(sx.bad).length > 0;
   const profileOf = (id) => sx.draft.find((p) => p.id === id);
   const selected = () => profileOf(sx.selected) || profileOf(sx.view.default_profile) || sx.draft[0];
   const label = (profile) => profile.name || profile.id;
@@ -140,6 +156,8 @@
   function newId(name) {
     const base =
       String(name)
+        .normalize("NFKD") // "Café" -> "cafe", not "caf"
+        .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "_")
         .replace(/^_+|_+$/g, "") || "profile";
@@ -157,6 +175,7 @@
   // After any edit: the server's last refusal no longer describes the draft, and the check
   // is asked again.
   function changed({ full = false } = {}) {
+    if (!sx) return;
     sx.serverProblems = [];
     if (full) draw();
     else refreshBar();
@@ -165,17 +184,25 @@
 
   function scheduleCheck() {
     clearTimeout(checkTimer);
+    const seq = ++checkSeq;
     // A field holding something invalid isn't in the draft: checked now, the draft would
     // pass on the value before it. Its own error stands until it is fixed.
     if (Object.keys(sx.bad).length) return;
     const mine = sx;
-    checkTimer = setTimeout(() => check(mine).catch(fail), 300);
+    checkTimer = setTimeout(
+      () =>
+        check(mine, seq).catch((err) => {
+          if (!checkFailing) fail(err);
+          checkFailing = true;
+        }),
+      300,
+    );
   }
 
-  async function check(mine) {
-    const seq = ++checkSeq;
+  async function check(mine, seq) {
     const result = await api("POST", "/api/schedule_profiles/check", { schedule_profiles: mine.draft });
-    if (sx !== mine || seq !== checkSeq) return; // reloaded, or a newer check is on its way
+    checkFailing = false;
+    if (sx !== mine || seq !== checkSeq) return; // reloaded, or edited since it was sent
     mine.checked = result.problems;
     mine.days = result.days;
     mine.location = result.location;
@@ -188,6 +215,11 @@
   function draw() {
     const el = sx && host();
     if (!el) return;
+    // A redraw replaces every control: the one focused (a trigger's type being arrowed
+    // through, a profile moved) is focused again, else the one it names as next.
+    const active = document.activeElement?.closest?.("[data-focus]");
+    const focus = pendingFocus ? [pendingFocus] : active ? [active.dataset.focus, active.dataset.focusNext] : [];
+    pendingFocus = null;
     const ids = new Set(sx.draft.map((p) => p.id));
     for (const key of Object.keys(sx.bad)) if (!ids.has(key.split(":")[0])) delete sx.bad[key];
     const profile = selected();
@@ -216,6 +248,15 @@
         ),
       ),
     );
+    el.inert = false;
+    const controls = [...el.querySelectorAll("[data-focus]")];
+    for (const key of focus) {
+      const again = key && controls.find((c) => c.dataset.focus === key && !c.disabled);
+      if (again) {
+        again.focus();
+        break;
+      }
+    }
     refreshDays();
     refreshBar();
   }
@@ -235,11 +276,11 @@
   function refreshBar() {
     const state = document.getElementById("schedule-state");
     if (!state || !sx) return;
-    const pending = dirty();
+    const pending = edited();
     const found = problems();
     state.textContent = sx.saving ? "Saving…" : pending ? "Unsaved changes" : "Saved";
     state.className = pending ? "pill warn" : "pill ok";
-    document.getElementById("schedule-save").disabled = sx.saving || !pending || found.length > 0;
+    document.getElementById("schedule-save").disabled = sx.saving || !dirty() || found.length > 0;
     document.getElementById("schedule-revert").disabled = sx.saving || !pending;
     fill(
       document.getElementById("schedule-problems"),
@@ -279,6 +320,7 @@
               {
                 class: "select-profile",
                 "aria-current": on ? "true" : null,
+                dataset: { focus: `select:${profile.id}` },
                 onclick: () => {
                   sx.selected = profile.id;
                   draw();
@@ -299,6 +341,7 @@
                 "button",
                 {
                   class: "icon move-up",
+                  dataset: { focus: `up:${profile.id}`, focusNext: `select:${profile.id}` },
                   "aria-label": `Move ${label(profile)} up`,
                   title: "Move up",
                   disabled: i === 0,
@@ -310,6 +353,7 @@
                 "button",
                 {
                   class: "icon move-down",
+                  dataset: { focus: `down:${profile.id}`, focusNext: `select:${profile.id}` },
                   "aria-label": `Move ${label(profile)} down`,
                   title: "Move down",
                   disabled: i === sx.draft.length - 1,
@@ -354,6 +398,7 @@
     sx.draft = sx.draft.filter((p) => p !== profile);
     forget(`${profile.id}:`);
     if (sx.selected === profile.id) sx.selected = sx.view.default_profile;
+    pendingFocus = `select:${sx.selected}`;
     changed({ full: true });
   }
 
@@ -420,6 +465,7 @@
     const id = newId(result.name);
     sx.draft.push({ id, name: result.name, ...start });
     sx.selected = id;
+    pendingFocus = `name:${id}`;
     changed({ full: true });
   }
 
@@ -429,6 +475,7 @@
     const name = h("input", {
       type: "text",
       class: "profile-name-input",
+      dataset: { focus: `name:${pid}` },
       value: profile.name || "",
       placeholder: pid,
       "aria-label": "Profile name",
@@ -528,9 +575,10 @@
       value: String(sx.bad[key] ? sx.bad[key].raw : profile.min_section_minutes),
       "aria-label": "Shortest section, in minutes",
       oninput: (event) => {
+        // A number the browser can't parse ("1e") reads as "": invalid, never blank.
         const raw = event.target.value.trim();
         const n = Number(raw);
-        const ok = raw !== "" && Number.isInteger(n) && n >= 1 && n <= 720;
+        const ok = !event.target.validity.badInput && raw !== "" && Number.isInteger(n) && n >= 1 && n <= 720;
         if (ok) {
           profile.min_section_minutes = n;
           delete sx.bad[key];
@@ -570,7 +618,9 @@
         const raw = event.target.value.trim();
         const n = Number(raw);
         let ok = true;
-        if (raw === "") delete section.priority;
+        // A number the browser can't parse ("1e") reads as "": invalid, not "the default".
+        if (event.target.validity.badInput) ok = false;
+        else if (raw === "") delete section.priority;
         else if (Number.isInteger(n) && n >= 0 && n <= 1000) section.priority = n;
         else ok = false;
         if (ok) delete sx.bad[prioKey];
@@ -612,9 +662,14 @@
       {
         class: "trigger-type",
         "aria-label": `${sectionName(sectionId)}: ${depth ? "component" : "starts"}`,
+        dataset: { focus: `${key}:type` },
+        // Arrowing through the types fires a change at each: each redraw keeps the focus
+        // here, and coming back to a type restores the trigger as it was.
         onchange: (event) => {
           forget(key);
-          replace(retype(trigger, event.target.value));
+          const shapes = (sx.shapes[key] ||= {});
+          shapes[trigger.type] = trigger;
+          replace(retype(trigger, event.target.value, shapes));
           changed({ full: true });
         },
       },
@@ -676,7 +731,7 @@
         oninput: (e) => {
           const raw = e.target.value.trim();
           const n = Number(raw);
-          const ok = raw !== "" && Number.isInteger(n) && n >= -720 && n <= 720;
+          const ok = !e.target.validity.badInput && raw !== "" && Number.isInteger(n) && n >= -720 && n <= 720;
           if (ok) {
             trigger.offset_minutes = n;
             delete sx.bad[offsetKey];
@@ -712,6 +767,7 @@
                 "button",
                 {
                   class: "icon remove-component",
+                  dataset: { focus: `${key}.${i}:remove`, focusNext: `${key}:add` },
                   "aria-label": `${sectionName(sectionId)}: remove this time`,
                   title: of.length <= 2 ? "The earlier or later of needs two or more" : "Remove",
                   disabled: of.length <= 2,
@@ -730,6 +786,7 @@
           "button",
           {
             class: "link add-component",
+            dataset: { focus: `${key}:add` },
             onclick: () => {
               of.push({ type: "clock", time: "07:00" });
               changed({ full: true });
@@ -742,15 +799,20 @@
     return h("div", { class: `trigger trigger-${trigger.type}`, dataset: { depth: String(depth) } }, parts);
   }
 
-  // A trigger of another type, keeping what carries over: a composite's components when
-  // switching between earlier and later, the trigger itself as a composite's first
-  // component.
-  function retype(trigger, type) {
+  // A trigger of another type: the one this trigger was before, if it has been that type
+  // (`shapes`), else keeping what carries over: a composite's components when switching
+  // between earlier and later, the trigger itself as a composite's first component.
+  function retype(trigger, type, shapes = {}) {
     if (type === trigger.type) return trigger;
-    if (type === "clock") return { type, time: trigger.type === "clock" ? trigger.time : "07:00" };
-    if (type === "sun") return { type, event: "sunrise", offset_minutes: 0 };
-    if (COMPOSITE.includes(trigger.type)) return { type, of: trigger.of };
-    return { type, of: [trigger, { type: "clock", time: "07:00" }] };
+    if (COMPOSITE.includes(type)) {
+      if (COMPOSITE.includes(trigger.type)) return { type, of: trigger.of };
+      const before = shapes.earliest || shapes.latest;
+      if (before) return { type, of: structuredClone(before.of) };
+      return { type, of: [trigger, { type: "clock", time: "07:00" }] };
+    }
+    if (shapes[type]) return structuredClone(shapes[type]);
+    if (type === "clock") return { type, time: "07:00" };
+    return { type, event: "sunrise", offset_minutes: 0 };
   }
 
   // Today's column and the location line, from the last check (or the read): redrawn
@@ -760,7 +822,8 @@
     if (!line || !sx) return;
     const { location } = sx;
     const profile = selected();
-    const day = sx.days[profile.id];
+    // An own entry only: a profile named "constructor" must not read Object's.
+    const day = Object.hasOwn(sx.days, profile.id) ? sx.days[profile.id] : null;
     if (!location.available) {
       line.className = "box warn schedule-location";
       line.textContent = `Today’s times can’t be shown: ${location.error}.`;
@@ -807,11 +870,16 @@
     const mine = sx;
     mine.saving = true;
     refreshBar();
+    // Inert while the save runs and the editor reloads after it: an edit made meanwhile
+    // would be dropped by the reload without a word.
+    const el = host();
+    if (el) el.inert = true;
     let result;
     try {
       result = await api("PUT", "/api/schedule_profiles", { schedule_profiles: mine.draft, base: mine.view.version });
     } catch (err) {
       mine.saving = false;
+      if (el && sx === mine) el.inert = false;
       if (sx !== mine) throw err;
       if (err.error === "edit_stale") {
         // Changed since the editor showed it (another tab, or a room given another
@@ -838,7 +906,7 @@
   }
 
   async function revert() {
-    if (!sx || !dirty()) return;
+    if (!sx || !edited()) return;
     const sure = await confirmBox("Revert?", ["Drop the unsaved changes and show the schedule profiles as saved."], {
       confirm: "Revert",
       danger: true,
