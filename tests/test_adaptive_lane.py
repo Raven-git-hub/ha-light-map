@@ -1,19 +1,21 @@
 """The `al_` deploy lane (P5.1) against the fake HA, and the cutover switch at the HTTP
 surface: off, nothing generates, previews or writes `al_`; on (the tests' own scope), `al_`
-is reconciled as its own lane, verified after every write, and shown read-only beside the
-switching deploy, which still applies `lm_` alone."""
+is reconciled as its own lane, verified after every write, previewed beside the switching
+deploy and applied after it under the one fingerprint (P6a)."""
 
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from app.core import config, deploy, generate
+from app.core import config, deploy, generate, switching
 from app.core.deploy import DeployError
 from app.core.ha import HAError
 from tests.fakes import STATES, FakeHA, adaptive_wired, committed_config
 from tests.test_api import ApiCase
 
+ADAPTIVE = ["chandelier_1", "chandelier_2", "chandelier_3", "reading_lamp"]
 ROOM_HELPERS = {
     "input_boolean": ["al_active_living_room", "al_hold_living_room"],
     "input_select": ["al_scene_living_room"],
@@ -251,33 +253,318 @@ class ApiSwitchOffTest(ApiCase):
 
 
 class ApiSwitchOnTest(ApiCase):
+    """The Map's deploy with the cutover switch on (P6a): `lm_` first, then each module lane
+    the preview showed ready, each planned again, checked against the preview, applied and
+    verified, under one fingerprint covering every lane."""
+
     def setUp(self):
         self.enterContext(adaptive_wired())
         super().setUp()
 
-    def test_the_al_plan_is_shown_read_only_and_only_lm_is_applied(self):
+    def preview(self):
+        response = self.client.get("/api/deploy/preview")
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def apply(self, preview):
+        return self.client.post("/api/deploy", json={"fingerprint": preview["fingerprint"]})
+
+    def log(self):
+        entries = self.client.get("/api/log", params={"category": "deploy", "level": "debug"})
+        return [e["message"] for e in reversed(entries.json()["entries"])]
+
+    def test_a_lane_refused_in_the_preview_is_not_applied(self):
         self.assertEqual(self.client.get("/api/status").json()["adaptive"], {"wired": True})
-        preview = self.client.get("/api/deploy/preview").json()
+        preview = self.preview()
         lane = preview["modules"]["lanes"]["al"]
         # Before the switching plane is deployed, its soft switches are missing.
         self.assertFalse(lane["ready"])
         self.assertTrue(any("deploy the switching plane first" in p for p in lane["refused"]))
-        self.assertIn("read-only", preview["modules"]["note"])
-        response = self.client.post("/api/deploy", json={"fingerprint": preview["fingerprint"]})
+        self.assertIn("after the lm_ lane", preview["modules"]["note"])
+        self.assertNotIn("fingerprint", lane)  # one fingerprint, for the whole deploy
+        response = self.apply(preview)
         self.assertEqual(response.status_code, 200, response.text)
+        answer = response.json()
+        self.assertEqual(answer["modules"], {"al": {"deployed": False, "refused": lane["refused"]}})
+        # The switching plane went out, the adaptive bridges with the gated fragment; al_
+        # not yet: it was never shown ready.
         self.assertFalse([i for i in self.ha.automations if i.startswith("al_")])
         self.assertNotIn("input_select", self.ha.helpers)
-        # The adaptive bridges went out with the gated fragment, in the lm lane.
         bridge = self.ha.automations["lm_bridge_chandelier_1"]
         gate, choice = bridge["actions"][0]["choose"][0]["sequence"]
         self.assertIn("sensor.al_almanac_living_room", gate["variables"]["bridge_gate"])
         self.assertIn("brightness", choice["then"][0]["data"])
         self.assertNotIn("data", choice["else"][0])
-        lane = self.client.get("/api/deploy/preview").json()["modules"]["lanes"]["al"]
+
+        # Now the plan shows, and is what the next deploy applies.
+        preview = self.preview()
+        lane = preview["modules"]["lanes"]["al"]
         self.assertTrue(lane["ready"])
-        self.assertNotIn("fingerprint", lane)
         self.assertEqual(lane["plan"]["created"], {**ROOM_HELPERS, "automation": AL_AUTOMATIONS})
+        mark = len(self.ha.calls)
+        response = self.apply(preview)
+        self.assertEqual(response.status_code, 200, response.text)
+        answer = response.json()
+        self.assertEqual(written_ids(self.ha, mark)[:1], ["AL Active living_room"])
+        self.assertEqual(answer["result"]["created"], {"input_boolean": [], "automation": []})
+        al = answer["modules"]["al"]
+        self.assertTrue(al["deployed"])
+        self.assertEqual(al["result"]["created"], lane["plan"]["created"])
+        package = generate.generate(committed_config(), "al")
+        for automation in package["automation"]:
+            self.assertEqual(self.ha.automations[automation["id"]], automation)
+        self.assertEqual(sorted(self.ha.helpers["input_select"]), ["al_scene_living_room"])
+        # Deploying drove nothing: no light service, no automation fired.
+        self.assertFalse([a for m, a in self.ha.calls if m == "call_service" and a[0] == "light"])
+        self.assertEqual(self.ha.fired, [])
+        self.assertEqual(
+            self.log()[-2:],
+            [
+                "Deployed the switching plane: 0 created, 0 updated, 0 removed.",
+                "Deployed the al_ lane: 12 created, 0 updated, 0 removed.",
+            ],
+        )
+        # And then there is nothing left to do in either lane.
+        preview = self.preview()
+        self.assertEqual(sum(len(i) for i in preview["plan"]["created"].values()), 0)
+        self.assertEqual(
+            preview["modules"]["lanes"]["al"]["plan"]["created"],
+            {"input_boolean": [], "input_select": [], "automation": []},
+        )
+
+    def test_the_cutover_deploy_applies_lm_then_al_each_verified(self):
+        # As at P6b: the switching plane was deployed with the switch off (plain bridges);
+        # with it on, one deploy rewrites the adaptive bulbs' bridges and creates the al_
+        # lane, in that order, each lane verified before the next is written.
+        with mock.patch.dict(generate._GENERATORS), mock.patch.dict(generate._REFERENCES):
+            del generate._GENERATORS["al"], generate._REFERENCES["al"]
+            with mock.patch.dict(switching._BRIDGE_BRIGHTNESS, clear=True):
+                self.assertEqual(self.apply(self.preview()).status_code, 200)
         self.assertFalse([i for i in self.ha.automations if i.startswith("al_")])
+        preview = self.preview()
+        self.assertEqual(
+            preview["plan"]["updated"]["automation"], [f"lm_bridge_{b}" for b in ADAPTIVE]
+        )
+        self.assertTrue(preview["modules"]["lanes"]["al"]["ready"])
+        mark = len(self.ha.calls)
+        response = self.apply(preview)
+        self.assertEqual(response.status_code, 200, response.text)
+        calls = self.ha.calls[mark:]
+        writes = [i for i, (m, _) in enumerate(calls) if (m, _) in self.ha.writes]
+        names = written_ids(self.ha, mark)
+        lm = [n for n in names if n.startswith("lm_")]
+        al = [n for n in names if n.startswith(("al_", "AL "))]
+        self.assertEqual(lm, [f"lm_bridge_{b}" for b in ADAPTIVE])
+        self.assertEqual(len(al), 12)
+        self.assertEqual(len(names), len(lm) + len(al))  # nothing written outside the lanes
+        # lm_ first, all of it, and verified (its automations read back) before any al_.
+        first_al = writes[len(lm)]
+        self.assertEqual(names[: len(lm)], lm)
+        between = calls[writes[len(lm) - 1] + 1 : first_al]
+        read_back = [args[0] for method, args in between if method == "get_automation_config"]
+        self.assertTrue(set(lm) <= set(read_back), read_back)
+        self.assertEqual(
+            response.json()["modules"]["al"]["result"]["created"]["automation"], AL_AUTOMATIONS
+        )
+        self.assertEqual(self.ha.fired, [])
+
+    def test_the_fingerprint_covers_every_lane(self):
+        self.apply(self.preview())  # the switching plane, so al_ is ready
+        preview = self.preview()
+        self.assertTrue(preview["modules"]["lanes"]["al"]["ready"])
+        # Something changes in the al_ lane alone (a leftover the plan would now remove):
+        # the whole deploy is stale, and nothing is written, lm_ included.
+        self.ha.automations["al_maintenance_living_room"] = {
+            "id": "al_maintenance_living_room",
+            "alias": "AL Lux Maintenance",
+            "triggers": [],
+            "actions": [],
+        }
+        del self.ha.automations["lm_hard_reading_switch"]  # and lm_ has work to do
+        mark = len(self.ha.calls)
+        self.assert_error(self.apply(preview), 409, "preview_stale")
+        self.assertEqual(written_ids(self.ha, mark), [])
+        # A lane refused in the preview is part of what was shown, too: one that is ready
+        # by the time the deploy runs is still stale.
+        states = self.ha.states
+        self.ha.states = [s for s in states if s["entity_id"] != "sensor.living_room_lux"]
+        preview = self.preview()
+        self.assertFalse(preview["modules"]["lanes"]["al"]["ready"])
+        self.ha.states = states
+        mark = len(self.ha.calls)
+        self.assert_error(self.apply(preview), 409, "preview_stale")
+        self.assertEqual(written_ids(self.ha, mark), [])
+
+    def test_a_lane_that_changes_once_lm_is_written_is_not_applied(self):
+        self.apply(self.preview())
+        del self.ha.automations["lm_hard_reading_switch"]
+        preview = self.preview()
+        self.assertEqual(preview["plan"]["created"]["automation"], ["lm_hard_reading_switch"])
+        self.assertTrue(preview["modules"]["lanes"]["al"]["ready"])
+        real = deploy.apply
+        ha = self.ha
+
+        async def apply_then_meddle(client, deploy_plan):
+            report = await real(client, deploy_plan)
+            if deploy_plan["prefix"] == "lm":
+                # Someone edits HA in the seconds between the two lanes.
+                ha.helpers.setdefault("input_select", {})["al_scene_living_room"] = {
+                    "id": "al_scene_living_room",
+                    "name": "AL Scene living_room",
+                    "options": ["Day", "Night"],
+                }
+            return report
+
+        mark = len(self.ha.calls)
+        with mock.patch.object(deploy, "apply", apply_then_meddle):
+            body = self.assert_error(self.apply(preview), 409, "preview_stale")
+        self.assertEqual(body["deployed"], ["lm"])
+        self.assertIn("Deployed and verified: lm_.", body["detail"])
+        self.assertIn("would do something other than the preview showed", body["detail"])
+        # What stands is said in full: the lm_ lane's summary, as a deploy that went
+        # through would answer it.
+        self.assertEqual(body["result"]["created"]["automation"], ["lm_hard_reading_switch"])
+        self.assertEqual(body["modules"], {})
+        names = written_ids(self.ha, mark)
+        self.assertIn("lm_hard_reading_switch", names)
+        self.assertFalse([n for n in names if n.startswith(("al_", "AL "))])
+        self.assertEqual(
+            self.log()[-2:],
+            [
+                "Deployed the switching plane: 1 created, 0 updated, 0 removed.",
+                "The al_ lane would do something other than the preview showed, so it was not "
+                "deployed.",
+            ],
+        )
+
+    def test_a_lane_refused_when_planned_again_says_why(self):
+        # HA stops answering for the al_ lane once lm_ is written: that is no change to the
+        # plan, and isn't reported as one.
+        self.apply(self.preview())
+        del self.ha.automations["lm_hard_reading_switch"]
+        preview = self.preview()
+        real = self.ha.list_helpers
+
+        async def failing(domain):
+            if domain == "input_select":
+                raise HAError("input_select/list failed: unknown command")
+            return await real(domain)
+
+        real_apply = deploy.apply
+        ha = self.ha
+
+        async def apply_then_fail(client, deploy_plan):
+            report = await real_apply(client, deploy_plan)
+            ha.list_helpers = failing
+            return report
+
+        with mock.patch.object(deploy, "apply", apply_then_fail):
+            body = self.assert_error(self.apply(preview), 409, "preview_stale")
+        self.assertIn("Planned again, the al_ lane would now be refused", body["detail"])
+        self.assertEqual(
+            body["problems"], ["Home Assistant: input_select/list failed: unknown command"]
+        )
+        self.assertEqual(body["deployed"], ["lm"])
+        self.assertEqual(
+            self.log()[-1], "The al_ lane would now be refused, so it was not deployed."
+        )
+
+    def test_ha_failing_partway_through_a_lane_is_a_failed_deploy(self):
+        self.apply(self.preview())
+        preview = self.preview()
+        real = self.ha.save_automation_config
+        written = []
+
+        async def failing(automation_id, config_):
+            if automation_id == "al_maint_living_room":
+                raise HAError("the connection dropped")
+            written.append(automation_id)
+            await real(automation_id, config_)
+
+        self.ha.save_automation_config = failing
+        body = self.assert_error(self.apply(preview), 502, "deploy_failed")
+        self.assertEqual(body["problems"], ["the connection dropped"])
+        self.assertEqual(body["deployed"], ["lm"])
+        self.assertEqual(body["result"]["prefix"], "lm")
+        self.assertIn("al_scene_living_room_day", written)
+        self.assertEqual(self.log()[-1], "The al_ lane's deploy stopped or did not verify.")
+
+    def test_a_refusal_is_fingerprinted_with_its_reason(self):
+        # al_ refused for one reason when previewed, for another when applied: what was
+        # shown no longer stands, though the lane is still refused.
+        self.apply(self.preview())
+        real = self.ha.list_helpers
+
+        async def failing(domain):
+            if domain == "input_select":
+                raise HAError("input_select/list failed: unknown command")
+            return await real(domain)
+
+        self.ha.list_helpers = failing
+        del self.ha.automations["lm_hard_reading_switch"]
+        preview = self.preview()
+        self.assertEqual(
+            preview["modules"]["lanes"]["al"]["refused"],
+            ["Home Assistant: input_select/list failed: unknown command"],
+        )
+        self.ha.list_helpers = real
+        self.ha.states = [s for s in self.ha.states if s["entity_id"] != "sensor.living_room_lux"]
+        mark = len(self.ha.calls)
+        self.assert_error(self.apply(preview), 409, "preview_stale")
+        self.assertEqual(written_ids(self.ha, mark), [])
+
+    def test_module_lanes_apply_in_order_and_each_stands_on_its_own(self):
+        # A second module lane, wired in this test only: lanes apply in the order they were
+        # registered, a refused one is passed over, and a failure says which stand.
+        def zz(doc):
+            return {"input_boolean": {"zz_flag": {"name": "ZZ Flag"}}, "automation": []}
+
+        self.enterContext(mock.patch.dict(generate._GENERATORS))
+        generate.register_namespace("zz", zz)
+        preview = self.preview()
+        self.assertEqual(list(preview["modules"]["lanes"]), ["al", "zz"])
+        self.assertFalse(preview["modules"]["lanes"]["al"]["ready"])  # no soft switches yet
+        answer = self.apply(preview).json()
+        self.assertEqual(answer["modules"]["al"]["deployed"], False)
+        self.assertEqual(answer["modules"]["zz"]["result"]["created"]["input_boolean"], ["zz_flag"])
+        # Now both are ready; zz fails to verify after al_ went out.
+        self.ha.helpers["input_boolean"].pop("zz_flag")
+        self.ha.helper_states.pop("input_boolean.zz_flag")
+        preview = self.preview()
+        real = deploy.verify
+
+        async def verify(client, deploy_plan, **kwargs):
+            if deploy_plan["prefix"] == "zz":
+                raise DeployError("input_boolean.zz_flag is missing")
+            return await real(client, deploy_plan, **kwargs)
+
+        with mock.patch.object(deploy, "verify", verify):
+            body = self.assert_error(self.apply(preview), 502, "deploy_failed")
+        self.assertEqual(body["deployed"], ["lm", "al"])
+        self.assertTrue(body["modules"]["al"]["deployed"])
+        self.assertIn("Deployed and verified: lm_, al_. The zz_ lane's deploy", body["detail"])
+        self.assertIn("al_maint_living_room", self.ha.automations)
+
+    def test_a_lane_that_does_not_verify_stops_the_deploy(self):
+        self.apply(self.preview())
+        # This deploy re-creates a bridge too, so it syncs a soft switch first.
+        del self.ha.automations["lm_bridge_chandelier_3"]
+        preview = self.preview()
+        self.ha.rejected.add("al_maint_living_room")
+        body = self.assert_error(self.apply(preview), 502, "deploy_failed")
+        self.assertEqual(body["deployed"], ["lm"])
+        self.assertEqual((body["result"]["prefix"], body["modules"]), ("lm", {}))
+        # The fixture's chandelier_3 is unavailable: its soft switch, left as it was, is
+        # still reported, as a deploy that went through would report it.
+        self.assertEqual(
+            body["result"]["unsynced"], {"input_boolean.lm_soft_chandelier_3": "unavailable"}
+        )
+        self.assertIn("al_ lane's deploy stopped or did not verify", body["detail"])
+        self.assertEqual(
+            body["problems"],
+            ["automation al_maint_living_room did not load: HA rejected it (see HA's log)"],
+        )
+        self.assertEqual(self.log()[-1], "The al_ lane's deploy stopped or did not verify.")
 
     def test_a_lane_ha_cant_be_read_for_never_costs_the_switching_preview(self):
         # The switching plane deployed, so the al_ lane gets as far as reading its helpers.

@@ -59,8 +59,8 @@ Every request first passes the Host allowlist (`LM_ALLOWED_HOSTS`, plus `localho
   what it would do has changed since: `/api/sync` (save the snapshot re-read from HA's
   Areas), `/api/deploy` (the switching plane's `lm_` lane), `/api/areas` (write the
   snapshot back to HA's Areas). So nothing is ever applied that wasn't shown first. With
-  the cutover switch on, the deploy preview also shows each module lane's plan, read-only:
-  only the `lm_` lane is applied from here until cutover.
+  the cutover switch on, the deploy also previews each module lane's plan and applies it
+  after `lm_`, under the one fingerprint (P6a); off, it is the `lm_` lane alone.
 
 Hard rules:
 
@@ -140,14 +140,15 @@ log = logging.getLogger(__name__)
 # Off: neither the `al` namespace nor the adaptive bridge-brightness provider is
 # registered, so `core.generate.namespaces()` is ["lm"], every bridge takes the plain path,
 # and the generated `lm_` lane is byte-identical to P5.0's (tests/golden/lm_only.yaml).
-# On: `al` is generated, reconciled as its own lane by `core.deploy`, and previewed
-# (read-only) beside the switching deploy, adaptive bulbs' bridges read the almanac, and the
-# lifespan starts the adaptive runtime (crossovers, the nightly analysis, the almanac's
-# publish; P5.2a). Off, no runtime is made at all.
+# On: `al` is generated, reconciled as its own lane by `core.deploy`, previewed beside the
+# switching deploy and applied after it (P6a), adaptive bulbs' bridges read the almanac, and
+# the lifespan starts the adaptive runtime (crossovers, the nightly analysis, the almanac's
+# publish; P5.2a). Off, no runtime is made at all, and the deploy is the `lm_` lane alone.
 #
 # A constant, not an environment variable: turning it on is a reviewed change made with the
 # cutover, never a deployment setting that could be set early. Tests turn it on in a scope
-# of their own (`tests.fakes.adaptive_wired`). Do not turn it on here before P6.
+# of their own (`tests.fakes.adaptive_wired`). Do not turn it on here before P6b, the
+# cutover itself, which removes the old system's `al_` artefacts first.
 ADAPTIVE_ENABLED = False
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -178,10 +179,11 @@ COEXISTENCE_WARNING = (
     "save it anyway."
 )
 
+# Shown only with the cutover switch on, when the deploy applies the module lanes too (P6a).
 MODULE_LANES_NOTE = (
-    "Light Map's own module lanes, shown read-only: this deploy applies the lm_ lane only. "
-    "The al_ lane holds the names the live ha-adaptive-light uses, so it is applied at "
-    "cutover (P6), once the old system is gone."
+    "Light Map's own module lanes: this deploy applies each lane shown ready here after the "
+    "lm_ lane, in this order, each checked again against this preview and verified before "
+    "the next. A lane refused here is not applied: preview again once it is ready."
 )
 
 COEXISTENCE_NOTE = (
@@ -1050,6 +1052,12 @@ def _hhmm(moment: datetime | None) -> str | None:
     return moment.strftime("%H:%M") if moment is not None else None
 
 
+def _second_pass(moment: datetime) -> bool:
+    """Whether a time is the second of the two its wall clock reads in an hour the clocks
+    repeat (a fall-back)."""
+    return bool(moment.fold) and moment.utcoffset() != moment.replace(fold=0).utcoffset()
+
+
 def _profile(doc: Mapping[str, Any], profile_id: str) -> Mapping[str, Any]:
     profile = next((p for p in doc.get("schedule_profiles", []) if p["id"] == profile_id), None)
     if profile is None:
@@ -1091,9 +1099,10 @@ def schedule_day(
     """One profile's day at a place, for the Now tab and the schedule editor: today's six
     boundaries (`scheduler.compute_day`) in chronological order, each with its start and end
     (`HH:MM`, in `tz`, HA's time zone), its trigger and effective priority, and whether it
-    runs, was moved later (a clamp) or is skipped today, and why; and the section in force at
-    `now` (`scheduler.active_section_at`), which before the day's first boundary is
-    yesterday's last (`carried_over`). Pure: the scheduler's computation, shaped for JSON."""
+    runs, was moved (a clamp, or a start the clocks skip today) or is skipped today, and
+    why; and the section in force at `now` (`scheduler.active_section_at`), which before the
+    day's first boundary is yesterday's last (`carried_over`). Pure: the scheduler's
+    computation, shaped for JSON."""
     local = now.astimezone(tz)
     today = local.date()
     boundaries = scheduler.compute_day(profile, provider, today, tz)
@@ -1115,12 +1124,25 @@ def schedule_day(
     for boundary in boundaries:
         spec = specs.get(boundary.section, {})
         clamped = boundary.ran and boundary.reason is not None
+        # A start the clocks skipped today (a spring-forward gap) is shown as moved, with
+        # why: the time shown is when it really starts, not the one its trigger names.
+        shifted = boundary.shifted if boundary.ran else None
         if clamped:
             # The scheduler's reason gives the gap as a timedelta ("0:30:00"); say it in
             # the profile's own terms.
             reason = f"moved later, to start {minimum} min after {previous}"
+            if shifted:
+                reason = f"{shifted}; {reason}"
+        elif boundary.ran:
+            reason = shifted
         else:
-            reason = boundary.reason
+            # A skipped section keeps the time it would have started, which for one the
+            # clocks skip is the gap's end: say so, beside why it is skipped.
+            reason = "; ".join(r for r in (boundary.reason, boundary.shifted) if r) or None
+        if reason and boundary.planned is not None and _second_pass(boundary.planned):
+            # Where the clocks go back, a time in the repeated hour reads as earlier than one
+            # before it: say which of the two it is.
+            reason += f" (the second {_hhmm(boundary.planned)}: the clocks go back today)"
         entries.append(
             {
                 "section": boundary.section,
@@ -1130,7 +1152,9 @@ def schedule_day(
                 # A collapsed section keeps the time it would have started, when it had one.
                 "start": _hhmm(boundary.planned),
                 "ends": _hhmm(boundary.ends) if boundary.ran else None,
-                "outcome": "collapsed" if not boundary.ran else "clamped" if clamped else "ran",
+                "outcome": (
+                    "collapsed" if not boundary.ran else "clamped" if clamped or shifted else "ran"
+                ),
                 "reason": reason,
                 "current": bool(
                     current
@@ -1941,7 +1965,7 @@ async def delete_group(
         )
 
 
-# -- Deploy: the switching plane -------------------------------------------------------
+# -- Deploy: the switching plane, then the module lanes --------------------------------
 
 
 def _plan_digest(deploy_plan: Mapping[str, Any]) -> str:
@@ -1972,35 +1996,83 @@ def _going_live(doc: Mapping[str, Any], deploy_plan: Mapping[str, Any]) -> list[
     return found
 
 
-async def _module_lanes(ha: HAClient, doc: Mapping[str, Any]) -> dict[str, Any]:
-    """Each wired module lane's plan (or why it would be refused), read-only: nothing
-    here is applied, and there is no fingerprint to apply it with. Empty while the cutover
-    switch is off, since no module lane is registered. A lane HA can't be read for is
-    shown as such: it must never cost the switching deploy its preview (and so its
+# A module lane as planned: its plan, or None and why it would be refused.
+Lane = tuple[dict[str, Any] | None, list[str]]
+
+
+async def _prepare_lane(ha: HAClient, doc: Mapping[str, Any], prefix: str) -> Lane:
+    """One module lane's plan, or why it would be refused. A lane HA can't be read for is
+    refused, never raised: it must never cost the switching deploy its preview (and so its
     fingerprint)."""
-    lanes: dict[str, Any] = {}
-    for prefix in generate_mod.namespaces():
-        if prefix == switching.PREFIX:
-            continue
-        try:
-            lane_plan = await deploy.prepare(ha, doc, prefix)
-        except (ConfigError, DeployError) as exc:
-            lanes[prefix] = {"ready": False, "refused": exc.problems}
-        except HAError as exc:
-            lanes[prefix] = {"ready": False, "refused": [f"Home Assistant: {exc}"]}
-        else:
-            lanes[prefix] = {"ready": True, "refused": [], "plan": deploy.summarise(lane_plan)}
-    return lanes
+    try:
+        return await deploy.prepare(ha, doc, prefix), []
+    except (ConfigError, DeployError) as exc:
+        return None, exc.problems
+    except HAError as exc:
+        return None, [f"Home Assistant: {exc}"]
+
+
+async def _module_lanes(ha: HAClient, doc: Mapping[str, Any]) -> dict[str, Lane]:
+    """Each wired module lane's plan, or why it would be refused, in the order a deploy
+    applies them (`core.generate.namespaces()`: after `lm_`, whose soft switches they
+    command). Empty while the cutover switch is off, since no module lane is registered:
+    nothing is read then."""
+    return {
+        prefix: await _prepare_lane(ha, doc, prefix)
+        for prefix in generate_mod.namespaces()
+        if prefix != switching.PREFIX
+    }
+
+
+def _lane_view(lane: Lane) -> dict[str, Any]:
+    lane_plan, refused = lane
+    if lane_plan is None:
+        return {"ready": False, "refused": refused}
+    return {"ready": True, "refused": [], "plan": deploy.summarise(lane_plan)}
+
+
+def _lane_digest(lane: Lane) -> str:
+    lane_plan, refused = lane
+    return _plan_digest(lane_plan) if lane_plan is not None else fingerprint({"refused": refused})
+
+
+def _deploy_digest(deploy_plan: Mapping[str, Any], lanes: Mapping[str, Lane]) -> str:
+    """The fingerprint a deploy is applied with: a digest of every lane the preview
+    showed. With no module lane wired (the cutover switch off) it is the `lm_` plan's own
+    digest, exactly as before P6a. With module lanes, one digest over the `lm_` plan and
+    each module lane's plan, or why it would be refused, in the order they are applied.
+    One for the whole deploy rather than one per lane, because the dialog shows the deploy
+    whole and is approved whole: a lane refused in the preview is part of what was shown,
+    and applying it the moment it became ready would apply something nobody saw."""
+    if not lanes:
+        return _plan_digest(deploy_plan)
+    return fingerprint(
+        {
+            "lanes": [
+                [switching.PREFIX, _plan_digest(deploy_plan)],
+                *([prefix, _lane_digest(lane)] for prefix, lane in lanes.items()),
+            ]
+        }
+    )
+
+
+def _counts(result: Mapping[str, Any]) -> str:
+    return ", ".join(
+        f"{sum(len(ids) for ids in result[label].values())} {label}"
+        for label in ("created", "updated", "removed")
+    )
 
 
 @router.get("/deploy/preview")
 async def deploy_preview(request: Request) -> dict[str, Any]:
-    """Everything a switching-plane deploy would do, writing nothing: the plan for the
+    """Everything a deploy would do, writing nothing: the plan for the switching plane's
     `lm_` lane (or why it would be refused), the hard switches it puts live, the crossover
     report (what else in HA drives these bulbs; names already taken), and the coexistence
     note. `ready` and `fingerprint` say whether, and how, to apply it. With the cutover
-    switch on, `modules` also lists each module lane's plan, read-only (P5.1): the key is
-    absent while it is off."""
+    switch on, `modules` also lists each module lane's plan, or why it would be refused
+    (P5.1), which the deploy applies after `lm_` (P6a), and the fingerprint covers them
+    (`_deploy_digest`): the key is absent while it is off, and the fingerprint is the `lm_`
+    plan's alone."""
     ha = _ha(request)
     doc = _store(request).read()
     preview: dict[str, Any] = {
@@ -2009,30 +2081,42 @@ async def deploy_preview(request: Request) -> dict[str, Any]:
     try:
         deploy_plan = await deploy.prepare(ha, doc, switching.PREFIX)
     except (ConfigError, DeployError) as exc:
-        preview |= {"ready": False, "refused": exc.problems}
+        deploy_plan, refused = None, exc.problems
+    # Planned before the fingerprint, which covers them. Off, there are none and this
+    # reads nothing, so the preview reads HA exactly as it did before P6a.
+    lanes = await _module_lanes(ha, doc)
+    if deploy_plan is None:
+        preview |= {"ready": False, "refused": refused}
     else:
         preview |= {
             "ready": True,
             "refused": [],
             "plan": deploy.summarise(deploy_plan),
             "going_live": _going_live(doc, deploy_plan),
-            "fingerprint": _plan_digest(deploy_plan),
+            "fingerprint": _deploy_digest(deploy_plan, lanes),
         }
     preview["crossover"] = await deploy.crossover(ha, doc)
-    lanes = await _module_lanes(ha, doc)
     if lanes:
-        preview["modules"] = {"note": MODULE_LANES_NOTE, "lanes": lanes}
+        preview["modules"] = {
+            "note": MODULE_LANES_NOTE,
+            "lanes": {prefix: _lane_view(lane) for prefix, lane in lanes.items()},
+        }
     return preview
 
 
 @router.post("/deploy")
 async def deploy_apply(request: Request, body: Confirm) -> dict[str, Any]:
-    """Run the switching-plane deploy exactly as previewed, then verify it."""
+    """Run the deploy exactly as previewed, lane by lane, verifying each: the switching
+    plane's `lm_` lane, then, with the cutover switch on, each module lane the preview
+    showed ready (`_apply_module_lanes`, P6a). Every lane is planned again before anything
+    is written, and the whole is refused (409 `preview_stale`) unless it digests as the
+    preview did."""
     ha = _ha(request)
     async with _store(request).lock:
         doc = _store(request).read()
         deploy_plan = await deploy.prepare(ha, doc, switching.PREFIX)
-        if _plan_digest(deploy_plan) != body.fingerprint:
+        lanes = await _module_lanes(ha, doc)
+        if _deploy_digest(deploy_plan, lanes) != body.fingerprint:
             raise _stale("What a deploy would do has changed since the preview")
         try:
             report = await deploy.apply(ha, deploy_plan)
@@ -2057,12 +2141,103 @@ async def deploy_apply(request: Request, body: Confirm) -> dict[str, Any]:
             ) from exc
         log.info("deployed the lm_ lane: %d steps", len(deploy_plan["steps"]))
         result = deploy.summarise(deploy_plan, report)
-        counts = ", ".join(
-            f"{sum(len(ids) for ids in result[label].values())} {label}"
-            for label in ("created", "updated", "removed")
+        _record(
+            request, "deploy", f"Deployed the switching plane: {_counts(result)}.", detail=result
         )
-        _record(request, "deploy", f"Deployed the switching plane: {counts}.", detail=result)
-        return {"deployed": True, "result": result}
+        answer: dict[str, Any] = {"deployed": True, "result": result}
+        if lanes:
+            answer["modules"] = await _apply_module_lanes(request, ha, doc, lanes, result)
+        return answer
+
+
+async def _apply_module_lanes(
+    request: Request,
+    ha: HAClient,
+    doc: Mapping[str, Any],
+    lanes: Mapping[str, Lane],
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Each module lane, in order, once the switching plane is written and verified (the
+    soft switches and bridges a module commands exist then): `{prefix: {deployed, result}
+    or {deployed: false, refused}}`.
+
+    A lane refused in the preview isn't applied: most often, the first deploy with the
+    switch on, `al_` addresses soft switches the `lm_` plan was about to create, and the
+    next preview shows its plan. A ready lane is planned again from what HA now holds and
+    applied only if that is still the plan the preview showed: `lm_` writes nothing a
+    module lane's plan reads, so a difference means HA moved on meanwhile. A stale lane
+    (409 `preview_stale`) or one that fails or doesn't verify (502 `deploy_failed`) stops
+    the deploy there. Its error says what stands: `deployed` names the lanes deployed and
+    verified before it, `result` is the `lm_` lane's summary (as a deploy that went through
+    would answer it: its soft switches left unsynced among it) and `modules` what each
+    module lane before it did."""
+    deployed = [switching.PREFIX]
+    done: dict[str, Any] = {}
+
+    def so_far() -> dict[str, Any]:
+        return {"deployed": deployed, "result": result, "modules": dict(done)}
+
+    for prefix, (previewed, refused) in lanes.items():
+        if previewed is None:
+            done[prefix] = {"deployed": False, "refused": refused}
+            continue
+        lane_plan, problems = await _prepare_lane(ha, doc, prefix)
+        if lane_plan is None or _plan_digest(lane_plan) != _plan_digest(previewed):
+            # Planned again once lm_ is written, it would now be refused (HA can't be
+            # read, say: not a change to report as one), or it would do something else.
+            why = (
+                "would now be refused"
+                if lane_plan is None
+                else "would do something other than the preview showed"
+            )
+            _record(
+                request,
+                "deploy",
+                f"The {prefix}_ lane {why}, so it was not deployed.",
+                detail={"deployed": deployed, "problems": problems},
+                level="warning",
+            )
+            raise ApiError(
+                409,
+                "preview_stale",
+                f"Deployed and verified: {', '.join(f'{p}_' for p in deployed)}. Planned "
+                f"again, the {prefix}_ lane {why}, so it was not applied: review the preview "
+                "again.",
+                problems=problems,
+                **so_far(),
+            )
+        try:
+            report = await deploy.apply(ha, lane_plan)
+            await deploy.verify(
+                ha, lane_plan, synced=report["synced"], delay=request.app.state.verify_delay
+            )
+        except (DeployError, HAError) as exc:
+            problems = exc.problems if isinstance(exc, DeployError) else [str(exc)]
+            _record(
+                request,
+                "deploy",
+                f"The {prefix}_ lane's deploy stopped or did not verify.",
+                detail={"problems": problems, "deployed": deployed},
+                level="error",
+            )
+            raise ApiError(
+                502,
+                "deploy_failed",
+                f"Deployed and verified: {', '.join(f'{p}_' for p in deployed)}. The "
+                f"{prefix}_ lane's deploy stopped or did not verify, so Home Assistant may hold "
+                "part of it. Preview and deploy again: the next deploy reconciles from "
+                "whatever HA holds.",
+                problems=problems,
+                **so_far(),
+            ) from exc
+        log.info("deployed the %s_ lane: %d steps", prefix, len(lane_plan["steps"]))
+        result = deploy.summarise(lane_plan, report)
+        _record(
+            request, "deploy", f"Deployed the {prefix}_ lane: {_counts(result)}.", detail=result
+        )
+        done[prefix] = {"deployed": True, "result": result}
+        deployed = [*deployed, prefix]
+    return done
 
 
 # -- Deploy: Area writes ---------------------------------------------------------------

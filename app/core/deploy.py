@@ -38,7 +38,10 @@ moved: Light Map has set it aside, so whatever Area HA gives it stands.
 `crossover` is the read-only report a deploy preview shows beside the plan: what else in
 HA already drives the bulbs Light Map is about to bridge (foreign automations, scripts,
 scenes, and groups, the live ha-adaptive-light's `al_` automations among them), and the
-names Light Map would generate that something else in HA already holds.
+names Light Map would generate that something else in HA already holds. Light Map's own are
+the `lm_` lane's and, once a module lane is wired in (P6a, the cutover switch), the
+automations that lane generates; an `al_` automation it doesn't generate is still the old
+system's.
 
 Hard rules:
 
@@ -52,12 +55,13 @@ Hard rules:
   Area write compares it with the registry entry at the bulb's entity_id (so it never moves
   a different light), and nothing addresses it. A hard switch's device source is read only
   to check the device still exists.
-- During the parallel build (P0-P5) Light Map runs beside the live ha-adaptive-light, so
+- During the parallel build (P0-P6a) Light Map runs beside the live ha-adaptive-light, so
   only new artefacts are deployed and the new bridges stay unbound (no hard switches; bridge
-  not yet authoritative) until cutover (P6). Binding a hard switch in the config is the
+  not yet authoritative) until cutover (P6b). Binding a hard switch in the config is the
   step that makes a bridge authoritative; deploying alone never drives a bulb. The `al_`
   lane holds the live system's own names, so it isn't even registered until cutover (the
-  composition root's cutover switch); nothing here deploys a lane that isn't registered.
+  composition root's cutover switch); nothing here deploys, or counts as Light Map's, a
+  lane that isn't registered.
 """
 
 import asyncio
@@ -618,27 +622,45 @@ _DRIVERS = ("automation", "script", "scene")
 async def crossover(ha: HAClient, config: Mapping[str, Any]) -> dict[str, Any]:
     """What else in HA touches the switching plane: read-only, for a deploy preview.
 
-    - `drivers`: automations, scripts, and scenes outside the `lm_` lane that name a
-      mapped bulb (`{entity_id, kind, name, id, adaptive_light, bulbs}`), found through
-      HA's search. `adaptive_light` marks the live ha-adaptive-light's own (`al_`)
-      automations. Until cutover these keep driving the bulbs beside Light Map. One that
-      targets a whole Area or device, rather than the bulb's entity_id, isn't found.
+    - `drivers`: automations, scripts, and scenes that name a mapped bulb and aren't Light
+      Map's own (`{entity_id, kind, name, id, adaptive_light, bulbs}`), found through HA's
+      search. Light Map's own are those in the `lm_` lane and, for each module lane wired
+      in (P6a), the automations it generates for the config, by id. `adaptive_light` marks
+      the ones under the old ha-adaptive-light's names (`al_`): every `al_` automation
+      while no module lane is wired (the cutover switch off), and once the adaptive lane
+      is, those Light Map doesn't generate (an old-system leftover). Until cutover these
+      keep driving the bulbs beside Light Map. One that targets a whole Area or device,
+      rather than the bulb's entity_id, isn't found.
     - `groups`: HA groups (light groups, old-style groups) with mapped bulbs among their
       members (`{entity_id, name, bulbs}`). Commanding a group drives its members too.
-    - `collisions`: names Light Map would generate that something else in HA holds: a
-      soft switch's entity id taken by a helper it can't manage (the deploy refuses), or
-      an automation entity id taken by another automation (ours would load as `..._2`).
+    - `collisions`: names Light Map would generate, in any wired lane, that something else
+      in HA holds: a helper's entity id taken by a helper it can't manage (the deploy
+      refuses), or an automation entity id taken by another automation (ours would load as
+      `..._2`).
     - `errors`: what couldn't be checked (an HA without `search/related`, say), so an
       empty report is never mistaken for a clean one.
     """
     bulbs = switching.references(config)["bulbs"]
     states = await ha.get_states()
     by_entity = {s.get("entity_id"): s for s in states}
+    # Every wired lane's package, the switching plane's first. With the cutover switch off
+    # that is the switching plane alone, and every `al_` automation is the old system's.
+    lanes = {prefix: generate_mod.generate(config, prefix) for prefix in generate_mod.namespaces()}
+    own = {
+        automation["id"]
+        for prefix, desired in lanes.items()
+        if prefix != switching.PREFIX
+        for automation in desired.get(AUTOMATION, [])
+    }
+
+    def is_ours(automation_id: str) -> bool:
+        return in_lane(automation_id, switching.PREFIX) or automation_id in own
+
     ours = {
         str(s.get("entity_id"))
         for s in states
         if str(s.get("entity_id", "")).startswith("automation.")
-        and in_lane(str((s.get("attributes") or {}).get("id", "")), switching.PREFIX)
+        and is_ours(str((s.get("attributes") or {}).get("id", "")))
     }
 
     def name(entity_id: str) -> str:
@@ -682,27 +704,42 @@ async def crossover(ha: HAClient, config: Mapping[str, Any]) -> dict[str, Any]:
             for bulb in set(members) & set(bulbs):
                 group_bulbs.setdefault(str(state.get("entity_id")), set()).add(bulb)
 
-    desired = generate_mod.generate(config, switching.PREFIX)
-    domains = lane_domains(desired)
-    helpers = {domain: {i.get("id") for i in await ha.list_helpers(domain)} for domain in domains}
     collisions = []
-    for domain in domains:
-        for item_id in desired[domain]:
-            if f"{domain}.{item_id}" in by_entity and item_id not in helpers[domain]:
+    helpers: dict[str, set[Any]] = {}
+    for prefix, desired in lanes.items():
+        domains = []
+        for domain in lane_domains(desired):
+            if domain not in helpers:
+                try:
+                    helpers[domain] = {i.get("id") for i in await ha.list_helpers(domain)}
+                except HAError as exc:
+                    if prefix == switching.PREFIX:
+                        raise
+                    # A module lane's helpers HA can't list must never cost the switching
+                    # plane its report: those names go unchecked, and the report says so.
+                    errors.append(
+                        f"could not read HA's {domain} helpers to check the {prefix}_ lane's "
+                        f"names: {exc}"
+                    )
+                    continue
+            domains.append(domain)
+        for domain in domains:
+            for item_id in desired[domain]:
+                if f"{domain}.{item_id}" in by_entity and item_id not in helpers[domain]:
+                    collisions.append(
+                        f"{domain}.{item_id} is already in HA but isn't one of Light Map's "
+                        "UI-managed helpers (a YAML helper, or another helper's entity renamed "
+                        "to it?): the deploy is refused until the id is freed"
+                    )
+        for automation in desired.get(AUTOMATION, []):
+            entity_id = f"automation.{automation['id']}"
+            held_by = ((by_entity.get(entity_id) or {}).get("attributes") or {}).get("id")
+            if entity_id in by_entity and held_by != automation["id"]:
+                other = f"automation id {held_by}" if held_by else "an automation with no id"
                 collisions.append(
-                    f"{domain}.{item_id} is already in HA but isn't one of Light Map's "
-                    "UI-managed helpers (a YAML helper, or another helper's entity renamed "
-                    "to it?): the deploy is refused until the id is freed"
+                    f"{entity_id} is already taken by {other} ({name(entity_id)}): Light Map's "
+                    f"{automation['id']} would load as {entity_id}_2"
                 )
-    for automation in desired.get(AUTOMATION, []):
-        entity_id = f"automation.{automation['id']}"
-        held_by = ((by_entity.get(entity_id) or {}).get("attributes") or {}).get("id")
-        if entity_id in by_entity and held_by != automation["id"]:
-            other = f"automation id {held_by}" if held_by else "an automation with no id"
-            collisions.append(
-                f"{entity_id} is already taken by {other} ({name(entity_id)}): Light Map's "
-                f"{automation['id']} would load as {entity_id}_2"
-            )
     return {
         "drivers": sorted(
             drivers.values(), key=lambda d: (not d["adaptive_light"], d["entity_id"])

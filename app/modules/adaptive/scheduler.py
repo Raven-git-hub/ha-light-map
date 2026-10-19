@@ -23,6 +23,12 @@ The scheduler is level-triggered: the current section is a function of the time
 (`active_section_at`, `section_at`), not of having seen a crossover edge, so a start after
 downtime, a dropped connection and a clock change all take the path normal running takes.
 
+A day is worked out in real time, not by the wall clock (P6a): a clock time the clocks skip
+that day (a spring-forward gap) starts when they go forward past it, at the gap's end; a sun
+offset is elapsed time, as HA's sun trigger takes it; and order, the minimum section, a
+clamp's move and the day's bounds are all measured between instants. So a section reported
+as run is in force from its start to its end, as `active_section_at` picks it.
+
 Sun times come from a provider. `AstralSunProvider` computes them locally from HA's own
 location (latitude, longitude, elevation and time zone, from HA's `/api/config`), so the
 container and HA agree on when sunset is; HA's `sun.sun` can't be used directly, since it
@@ -30,8 +36,8 @@ knows only the next event, not when today's sunrise was, which catching up needs
 `FixedSunProvider` supplies them explicitly, for tests.
 
 Ported intact (the predecessor's `compute_day`, `resolve_trigger`, `default_priority`,
-`_find_conflict` and `active_section_at` keep their proven API and behaviour), with two
-departures, each a day the predecessor got wrong (P5.2a's review):
+`_find_conflict` and `active_section_at` keep their proven API and behaviour), with three
+departures, each a day the predecessor got wrong (P5.2a's review, and P6a's):
 
 - A clamp never moves a section past the day's end: one that can't fit collides as under
   `collapse` instead. The predecessor moved it anyway, so with a long minimum a section
@@ -40,6 +46,11 @@ departures, each a day the predecessor got wrong (P5.2a's review):
 - `active_section_at` compares times as instants, not wall-clock readings: where the clocks
   go back across a boundary (Beirut at midnight), the repeated hour read as before the
   boundary again, and a runtime polling it would fire the previous section a second time.
+- A spring-forward day is worked out in real time (above). The predecessor took a clock
+  time the clocks skip (02:30, when they jump from 02:00 to 03:00) as if it happened and
+  reported its section as run, while `active_section_at`, comparing instants, read it as
+  03:30 and never chose it once a section the wall clock put after it (03:00) was in force:
+  run on paper, never in force.
 
 New here: `apply_collision_policy` is split out of `compute_day` (it works on copies, so a
 caller's boundaries are never changed), and `compute_boundaries` and `section_at` take HA's
@@ -53,9 +64,9 @@ Hard rules:
 """
 
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from datetime import tzinfo as TimeZone
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
@@ -82,6 +93,70 @@ LOOKBACK_DAYS = 2
 class SunUnavailable(Exception):
     """No sunrise or sunset occurs on this date at this latitude (polar day or night), or
     no section has started in the days looked back over."""
+
+
+# -- Real time -------------------------------------------------------------------------
+#
+# Python compares and subtracts two times in the same zone by their wall clocks, ignoring
+# the offset and `fold`, and takes a wall time the clocks skip (02:30 on a day they jump
+# from 02:00 to 03:00) as if it happened, reading it as 03:30. Working the day out that way
+# (the predecessor's) reported a section starting in the skipped hour as run while the
+# runtime, which picks the section in force by instant, never chose it: a section the wall
+# clock put after it, at 03:00, came into force first and stayed. So every time is made one
+# that happens (`_existing`), and every order, length and move is between instants
+# (`_instant`, `_after`). A naive time (a test's, with no zone) is taken as it is.
+
+
+def _instant(moment: datetime) -> datetime:
+    """The instant a time names (in UTC), for ordering and measuring; a naive one as it
+    is."""
+    return moment.astimezone(timezone.utc) if moment.tzinfo is not None else moment
+
+
+def _after(moment: datetime, elapsed: timedelta) -> datetime:
+    """`elapsed` real time after `moment` (before it, when negative), in its zone: across a
+    clock change that isn't what adding to its wall clock gives."""
+    if moment.tzinfo is None:
+        return moment + elapsed
+    return (moment.astimezone(timezone.utc) + elapsed).astimezone(moment.tzinfo)
+
+
+def _existing(moment: datetime) -> datetime:
+    """`moment` if its wall time happens that day (once, or in an hour the clocks repeat,
+    as its `fold` says); else, inside a spring-forward gap, the gap's end: the first moment
+    the clocks read past it, so 02:30 on a day they jump from 02:00 to 03:00 is 03:00.
+
+    That keeps a moved section in its place in the day's order, where Python's own reading
+    of a skipped time (and Java's, and iCalendar's) shifts it by the gap's length, to 03:30,
+    which can jump it past a section the profile puts after it."""
+    zone = moment.tzinfo
+    if zone is None or moment.utcoffset() == moment.replace(fold=1 - moment.fold).utcoffset():
+        return moment  # no clock change near it: the common case, answered cheaply
+    wall = moment.replace(tzinfo=None)
+    if moment.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None) == wall:
+        return moment
+    # Read with the offset from after the change (fold=1) a skipped time falls before the
+    # change; with the one from before it (fold=0), after it. The change is the first whole
+    # second between them whose wall clock reads past `wall` (zone changes fall on whole
+    # seconds).
+    before = int(moment.replace(fold=1).timestamp())
+    after = int(moment.replace(fold=0).timestamp())
+    while after - before > 1:
+        middle = (before + after) // 2
+        if datetime.fromtimestamp(middle, zone).replace(tzinfo=None) >= wall:
+            after = middle
+        else:
+            before = middle
+    return datetime.fromtimestamp(after, zone)
+
+
+def _day_span(on: date, tzinfo: TimeZone | None) -> tuple[datetime, datetime]:
+    """The first and last minute of `on` that happen: 00:00 and 23:59, except where the
+    clocks skip midnight (Beirut, Santiago: the day starts at the gap's end) or the day's
+    end (Nuuk, whose clocks go from 23:00 straight to 00:00: it ends at 22:59)."""
+    first = _existing(datetime.combine(on, time(0, 0), tzinfo=tzinfo))
+    tomorrow = _existing(datetime.combine(on + timedelta(days=1), time(0, 0), tzinfo=tzinfo))
+    return first, _after(tomorrow, -timedelta(minutes=1))
 
 
 # -- Sun providers ---------------------------------------------------------------------
@@ -158,30 +233,52 @@ def resolve_trigger(
     on: date,
     tzinfo: TimeZone | None = None,
 ) -> datetime:
-    """When a trigger fires on `on`. Raises SunUnavailable when it needs a sun event that
-    doesn't happen that day (for a composite: when none of its components resolves)."""
+    """When a trigger fires on `on`: a moment that happens (a clock time the clocks skip
+    fires at the gap's end; a sun offset is elapsed time). Raises SunUnavailable when it
+    needs a sun event that doesn't happen that day (for a composite: when none of its
+    components resolves)."""
+    return _resolve(trigger, sun, on, tzinfo)[0]
+
+
+def _resolve(
+    trigger: Mapping[str, Any],
+    sun: Mapping[str, datetime],
+    on: date,
+    tzinfo: TimeZone | None,
+) -> tuple[datetime, str | None]:
+    """`resolve_trigger`, with the clock time (`HH:MM`) the clocks skipped that day when
+    the moment it gives is that time's gap end, else None."""
     kind = trigger["type"]
 
     if kind == "clock":
         hh, mm = (int(x) for x in trigger["time"].split(":"))
-        return datetime.combine(on, time(hh, mm), tzinfo=tzinfo)
+        wall = datetime.combine(on, time(hh, mm), tzinfo=tzinfo)
+        moment = _existing(wall)
+        return moment, (trigger["time"] if moment != wall else None)
 
     if kind == "sun":
         event = trigger["event"]
         if event not in sun:
             raise SunUnavailable(f"no {event} on {on}")
-        return sun[event] + timedelta(minutes=trigger.get("offset_minutes", 0))
+        # Elapsed time, as HA's own sun trigger takes it: "three hours after sunrise" is
+        # three real hours, even across a clock change, so the result always happens.
+        offset = timedelta(minutes=trigger.get("offset_minutes", 0))
+        return _after(_existing(sun[event]), offset), None
 
     if kind in ("earliest", "latest"):
         resolved = []
         for sub in trigger["of"]:
             try:
-                resolved.append(resolve_trigger(sub, sun, on, tzinfo))
+                resolved.append(_resolve(sub, sun, on, tzinfo))
             except SunUnavailable:
                 continue
         if not resolved:
             raise SunUnavailable(f"no component of {kind} resolved on {on}")
-        return min(resolved) if kind == "earliest" else max(resolved)
+        # On a tie, a component that starts when it says beats one moved there from a time
+        # the clocks skip: latest(02:30, 03:00) on a day 02:30 doesn't happen is simply 03:00.
+        if kind == "earliest":
+            return min(resolved, key=lambda found: (_instant(found[0]), found[1] is not None))
+        return max(resolved, key=lambda found: (_instant(found[0]), found[1] is None))
 
     raise ValueError(f"unknown trigger type: {kind}")
 
@@ -204,7 +301,8 @@ class Boundary:
     whether it ran or collapsed (and why). `ends` is when the next kept section starts
     (None for the day's last). `name` is the profile section's `name`, else its id:
     display names are deferred (docs/DESIGN.md, "Section display names"), so nothing shows
-    it yet."""
+    it yet. `shifted` says why it starts at another time than its clock trigger names: the
+    clocks skipped that time that day (P6a)."""
 
     section: str
     name: str
@@ -213,6 +311,7 @@ class Boundary:
     outcome: str = "ran"  # ran | collapsed
     reason: str | None = None
     ends: datetime | None = None
+    shifted: str | None = None
 
     @property
     def ran(self) -> bool:
@@ -223,31 +322,50 @@ def compute_day(
     schedule: Mapping[str, Any], provider: SunProvider, on: date, tzinfo: TimeZone | None = None
 ) -> list[Boundary]:
     """Return all six sections for `on`, chronologically ordered, each marked as having run
-    or collapsed with a stated reason."""
+    or collapsed with a stated reason. Every start is a moment that happens, within the
+    day, and the order is the order they happen in."""
     sun = provider.times(on)
+    first, last = _day_span(on, tzinfo)
+    # A day the clocks skip whole (Apia's 30 December 2011, crossing the date line) has no
+    # moment for any section: clamped into it, each would start on the day before.
+    missing = _instant(first) > _instant(last)
     candidates: list[Boundary] = []
     for section in schedule["sections"]:
         trigger = section["trigger"]
         priority = section.get("priority", default_priority(trigger))
         name = section.get("name", section["id"])
+        if missing:
+            reason = f"{on} doesn't happen here: the clocks skip the whole day"
+            candidates.append(
+                Boundary(section["id"], name, None, priority, outcome="collapsed", reason=reason)
+            )
+            continue
         try:
-            planned = resolve_trigger(trigger, sun, on, tzinfo)
+            planned, skipped = _resolve(trigger, sun, on, tzinfo)
         except SunUnavailable as exc:
             candidates.append(
                 Boundary(section["id"], name, None, priority, outcome="collapsed", reason=str(exc))
             )
             continue
-        # A sun offset can push a boundary outside the day; clamp rather than let a section
-        # leak into yesterday or tomorrow.
-        lo = datetime.combine(on, time(0, 0), tzinfo=tzinfo)
-        hi = datetime.combine(on, time(23, 59), tzinfo=tzinfo)
-        planned = min(max(planned, lo), hi)
-        candidates.append(Boundary(section["id"], name, planned, priority))
+        # A sun offset can push a boundary outside the day, and so can a clock time the
+        # clocks skip at its very end (Nuuk's 23:00-00:00): clamp rather than let a section
+        # leak into yesterday or tomorrow, where it would never be in force.
+        if _instant(planned) < _instant(first):
+            planned = first
+        elif _instant(planned) > _instant(last):
+            planned = last
+        shifted = None
+        if skipped is not None:
+            shifted = (
+                f"{skipped} doesn't happen on {on} (the clocks go forward past it), so it "
+                f"starts at {planned:%H:%M}"
+            )
+        candidates.append(Boundary(section["id"], name, planned, priority, shifted=shifted))
     return apply_collision_policy(
         candidates,
         policy=schedule.get("collision_policy", DEFAULT_COLLISION_POLICY),
         min_section_minutes=schedule.get("min_section_minutes", DEFAULT_MIN_SECTION_MINUTES),
-        day_end=datetime.combine(on, time(23, 59), tzinfo=tzinfo),
+        day_end=last,
     )
 
 
@@ -262,12 +380,13 @@ def apply_collision_policy(
     passing a fixed one), and return them all, chronologically, each run or collapsed with
     its reason and each run one's `ends` set. Works on copies: `boundaries` is left as it
     is. A boundary already collapsed (no planned time) stays so, and sorts at `day_end`
-    (or last, without one)."""
+    (or last, without one). Times are ordered, measured and moved as instants, so a
+    section's length is how long it really lasts across a clock change."""
     min_gap = timedelta(minutes=min_section_minutes)
     candidates = [dataclasses.replace(b) for b in boundaries]
 
     resolvable = [c for c in candidates if c.planned is not None and c.ran]
-    resolvable.sort(key=lambda b: (b.planned, CANONICAL_ORDER[b.section]))
+    resolvable.sort(key=lambda b: (_instant(b.planned), CANONICAL_ORDER[b.section]))
 
     kept: list[Boundary] = []
     for cand in resolvable:
@@ -286,12 +405,12 @@ def apply_collision_policy(
             # still leaves it running after the night scene. Order inversions always
             # collapse.
             if policy == "clamp" and violation == "gap":
-                moved = blocker.planned + min_gap
+                moved = _after(blocker.planned, min_gap)
                 # Never past the day's end (a departure from the predecessor): moved there, a
                 # section could start after the next day's first boundary and never be in
                 # force, though reported as run. One that can't fit collides as under
                 # collapse, below.
-                if day_end is None or moved <= day_end:
+                if day_end is None or _instant(moved) <= _instant(day_end):
                     cand.planned = moved
                     cand.reason = f"clamped to {min_gap} after {blocker.section}"
                     break
@@ -317,8 +436,8 @@ def apply_collision_policy(
 
     def when(b: Boundary) -> tuple[int, Any]:
         if b.planned is not None:
-            return (0, b.planned)
-        return (0, day_end) if day_end is not None else (1, 0)
+            return (0, _instant(b.planned))
+        return (0, _instant(day_end)) if day_end is not None else (1, 0)
 
     return sorted(kept + collapsed, key=when)
 
@@ -337,7 +456,11 @@ def _find_conflict(
     inversions = [k for k in kept if CANONICAL_ORDER[k.section] > CANONICAL_ORDER[cand.section]]
     if inversions:
         return max(inversions, key=lambda k: CANONICAL_ORDER[k.section]), "order"
-    if kept and cand.planned is not None and (cand.planned - kept[-1].planned) < min_gap:
+    if (
+        kept
+        and cand.planned is not None
+        and _instant(cand.planned) - _instant(kept[-1].planned) < min_gap
+    ):
         return kept[-1], "gap"
     return None, None
 
@@ -356,21 +479,36 @@ def active_section_at(
     provider: SunProvider,
     when: datetime,
     tzinfo: TimeZone | None = None,
+    *,
+    days: Callable[[date], Sequence[Boundary]] | None = None,
 ) -> tuple[str, datetime]:
     """Which section should be in force at `when`, and when it started.
 
     Looks back a day (two, for a day whose sections all collapsed), because between midnight
     and the first boundary the section in force is the last one from yesterday. This is
     what makes the runtime level-triggered: a start after downtime catches up by asking it.
+
+    It looks at tomorrow too: where the clocks went back across midnight just after it
+    (St John's, Newfoundland, until 2010: 00:01 back to 23:01), the repeated hour reads as
+    yesterday's date, yet a section of today's that started at 00:00 is in force, and must
+    not be taken back. Anywhere else tomorrow has started nothing yet.
+
+    `days` gives a day's boundaries as `compute_day` would, for a caller that has them
+    already (`tools/sweep.py`, which asks this about every section of a year of days).
     """
-    for delta in range(LOOKBACK_DAYS + 1):
+    started: list[Boundary] = []
+    for delta in range(-1, LOOKBACK_DAYS + 1):
         day = when.date() - timedelta(days=delta)
-        ran = [b for b in compute_day(schedule, provider, day, tzinfo) if b.ran]
-        past = [b for b in ran if _not_after(b.planned, when)]
+        found = days(day) if days is not None else compute_day(schedule, provider, day, tzinfo)
+        past = [b for b in found if b.ran and _not_after(b.planned, when)]
         if past:
-            last = past[-1]
-            return last.section, last.planned
-    raise SunUnavailable("could not determine an active section")
+            started.append(past[-1])  # each day's are in the order they happen
+            if delta >= 0:
+                break  # an earlier day's all started before this one's
+    if not started:
+        raise SunUnavailable("could not determine an active section")
+    last = max(started, key=lambda b: _instant(b.planned))
+    return last.section, last.planned
 
 
 # -- The module's entry points ---------------------------------------------------------

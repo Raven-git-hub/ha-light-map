@@ -330,7 +330,9 @@
           "aria-label": `Today: ${label || "no section starts"}. It is ${schedule.now}.`,
         },
         segments.map((s) => {
-          const width = ((s.to - s.from) / 1440) * 100;
+          // Never negative: on a day the clocks go back, a section can start in the repeated
+          // hour at a time that reads earlier than the one before it (the table says so).
+          const width = (Math.max(0, s.to - s.from) / 1440) * 100;
           const slot = s.section ? SECTIONS.indexOf(s.section) + 1 : 0;
           return h(
             "div",

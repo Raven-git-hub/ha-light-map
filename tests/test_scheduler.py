@@ -109,7 +109,7 @@ class ComputeDayTest(unittest.TestCase):
         # Each ends where the next starts; the day's last runs on into tomorrow.
         self.assertEqual([b.ends for b in boundaries[:-1]], [b.planned for b in boundaries[1:]])
         self.assertIsNone(boundaries[-1].ends)
-        self.assertEqual(boundaries[0].name, "sunrise")  # display names arrive with P5.2b
+        self.assertEqual(boundaries[0].name, "sunrise")  # display names are deferred
 
     def test_an_order_inversion_collapses_the_lower_priority_under_either_policy(self):
         # A UK midsummer: sunset at 21:21 lands after night at 20:30.
@@ -316,6 +316,279 @@ class SectionAtTest(unittest.TestCase):
             self.assertEqual(scheduler.section_at(schedule(), when, LONDON), expected, hour)
 
 
+NEW_YORK = ZoneInfo("America/New_York")
+SPRING = date(2026, 3, 8)  # New York's clocks go from 02:00 EST to 03:00 EDT
+FALL = date(2026, 11, 1)  # and back from 02:00 EDT to 01:00 EST
+
+
+def clocks(**times):
+    """The standard profile with each named section starting at a clock time instead."""
+    profile = copy.deepcopy(schedule())
+    for section in profile["sections"]:
+        if section["id"] in times:
+            section["trigger"] = {"type": "clock", "time": times[section["id"]]}
+    return profile
+
+
+def in_force(profile, provider, day, zone):
+    """What the runtime has in force minute by minute across `day` (as `active_section_at`
+    answers it), as `[(section, local start HH:MM, local time it was first seen)]`: the
+    sections the Now tab's report must agree with."""
+    seen = []
+    moment = datetime.combine(day, time(0, 0), tzinfo=zone).astimezone(UTC)
+    end = datetime.combine(day + timedelta(days=1), time(0, 0), tzinfo=zone).astimezone(UTC)
+    while moment < end:
+        section, since = scheduler.active_section_at(
+            profile, provider, moment.astimezone(zone), zone
+        )
+        if not seen or seen[-1][:2] != (section, f"{since:%H:%M}"):
+            seen.append((section, f"{since:%H:%M}", f"{moment.astimezone(zone):%H:%M}"))
+        moment += timedelta(minutes=1)
+    return seen
+
+
+def reported(boundaries):
+    return [(b.section, f"{b.planned:%H:%M}") for b in boundaries if b.ran]
+
+
+class ClockChangeTest(unittest.TestCase):
+    """P6a: a day the clocks change on is worked out in real time, so what the Now tab
+    reports as run is what the runtime puts in force (`active_section_at`)."""
+
+    SUN = FixedSunProvider(time(7, 30), time(19, 0), NEW_YORK)
+
+    def day(self, profile, on=SPRING, provider=None, zone=NEW_YORK):
+        found = scheduler.compute_day(profile, provider or self.SUN, on, zone)
+        self.assertEqual(sweep.check_day(found, profile, on), [])
+        self.assertEqual(sweep.check_in_force(found, profile, provider or self.SUN, zone), [])
+        return {b.section: b for b in found}, found
+
+    def test_a_start_the_clocks_skip_runs_from_the_gaps_end_and_is_in_force(self):
+        profile = clocks(sunrise="00:30", day="01:30", afternoon="02:30", sunset="04:00")
+        found, boundaries = self.day(profile)
+        afternoon = found["afternoon"]
+        self.assertTrue(afternoon.ran)
+        self.assertEqual(afternoon.planned, datetime(2026, 3, 8, 3, 0, tzinfo=NEW_YORK))
+        self.assertEqual(afternoon.planned.utcoffset(), timedelta(hours=-4))
+        self.assertEqual(
+            afternoon.shifted,
+            "02:30 doesn't happen on 2026-03-08 (the clocks go forward past it), so it "
+            "starts at 03:00",
+        )
+        self.assertIsNone(afternoon.reason)
+        self.assertEqual(found["day"].ends, afternoon.planned)
+        self.assertIsNone(found["sunset"].shifted)
+        # The runtime agrees, minute by minute: each section reported as run comes into
+        # force at the time reported, and nothing else does.
+        self.assertEqual(
+            [(s, at_) for s, at_, _ in in_force(profile, self.SUN, SPRING, NEW_YORK)][1:],
+            reported(boundaries),
+        )
+        self.assertIn(
+            ("afternoon", "03:00", "03:00"), in_force(profile, self.SUN, SPRING, NEW_YORK)
+        )
+
+    def test_the_predecessors_day_runs_on_paper_and_never_in_force(self):
+        # Afternoon at 02:00 and sunset at 02:30, both skipped, then night at 03:00. Read by
+        # the wall clock (the predecessor's way), all three ran; the runtime, by instant,
+        # read the two skipped times as 03:00 and 03:30 and only ever put night in force.
+        profile = clocks(
+            sunrise="01:00", day="01:30", afternoon="02:00", sunset="02:30", night="03:00"
+        )
+        found, boundaries = self.day(profile)
+        # Now both start at the gap's end, with night: they collide, honestly, and collapse.
+        for section in ("afternoon", "sunset"):
+            self.assertFalse(found[section].ran, section)
+            self.assertIn("gap conflict", found[section].reason)
+            self.assertEqual(found[section].planned, datetime(2026, 3, 8, 3, 0, tzinfo=NEW_YORK))
+        self.assertTrue(found["night"].ran)
+        self.assertEqual(found["day"].ends, found["night"].planned)
+        seen = {s for s, _, _ in in_force(profile, self.SUN, SPRING, NEW_YORK)}
+        self.assertEqual(seen, {"sleep", "sunrise", "day", "night"})
+        self.assertEqual(
+            [(s, at_) for s, at_, _ in in_force(profile, self.SUN, SPRING, NEW_YORK)][1:],
+            reported(boundaries),
+        )
+
+    def test_lengths_and_a_clamps_move_are_real_time(self):
+        # 01:50 EST to 03:10 EDT is 80 minutes by the wall clock but 20 really: too short.
+        found, _ = self.day(clocks(sunrise="00:30", day="01:50", afternoon="03:10", sunset="04:00"))
+        self.assertFalse(found["afternoon"].ran)
+        self.assertIn("gap conflict: day", found["afternoon"].reason)
+        # Under clamp it moves 30 real minutes after day: 02:20 EST is 03:20 EDT.
+        profile = {
+            **clocks(sunrise="00:30", day="01:50", afternoon="03:10", sunset="04:00"),
+            "collision_policy": "clamp",
+        }
+        found, _ = self.day(profile)
+        self.assertEqual(found["afternoon"].planned, datetime(2026, 3, 8, 3, 20, tzinfo=NEW_YORK))
+        self.assertEqual(found["day"].ends, found["afternoon"].planned)
+        # Where the clocks go back, 01:40 EDT to 02:00 EST is 20 minutes by the wall clock
+        # but 80 really: long enough.
+        profile = clocks(sunrise="00:30", day="01:40", afternoon="02:00", sunset="04:00")
+        found, _ = self.day(profile, on=FALL)
+        self.assertTrue(found["day"].ran and found["afternoon"].ran)
+
+    def test_a_sun_offset_is_elapsed_time(self):
+        # Five hours before a 06:45 EDT sunrise is 00:45 EST: by the wall clock it was
+        # 01:45 (and on another zone's day, a time the clocks skip).
+        sun = FixedSunProvider(time(6, 45), time(19, 0), NEW_YORK)
+        profile = copy.deepcopy(schedule())
+        profile["sections"][0]["trigger"] = {
+            "type": "sun",
+            "event": "sunrise",
+            "offset_minutes": -300,
+        }
+        found, _ = self.day(profile, provider=sun)
+        self.assertEqual(found["sunrise"].planned, datetime(2026, 3, 8, 0, 45, tzinfo=NEW_YORK))
+        self.assertIsNone(found["sunrise"].shifted)
+
+    def test_the_day_is_its_real_span(self):
+        # Beirut skips midnight itself (00:00 -> 01:00): a section at 00:30 starts at 01:00,
+        # and so does one an offset pushes before the day.
+        beirut = ZoneInfo("Asia/Beirut")
+        sun = FixedSunProvider(time(6, 30), time(19, 0), beirut)
+        profile = clocks(sunrise="00:30")
+        found, _ = self.day(profile, date(2026, 3, 29), sun, beirut)
+        self.assertEqual(f"{found['sunrise'].planned:%H:%M %z}", "01:00 +0300")
+        profile["sections"][0]["trigger"] = {
+            "type": "sun",
+            "event": "sunrise",
+            "offset_minutes": -500,
+        }
+        found, _ = self.day(profile, date(2026, 3, 29), sun, beirut)
+        self.assertEqual(f"{found['sunrise'].planned:%H:%M %z}", "01:00 +0300")
+        # Nuuk skips the day's last hour (23:00 -> 00:00): a section at 23:30 can't start on
+        # its day after 22:59, and is in force from then until the next day's first.
+        nuuk = ZoneInfo("America/Nuuk")
+        sun = FixedSunProvider(time(6, 30), time(19, 0), nuuk)
+        found, _ = self.day(clocks(sleep="23:30"), date(2026, 3, 28), sun, nuuk)
+        self.assertEqual(f"{found['sleep'].planned:%Y-%m-%d %H:%M}", "2026-03-28 22:59")
+        self.assertIn("so it starts at 22:59", found["sleep"].shifted)
+        moment = datetime(2026, 3, 29, 3, 0, tzinfo=nuuk)
+        self.assertEqual(
+            scheduler.active_section_at(clocks(sleep="23:30"), sun, moment, nuuk),
+            ("sleep", found["sleep"].planned),
+        )
+
+    def test_the_fall_back_hour_still_resolves_to_its_first_pass(self):
+        # 01:30 happens twice on New York's fall-back day: a section starting then starts at
+        # the first, and the second never takes it back.
+        profile = clocks(sunrise="01:30", day="09:00")
+        found, _ = self.day(profile, on=FALL)
+        self.assertEqual(found["sunrise"].planned.utcoffset(), timedelta(hours=-4))
+        seen = in_force(profile, self.SUN, FALL, NEW_YORK)
+        self.assertEqual(
+            [s for s, _, _ in seen],
+            ["sleep", "sunrise", "day", "afternoon", "sunset", "night", "sleep"],
+        )
+        self.assertEqual(seen[1], ("sunrise", "01:30", "01:30"))
+
+    def test_a_day_the_clocks_skip_whole_collapses_every_section(self):
+        # Apia crossed the date line: 29 December 2011 was followed by the 31st.
+        apia = ZoneInfo("Pacific/Apia")
+        sun = FixedSunProvider(time(6, 30), time(19, 0), apia)
+        found, _ = self.day(schedule(), date(2011, 12, 30), sun, apia)
+        for b in found.values():
+            self.assertFalse(b.ran)
+            self.assertEqual(
+                b.reason, "2011-12-30 doesn't happen here: the clocks skip the whole day"
+            )
+        found, _ = self.day(schedule(), date(2011, 12, 31), sun, apia)
+        self.assertTrue(all(b.ran for b in found.values()))
+
+    def test_a_repeated_hour_after_midnight_never_takes_a_section_back(self):
+        # St John's went back from 00:01 to 23:01 on 7 November 2010: the repeated hour
+        # reads as the 6th, after sunrise (00:00 on the 7th) had started. Read by the date
+        # alone, it took the day back to the 6th's sleep, and the runtime would have fired
+        # sleep, then sunrise, again.
+        st_johns = ZoneInfo("America/St_Johns")
+        sun = FixedSunProvider(time(7, 0), time(17, 0), st_johns)
+        profile = {**clocks(sunrise="00:00", day="00:10"), "collision_policy": "clamp"}
+        found, _ = self.day(profile, date(2010, 11, 7), sun, st_johns)
+        repeated = datetime(2010, 11, 6, 23, 30, fold=1, tzinfo=st_johns)
+        self.assertEqual(
+            scheduler.active_section_at(profile, sun, repeated, st_johns),
+            ("sunrise", found["sunrise"].planned),
+        )
+
+        # And the sweep's check would have caught the old reading: it looks just after the
+        # clocks change, while sunrise is in force.
+        def by_date_alone(schedule_, provider, when, tzinfo=None, *, days=None):
+            for delta in range(3):
+                ran = [b for b in days(when.date() - timedelta(days=delta)) if b.ran]
+                past = [b for b in ran if scheduler._not_after(b.planned, when)]
+                if past:
+                    return past[-1].section, past[-1].planned
+            raise SunUnavailable("none")
+
+        boundaries = scheduler.compute_day(profile, sun, date(2010, 11, 7), st_johns)
+        computed = sweep._Days(profile, sun)
+        with unittest.mock.patch.object(sweep, "active_section_at", by_date_alone):
+            problems = sweep.check_in_force(boundaries, profile, sun, st_johns, days=computed)
+        self.assertEqual(
+            problems,
+            [
+                "sunrise is reported in force from 00:00, but just as it is in force and the "
+                "clocks change the runtime has sleep (from 22:00) in force"
+            ],
+        )
+
+    def test_a_composite_tie_goes_to_the_time_that_happens(self):
+        # latest(02:30, 03:00) on a day 02:30 doesn't happen is simply 03:00: not moved.
+        profile = copy.deepcopy(schedule())
+        profile["sections"][0]["trigger"] = {
+            "type": "latest",
+            "of": [{"type": "clock", "time": "02:30"}, {"type": "clock", "time": "03:00"}],
+        }
+        found, _ = self.day(profile)
+        self.assertEqual(found["sunrise"].planned, datetime(2026, 3, 8, 3, 0, tzinfo=NEW_YORK))
+        self.assertIsNone(found["sunrise"].shifted)
+        profile["sections"][0]["trigger"]["type"] = "earliest"
+        found, _ = self.day(profile)
+        self.assertIsNone(found["sunrise"].shifted)
+
+    def test_the_now_tab_says_a_start_was_moved_and_why(self):
+        from app.main import schedule_day
+
+        profile = clocks(sunrise="00:30", day="01:30", afternoon="02:30", sunset="04:00")
+        view = schedule_day(profile, self.SUN, datetime(2026, 3, 8, 12, 0, tzinfo=UTC), NEW_YORK)
+        afternoon = next(b for b in view["boundaries"] if b["section"] == "afternoon")
+        self.assertEqual(afternoon["start"], "03:00")
+        self.assertEqual(afternoon["outcome"], "clamped")  # shown as MOVED
+        self.assertEqual(
+            afternoon["reason"],
+            "02:30 doesn't happen on 2026-03-08 (the clocks go forward past it), so it "
+            "starts at 03:00",
+        )
+        day_ = next(b for b in view["boundaries"] if b["section"] == "day")
+        self.assertEqual((day_["outcome"], day_["reason"], day_["ends"]), ("ran", None, "03:00"))
+
+    def test_the_now_tab_explains_a_skipped_start_and_a_repeated_hours_second_pass(self):
+        from app.main import schedule_day
+
+        # Collapsed, a section keeps the time it would have started: for one the clocks
+        # skip, that is the gap's end, which the reason now says.
+        profile = clocks(sunrise="00:30", day="01:30", afternoon="02:30", sunset="03:00")
+        profile = with_section(profile, "afternoon", priority=10)  # sunset wins the tie
+        view = schedule_day(profile, self.SUN, datetime(2026, 3, 8, 12, 0, tzinfo=UTC), NEW_YORK)
+        afternoon = next(b for b in view["boundaries"] if b["section"] == "afternoon")
+        self.assertEqual((afternoon["outcome"], afternoon["start"]), ("collapsed", "03:00"))
+        self.assertIn("gap conflict", afternoon["reason"])
+        self.assertIn("02:30 doesn't happen on 2026-03-08", afternoon["reason"])
+        # A clamp into the hour the clocks repeat: 01:45 EDT + 30 minutes is the second
+        # 01:15, which reads earlier than the start before it, so the reason says so.
+        profile = {**clocks(sunrise="01:45", day="01:50"), "collision_policy": "clamp"}
+        view = schedule_day(profile, self.SUN, datetime(2026, 11, 1, 12, 0, tzinfo=UTC), NEW_YORK)
+        day_ = next(b for b in view["boundaries"] if b["section"] == "day")
+        self.assertEqual((day_["start"], day_["outcome"]), ("01:15", "clamped"))
+        self.assertEqual(
+            day_["reason"],
+            "moved later, to start 30 min after sunrise (the second 01:15: the clocks go back "
+            "today)",
+        )
+
+
 class SweepTest(unittest.TestCase):
     def test_a_year_at_every_site_has_no_unexpected_collapse(self):
         for label, latitude, longitude, zone in sweep.SITES:
@@ -361,6 +634,87 @@ class SweepTest(unittest.TestCase):
         tromso = swept("Tromso").collapses
         self.assertIn("no sunrise", tromso["day"].reasons)  # the polar night
 
+    def test_the_sites_include_every_kind_of_clock_change(self):
+        changes = {}
+        for label, _, _, zone in sweep.SITES:
+            tz = ZoneInfo(zone)
+            for day in sweep.clock_changes(tz, 2026):
+                before = datetime.combine(day, time(0, 0), tzinfo=tz).utcoffset()
+                after = datetime.combine(day + timedelta(days=1), time(0, 0), tzinfo=tz).utcoffset()
+                changes.setdefault(label.split(" (")[0], []).append((day, after - before))
+        self.assertNotIn("Equatorial", changes)
+        self.assertNotIn("Perth", changes)
+        self.assertEqual(
+            changes["New York"], [(SPRING, timedelta(hours=1)), (FALL, timedelta(hours=-1))]
+        )
+        # Southern: forward in the spring, which is October.
+        self.assertEqual(changes["Sydney"][1], (date(2026, 10, 4), timedelta(hours=1)))
+        self.assertEqual(changes["Lord Howe"][1], (date(2026, 10, 4), timedelta(minutes=30)))
+        # At midnight, and at the day's end.
+        self.assertEqual(changes["Beirut"][0], (date(2026, 3, 29), timedelta(hours=1)))
+        self.assertEqual(changes["Santiago"][1], (date(2026, 9, 6), timedelta(hours=1)))
+        self.assertEqual(changes["Nuuk"][0], (date(2026, 3, 28), timedelta(hours=1)))
+
+    def test_the_scheduler_is_sound_across_every_clock_change(self):
+        probes = sweep.clock_change_probes()
+        self.assertEqual(len(probes), 62)
+        self.assertEqual(sweep.sweep_clock_changes(2026), [])
+        self.assertEqual(sweep.sweep_clock_changes(2027), [])
+
+    def test_the_sweep_fails_if_the_fix_is_reverted(self):
+        # The mutation check: the scheduler's day worked out by the wall clock again (the
+        # predecessor's reading: no gap end, no instants, offsets added to the wall clock).
+        wall_clock = {
+            "_instant": lambda moment: moment,
+            "_existing": lambda moment: moment,
+            "_after": lambda moment, elapsed: moment + elapsed,
+        }
+        with unittest.mock.patch.multiple(scheduler, **wall_clock):
+            found = sweep.sweep_clock_changes(2026)
+        self.assertTrue(found)
+        # The in-force check catches it by itself: a section reported as run that the
+        # runtime never puts in force.
+        never = [line for line in found if "the runtime has" in line or "never in force" in line]
+        self.assertTrue(never)
+        self.assertIn(
+            "New York (40.71N), probe_14_collapse: 2026-03-08: afternoon is reported in force "
+            "from 02:00, but just as it starts the runtime has night (from 03:00) in force",
+            found,
+        )
+
+    def test_the_in_force_check_reads_a_report_as_the_runtime_would(self):
+        # The predecessor's report for New York's spring-forward day, by hand: sunset at
+        # 02:30, a time the clocks skip, reported as run before night at 03:00.
+        def b(section, hh, mm, offset):
+            zone = timezone(timedelta(hours=offset))
+            planned = datetime(2026, 3, 8, hh, mm, tzinfo=zone).astimezone(NEW_YORK)
+            return Boundary(section, section, planned, 100)
+
+        report = [b("day", 1, 30, -5), b("night", 3, 0, -4), b("sleep", 22, 0, -4)]
+        skipped = Boundary("sunset", "sunset", datetime(2026, 3, 8, 2, 30, tzinfo=NEW_YORK), 50)
+        report.insert(1, skipped)
+        for i, boundary in enumerate(report):
+            boundary.ends = report[i + 1].planned if i + 1 < len(report) else None
+        profile = schedule()
+        problems = sweep.check_in_force(
+            report, profile, ClockChangeTest.SUN, NEW_YORK, days=lambda day: report
+        )
+        # Read by instant, the skipped 02:30 comes after night's 03:00: the runtime moves
+        # from day straight to night as the clocks change, and sunset never comes into force.
+        self.assertEqual(
+            problems,
+            [
+                (
+                    "day is reported in force from 01:30, but just as it is in force and the "
+                    "clocks change the runtime has night (from 03:00) in force"
+                ),
+                "sunset is never in force: the next section starts no later than it does",
+            ],
+        )
+        problems = sweep.check_day(report, {**profile, "min_section_minutes": 1}, SPRING)
+        self.assertIn("sunset starts at 02:30, a time the clocks skip on 2026-03-08", problems)
+        self.assertIn("night starts before sunset", problems)
+
     def test_a_broken_day_is_unexpected(self):
         day = scheduler.compute_day(schedule(), mild(), DAY)
         self.assertEqual(sweep.check_day(day, schedule()), [])
@@ -392,7 +746,12 @@ class SweepTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(sweep.main(["--year", "2026"]), 0)
         self.assertIn("Profile 'standard'", out.getvalue())
+        self.assertIn("Nuuk (64.18N)", out.getvalue())
+        self.assertIn("The scheduler across every clock change of 2026", out.getvalue())
+        self.assertIn("sound: every section run is in force", out.getvalue())
         self.assertIn("No unexpected collapses.", out.getvalue())
+        # The rest needs only one site to show.
+        self.enterContext(unittest.mock.patch.object(sweep, "SITES", sweep.SITES[2:3]))
         # A committed config's profiles, one of them chosen.
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
@@ -402,15 +761,25 @@ class SweepTest(unittest.TestCase):
                 self.assertEqual(sweep.main(["--config", str(path), "--profile", "evening"]), 0)
             self.assertIn("Profile 'evening'", out.getvalue())
             self.assertNotIn("Profile 'default'", out.getvalue())
-            # An unexpected collapse fails the run.
+            # An unexpected collapse fails the run. (The broken day has no time zone, which
+            # the in-force check would compare with the sites' days: it is left out here,
+            # and has tests of its own.)
             broken = scheduler.compute_day(schedule(), mild(), DAY)
             broken[0].reason, broken[0].outcome = None, "collapsed"
             with (
                 unittest.mock.patch.object(sweep, "compute_day", return_value=broken),
+                unittest.mock.patch.object(sweep, "check_in_force", return_value=[]),
                 contextlib.redirect_stdout(io.StringIO()) as printed,
             ):
                 self.assertEqual(sweep.main(["--config", str(path), "--profile", "evening"]), 1)
             self.assertIn("UNEXPECTED", printed.getvalue())
+            # So does a clock change the scheduler gets wrong, whatever the profiles.
+            with (
+                unittest.mock.patch.object(sweep, "sweep_clock_changes", return_value=["x"]),
+                contextlib.redirect_stdout(io.StringIO()) as printed,
+            ):
+                self.assertEqual(sweep.main(["--config", str(path), "--profile", "evening"]), 1)
+            self.assertIn("UNEXPECTED x", printed.getvalue())
             path.write_text("{")
             with self.assertRaises(SystemExit) as caught:
                 sweep.main(["--config", str(path)])

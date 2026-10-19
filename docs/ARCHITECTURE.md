@@ -160,8 +160,10 @@ tools/
   doctor.py          Probe a real HA instance; validate connectivity and entities; print the
                      rooms the inventory would build (and, given a config, today's section
                      boundaries at HA's location). Read-only.
-  sweep.py           A year of section-boundary computations at several latitudes,
-                     reporting each collapse and checking for unexpected ones (P5.2a).
+  sweep.py           A year of section-boundary computations at several latitudes and
+                     clock-changing time zones, reporting each collapse and checking for
+                     unexpected ones, a section run but never in force among them (P5.2a,
+                     P6a).
   compare_analyser.py  Run the analyser twice over identical input (legacy vs current
                      flags) and diff the almanacs; reads a copy of a config's archive, or
                      the predecessor's wide heartbeat CSV (P5.2a).
@@ -173,9 +175,11 @@ tests/               Unit tests (stdlib unittest, `python -m unittest`) against 
                      Analysis / Almanac tabs, and `schedule_ui.cjs`, the schedule editor). `ha_script.py` renders
                      the generated Jinja and runs the generated automations against a fake
                      state machine (P5.1; needs jinja2, from `requirements-dev.txt`, else
-                     those tests skip). `golden/` holds byte-exact generated output: `lm_only.yaml`
-                     (captured before P5.1: the cutover switch off must reproduce it) and
-                     `al_committed.yaml`. `reference/` holds the predecessor's analyser,
+                     those tests skip). `golden/` holds byte-exact output: `lm_only.yaml`
+                     (captured before P5.1: the cutover switch off must reproduce it),
+                     `al_committed.yaml`, and `switch_off.json` (the live app's deploy,
+                     its writes and the adaptive views with the switch off, captured at
+                     P5.2b: P6a must reproduce it). `reference/` holds the predecessor's analyser,
                      verbatim, as the oracle the analyser's parity tests run against (P5.2a).
 Dockerfile
 docker-compose.yml
@@ -331,6 +335,10 @@ is not stored here; it lives in the almanac store. Detailed field semantics are 
     `min_section_minutes` after it, within its day; one that can't fit, and an order
     inversion, still collapse).
   - `min_section_minutes` (1..720, default 30): the shortest section; one shorter collides.
+  - Clock changes (P6a): a clock time the clocks skip that day (a spring-forward gap)
+    starts when they go forward past it, at the gap's end; a sun offset is elapsed time;
+    and collisions, lengths and the day's bounds are measured between instants, so a
+    section reported as run is always in force (see `docs/DESIGN.md`, "The scheduler").
 
   Version 5 backfills every profile that has no `sections` with the standard schedule
   (the predecessor's six boundaries: sunrise = the earlier of sunrise and 05:30, day =
@@ -506,13 +514,15 @@ room with bulbs to observe, and, only with the cutover switch on, the adaptive r
   save never needs HA. Nothing in P5.0 writes HA. The editor's `version` also covers the
   room's active-bulb roster (P5.1), so a bulb ignored in another tab while it is open makes
   its save a 409 `edit_stale`, not a validation error.
-- **Module lanes in the deploy preview** (P5.1). With the cutover switch on, the deploy
-  preview also lists each module lane's plan (`modules`), read-only: `POST /api/deploy`
-  still applies the `lm_` lane alone, and applying `al_` from the Map arrives with the
-  cutover (P6). With the switch off (until P6) there is no such key, and `/api/status`
-  says which it is (`adaptive`). With it on, the status also reports the adaptive runtime
-  (`adaptive_runtime`, P5.2a): each room's section, the last nightly pass, and what it
-  last published.
+- **Module lanes in the deploy** (P5.1; applied since P6a). With the cutover switch on, the
+  deploy preview also lists each module lane's plan (`modules`), and `POST /api/deploy`
+  applies them after the `lm_` lane, in order, each planned again, checked against the
+  preview, applied and verified in turn; a lane refused in the preview isn't applied. The
+  one `fingerprint` covers every lane (see `docs/DESIGN.md`, "Applying the module lanes").
+  With the switch off (until P6b) there is no such key, the fingerprint is the `lm_` plan's
+  as before, and `/api/status` says which it is (`adaptive`). With it on, the status also
+  reports the adaptive runtime (`adaptive_runtime`, P5.2a): each room's section, the last
+  nightly pass, and what it last published.
 - **The adaptive views read beside the live system** (P5.2b). The Now, Analysis and
   Almanac tabs take the schedule from the config and HA's location, and the learned data
   from Light Map's own store (the Almanac tab never reads `sensor.al_almanac_`). A live
@@ -600,14 +610,21 @@ Parallel build in this repo; the live `ha-adaptive-light` keeps running untouche
     live `al_` entity only with the cutover switch on) and the schedule-profile editor,
     with uPlot vendored for the Analysis chart. No engine or generator change; the
     sections' display names are deferred (they need a generator change).
-- **P6 — Cutover.** Deploy against live HA; remove the old `al_*` system; turn the cutover
-  switch on and add the `al_` lane's apply to the Map's deploy; re-express the house; start
-  the almanac (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old
-  repo kept deployable as rollback until Light Map has run clean for a few days.
+- **P6 — Cutover.** In two steps:
+  - **P6a — Final pre-cutover code.** The scheduler's clock changes (a section whose start
+    the clocks skip is moved to the gap's end, never reported as run yet never in force,
+    and `tools/sweep.py` checks it at clock-changing sites), the crossover report counting
+    Light Map's own `al_` automations as its own, and the Map's deploy applying the module
+    lanes after `lm_` under one fingerprint. All of it pure computation or behind the
+    cutover switch, which stays off: the live app's output is P5.2b's byte for byte.
+  - **P6b — Cutover**, by hand against the real HA: remove the old `al_*` system; turn the
+    cutover switch on; deploy (`lm_`, then `al_`); re-express the house; start the almanac
+    (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old repo kept
+    deployable as rollback until Light Map has run clean for a few days.
 
-P0–P5.2 touch only new HA artefacts (soft switches, bridge automations, Area assignments) and
+P0–P6a touch only new HA artefacts (soft switches, bridge automations, Area assignments) and
 can coexist with the live adaptive system, as long as the new bridges stay unbound (no hard
-switches; bridge not yet authoritative) until cutover. (P5.0 to P5.2 add none to the live
+switches; bridge not yet authoritative) until cutover. (P5.0 to P6a add none to the live
 HA: the adaptive module they build stays behind the cutover switch.) That coexistence boundary is the main
 thing to get right during the parallel build.
 
@@ -615,7 +632,7 @@ thing to get right during the parallel build.
 `ha-adaptive-light` uses on the same HA, down to its helpers' names, so an `al_` deploy
 before cutover would adopt its helpers and rewrite or remove its automations. The adaptive
 module is therefore wired in by the composition root only when `ADAPTIVE_ENABLED`
-(`app/main.py`) is on, and it is **off until P6**: `core.generate.namespaces()` is `["lm"]`,
+(`app/main.py`) is on, and it is **off until P6b**: `core.generate.namespaces()` is `["lm"]`,
 no bridge-brightness provider is registered, the generated `lm_` lane is byte-identical to
 P5.0's, nothing generates, previews or writes `al_`, and no adaptive runtime is made (P5.2a):
 nothing fires a scene, raises a hold, registers a section or guard with the observer, or
@@ -700,10 +717,6 @@ system's `al_` ones among them) that already drive the same bulbs.
   last fired for the room (the scene select's), falling back to the scheduled one before
   its first crossover, so a heartbeat in the seconds between a boundary and the crossover
   records the section the house was still in.
-- **Crossover report after cutover** (P5.1) — the report counts only the `lm_` lane as Light
-  Map's, so the live system's `al_` automations are flagged; once Light Map's own `al_`
-  lane is live (P6) it is flagged alike, since the names are the same. P6 should count a
-  wired module lane as Light Map's once the old system is gone.
 
 ---
 
