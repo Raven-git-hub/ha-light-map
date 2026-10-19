@@ -31,10 +31,12 @@ matrix without importing the module.
 
 P5.0 fills the config and its editor; P5.1 the generator (`generate`: the `al_` artefacts,
 the bridge fragment, the lane's references) and the almanac's attribute contract
-(`almanac`). The composition root wires the generator in only while its cutover switch is
-on, which it isn't until P6: the `al_` names are the live ha-adaptive-light's own. The
-engine (scheduler, analyser, the almanac's store and publish, and the runtime, P5.2) is
-still stubbed and raises NotImplementedError.
+(`almanac`); P5.2a the engine (`scheduler`, `analyser`, the almanac's store and publish,
+and the `runtime`). The composition root wires the generator and the runtime in only while
+its cutover switch is on, which it isn't until P6: the `al_` names are the live
+ha-adaptive-light's own. The views over it (P5.2b: the Now, Analysis and Almanac tabs, and
+the schedule-profile editor) live in the composition root's HTTP surface and `static/`,
+and call the module's functions; they read a live `al_` entity only with the switch on.
 """
 
 from app.core.config import SECTIONS

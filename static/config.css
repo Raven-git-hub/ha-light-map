@@ -407,3 +407,7 @@ input.knob.invalid {
     width: 5rem;
   }
 }
+
+.adaptive-rooms .profiles-heading {
+  margin-top: 1.75rem;
+}

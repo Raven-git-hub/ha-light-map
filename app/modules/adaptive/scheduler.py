@@ -202,8 +202,9 @@ def default_priority(trigger: Mapping[str, Any]) -> int:
 class Boundary:
     """One section's start on one day: when it was planned, with what priority, and
     whether it ran or collapsed (and why). `ends` is when the next kept section starts
-    (None for the day's last). `name` is the section's display name, its id until P5.2b
-    gives sections names."""
+    (None for the day's last). `name` is the profile section's `name`, else its id:
+    display names are deferred (docs/DESIGN.md, "Section display names"), so nothing shows
+    it yet."""
 
     section: str
     name: str

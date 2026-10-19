@@ -1,0 +1,249 @@
+/* The schedule-profile editor: the profiles list beside the profile on screen, its
+   sections as a table of triggers. Reuses the Config tab's cards and save bar
+   (config.css). At phone width the list stacks above the profile and the sections table
+   becomes one labelled block per section. */
+
+.schedule-editor {
+  max-width: 76rem;
+}
+
+.schedule-editor a {
+  color: var(--accent);
+}
+
+.schedule-layout {
+  display: grid;
+  grid-template-columns: minmax(14rem, 19rem) minmax(0, 1fr);
+  gap: 0 1rem;
+  align-items: start;
+}
+
+/* -- The profiles list ---------------------------------------------------------------- */
+
+.profile-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.profile-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0.2rem 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.profile-item.on {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.select-profile {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 0.05rem;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.4rem 0.6rem;
+}
+
+.select-profile .profile-label {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.profile-item.on .profile-label {
+  color: var(--accent);
+}
+
+.profile-actions {
+  display: inline-flex;
+  flex: none;
+}
+
+#new-profile {
+  margin-top: 0.4rem;
+}
+
+/* -- The profile ---------------------------------------------------------------------- */
+
+.profile-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 24rem) auto;
+  gap: 0 1rem;
+  align-items: end;
+}
+
+.profile-fields .field > span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.profile-fields div.field {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.6rem 0;
+}
+
+.profile-id {
+  padding: 0.4rem 0;
+}
+
+input.invalid {
+  border-color: var(--danger) !important;
+  background: var(--danger-bg) !important;
+}
+
+.policy,
+.start-from {
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.policy legend,
+.start-from legend {
+  padding: 0 0.3rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.policy-choice,
+.start-from label {
+  display: block;
+  margin: 0.3rem 0;
+}
+
+.minimum input.knob {
+  width: 7rem;
+}
+
+/* -- The sections table --------------------------------------------------------------- */
+
+.sections-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sections-table th,
+.sections-table td {
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+  border-top: 1px solid var(--line);
+}
+
+.sections-table thead th {
+  border-top: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sections-table .section-name {
+  white-space: nowrap;
+}
+
+.trigger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.trigger select {
+  width: auto;
+}
+
+.trigger input.trigger-time {
+  width: 5.5rem;
+  padding: 0.3rem 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.trigger input.trigger-offset {
+  width: 5.5rem;
+}
+
+.components {
+  flex-basis: 100%;
+  margin: 0.2rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.component {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0.25rem 0;
+}
+
+.priority-cell input.knob {
+  width: 7.5rem;
+}
+
+.today-cell {
+  min-width: 7rem;
+}
+
+.today-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.schedule-location.box {
+  margin: 0.5rem 0;
+}
+
+/* -- Narrow --------------------------------------------------------------------------- */
+
+@media (max-width: 860px) {
+  .schedule-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .profile-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sections-table thead {
+    display: none;
+  }
+
+  .sections-table,
+  .sections-table tbody,
+  .sections-table tr,
+  .sections-table th,
+  .sections-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .sections-table tr {
+    padding: 0.4rem 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .sections-table th,
+  .sections-table td {
+    border-top: none;
+    padding: 0.2rem 0.25rem;
+  }
+
+  .sections-table td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+}

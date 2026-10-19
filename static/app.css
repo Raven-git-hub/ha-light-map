@@ -20,6 +20,20 @@
   --ok: #4cc38a;
   --ok-bg: rgba(76, 195, 138, 0.12);
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  /* Charts and the day bar (P5.2b): eight categorical slots, assigned in this fixed order
+     and never cycled, checked against --panel for colour-blind separation, contrast and
+     lightness (the dark steps of a validated palette); the ink for a lone measure (the lux
+     target); hairlines. A series is never told apart by colour alone. */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --chart-ink: #c3c2b7;
+  --chart-grid: #2a2f37;
 }
 
 * {
@@ -49,6 +63,10 @@ pre {
 
 .muted {
   color: var(--muted);
+}
+
+.block {
+  display: block;
 }
 
 /* -- Header ------------------------------------------------------------------------- */

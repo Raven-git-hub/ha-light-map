@@ -5,19 +5,20 @@ truth; update both together.
 
 Parallel build in this repo: the live `ha-adaptive-light` keeps running untouched until P6.
 
-**Current phase: P5.2a** (P0–P5.1 done: the scaffold, the inventory with stable bulb
+**Current phase: P5.2b** (P0–P5.2a done: the scaffold, the inventory with stable bulb
 identity across HA entity renames, the switching plane with its deploy, the Map tab with its
 HTTP API and deploy-with-preview, the observation core (the WebSocket observer, per-bulb
 heartbeats, reactive detection, the CSV + SQLite store, the event log and the Log tab, plus a
 Host-header allowlist on the API), ignored lights, the per-room `adaptive_config` with its
-editor, and the `al_` generator with its deploy lane and the almanac attribute contract.
-P5.2a is the adaptive engine: the schedule profiles (config version 5) and the ported
-scheduler with `tools/sweep.py`, the analyser pooling per-bulb readings per learning unit
-with `tools/compare_analyser.py`, the almanac's store and publish, the runtime loop, and the
-bridge's gated fallback (an adaptive bulb with no target for the section comes on at its own
-last brightness, never 255). All of it stays behind the cutover switch, which stays off until
-P6: with it off, no runtime runs and the switching plane's output is unchanged. P5.2b, the
-read-only Now / Analysis / Almanac views and the schedule-profile editor, comes next).
+editor, the `al_` generator with its deploy lane and the almanac attribute contract, and the
+adaptive engine: the schedule profiles (config version 5) and the ported scheduler, the
+analyser pooling per-bulb readings per learning unit, the almanac's store and publish, the
+runtime loop, and the bridge's gated fallback, all behind the cutover switch, which stays
+off until P6. P5.2b is the adaptive views: the read-only Now / Analysis / Almanac tabs and
+the schedule-profile editor, with uPlot vendored for the Analysis chart. They read the
+config, HA's location and Light Map's own store; a live `al_` entity, which the old system
+owns until P6, only with the cutover switch on. No engine or generator change; section
+display names are deferred. P6, the cutover, comes next).
 
 ## Phases
 
@@ -48,8 +49,10 @@ read-only Now / Analysis / Almanac views and the schedule-profile editor, comes 
     `tools/compare_analyser.py`), the almanac's store and publish, the runtime loop, and
     the bridge's gated fallback (an adaptive bulb with no target comes on at its own last
     brightness), all behind the cutover switch, which stays off.
-  - **P5.2b — Adaptive views.** The Now / Analysis / Almanac tabs (read-only), the
-    schedule-profile editor, and the sections' display names.
+  - **P5.2b — Adaptive views.** The Now / Analysis / Almanac tabs (read-only, reading a
+    live `al_` entity only with the cutover switch on) and the schedule-profile editor,
+    with uPlot vendored for the Analysis chart. No engine or generator change; the
+    sections' display names are deferred (they need one).
 - **P6 — Cutover.** Deploy against live HA; remove the old `al_*` system; turn the cutover
   switch on and add the `al_` lane's apply to the Map's deploy; re-express the house; start
   the almanac (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old
@@ -69,4 +72,5 @@ one and marks every live bulb and group.
 `ha-adaptive-light`'s own, so the composition root wires the adaptive module in only when
 `ADAPTIVE_ENABLED` (`app/main.py`) is on, and it stays off until P6. Off, nothing
 generates, previews or writes `al_`, no adaptive runtime runs (nothing fires a scene or
-publishes an almanac), and the switching plane's output is byte-identical to P5.0's. See `docs/DESIGN.md`, "The adaptive generator".
+publishes an almanac), the switching plane's output is byte-identical to P5.0's, and the
+adaptive views read no live `al_` entity (P5.2b). See `docs/DESIGN.md`, "The adaptive generator".

@@ -619,7 +619,7 @@ on at its unit's target), behind the cutover switch (see "The adaptive generator
 **P5.2a** ports the scheduler (with the schedule profile's
 internal shape and `tools/sweep.py`), the analyser, the almanac and the runtime loop (see
 "The adaptive engine"); **P5.2b** adds the Now / Analysis / Almanac views and the
-schedule-profile editor.
+schedule-profile editor (see "The adaptive views").
 
 **The block.** A room's `adaptive_config`, present exactly when the room is adaptive:
 
@@ -631,7 +631,8 @@ schedule-profile editor.
 - `schedule_profile` — the id of an entry in the global `schedule_profiles` (default
   `default`). The editor selects one by id and name. A profile's internals (its section
   boundaries, triggers and collision policy) arrived with the scheduler port (P5.2a; see
-  "Schedule profiles"); their editor arrives with P5.2b.
+  "Schedule profiles"); their editor with P5.2b (see "The schedule editor"), which the
+  picker links to.
 - `adaptive_bulbs[]` — the room's adaptive bulbs, by id. **Adaptive-ness is not a flag on
   the bulb.** It lives in the module's own block, so the core bulb stays module-free and
   `app/core` never imports `app/modules`. Within an adaptive room each active (not
@@ -835,8 +836,8 @@ room, unit and bulb id, so it is byte-identical whatever order the config lists 
   automations change the room's lights), `input_boolean.al_hold_<room>` (the maintenance
   hold: the user intervened, stay out for the rest of the section; P5.2 raises it), and
   `input_select.al_scene_<room>` (the section the room is in; its options are the six
-  canonical section ids, so its state *is* the section id; custom display names arrive
-  with P5.2's schedule editor). Each is named from the room id (`AL Active <room>`, ...),
+  canonical section ids, so its state *is* the section id; custom display names are
+  deferred past P5.2b, see "Section display names"). Each is named from the room id (`AL Active <room>`, ...),
   because HA derives a network-created helper's id from its slugified name. The guard has
   `initial: false`, so it is off whenever HA starts: no run survives a restart, and a guard
   restored on would never change, so its watchdog (a state trigger, attached after the
@@ -994,7 +995,8 @@ old ones).
 P5.2a builds what drives the plane P5.1 generated: the schedule profiles and the scheduler,
 the analyser, the almanac's store and publish, and the runtime loop. All of it is wired in
 by the composition root only with the cutover switch on (see "The cutover switch"); with it
-off nothing here runs. The read-only views over it, and the profile editor, are P5.2b's.
+off nothing here runs. The read-only views over it, and the profile editor, are P5.2b's
+(see "The adaptive views").
 
 ### Schedule profiles
 
@@ -1026,7 +1028,8 @@ trigger = { type: clock, time: "HH:MM" }
   offset that pushes a boundary out of the day is clamped to 00:00..23:59. So every
   section that runs starts within its own day.
 - A section's `name` is accepted (the predecessor's profiles had one) and is the boundary's
-  name; the editor that sets it, and the scene select's display names, are P5.2b's.
+  name. Nothing shows or sets it yet: display names are deferred (see "Section display
+  names"), and the P5.2b editor keeps one a profile already holds as written.
   `min_section_minutes` is at least 1: two sections starting at one instant would leave one
   never in force.
 - **The standard schedule** (the predecessor's): sunrise = the earlier of sunrise and
@@ -1190,6 +1193,136 @@ detection, and the runtime plugs into it.
 It only commands HA (services, the almanac's state) and reads what it can't get from the
 observer (the location, and the scene selects and automation ids once); it never reads a
 bulb or a sensor itself.
+
+---
+
+## The adaptive views (settled in P5.2b)
+
+P5.2b puts a face on the engine: three read-only tabs (Now, Analysis, Almanac) and the
+schedule-profile editor. It adds no engine behaviour, no generated artefact and nothing that
+writes HA: the generated lanes are as P5.2a left them (the `lm_` lane still byte-identical to
+its golden file), and the one thing it writes is the config's `schedule_profiles`, through
+the editor's validate-then-write save. Each view is per adaptive room (`#now/<room>`,
+`#analysis/<room>`, `#almanac/<room>`), with the adaptive rooms to pick from at the top; the
+room picked is kept while moving between the three.
+
+### Reading beside the live system
+
+Until cutover the live `ha-adaptive-light` owns the `al_` entities on the same HA:
+`input_select.al_scene_<room>`, `input_boolean.al_active_<room>` and `al_hold_<room>`, and
+`sensor.al_almanac_<room>`. A view that read them would show the old system's state as if it
+were Light Map's. So the views draw on three sources, and only the last is gated:
+
+- **The config and HA's location** (`/api/config`: latitude, longitude, elevation, time
+  zone): the schedule, and the time zone a day is counted in. Safe with the switch either
+  way.
+- **Light Map's own store**: the observations, and the almanac snapshots the nightly pass
+  records (`almanac.latest`). Safe either way: until the runtime runs (P6) it holds no
+  snapshot, and the views say "nothing learned yet". The Almanac tab reads the store, never
+  `sensor.al_almanac_<room>`, which is the old system's until P6 (and once Light Map
+  publishes it, the store is still what it is published from).
+- **The live `al_` entities** (the scene select, the guard, the hold) and the runtime's
+  status: only with the module wired in (`app.main.adaptive_wired_in()`, which follows the
+  cutover switch). Off, the Now tab shows "Adaptive runs at cutover — not live yet" in their
+  place, and its endpoint reads no HA state at all: its one HA call is the location
+  (`get_config`). On, it reads HA's states once and takes the room's three `al_` entities
+  from them.
+
+The tabs are shown, not hidden, with the switch off: the schedule a room would follow and
+whatever the store holds are worth seeing before cutover, and the Now tab is how a profile
+is checked before it drives anything.
+
+### Now
+
+`GET /api/rooms/{room}/now`. Today's schedule: the room's profile computed for today at HA's
+location (`scheduler.compute_day`, times in HA's time zone, as `HH:MM`), each section with
+its start and end, its trigger and effective priority, and whether it runs, was moved (a
+`clamp`) or is skipped today and why. The section in force now is highlighted, with a NOW
+badge as well as colour (`scheduler.active_section_at`; before the day's first boundary it
+is yesterday's last section, and the tab says so). Above it, the profile's name, the other
+rooms that share it, and a link to edit it. Below, the current section's unit targets as the
+store's almanac would publish them now (`almanac.payload`: `off` for a unit held off, the
+learned brightness, or nothing learned yet) and its lux target, then the live state (or the
+not-live note). Without HA's location there is no schedule (a sun-relative boundary needs
+the place), and the tab says why rather than guess.
+
+### Analysis
+
+`GET /api/rooms/{room}/analysis` runs `analyser.analyse_room` on demand, as the nightly pass
+would for the room now (its current learning units, the config's `learning`, the lookback
+ending today), in a worker thread, and returns the rolling almanac it computes. It records
+nothing: the store's queries run read-only (`Store.query`), and nothing writes the snapshot.
+Per section: each unit's learned brightness and on-fraction, the room's lux target, the days
+that contributed, how many were high-confidence, and the trust weight behind it (the
+accumulated recency × confidence × settled weight); overall, bootstrap or learning (with how
+many of the bootstrap minimum's days are in), the days analysed and the date a snapshot
+from it would take effect. A room with no learning unit has nothing to analyse, and says so.
+
+Two charts, one measure each across the six sections (canonical order, the order of the
+day): each unit's learned brightness (0–255), and under it the room's lux target. Never one
+chart with two y-axes: how two scales line up is arbitrary, and the eye reads a
+correlation into it. They are uPlot, vendored (`static/vendor/uplot/`, as the predecessor
+did: one self-contained file, no CDN, no build step). Series are told apart by more than
+colour: each unit's line has its own dash pattern, the legend draws each line as it is
+drawn, up to four lines are labelled at their end (where the labels don't collide), and a
+table under the charts gives every value. Pointing at a chart, or focusing it and using the
+arrow keys, reads out every series at that section. The unit colours are eight fixed slots
+in the theme's CSS tokens (`--series-1..8`, checked against the panel for colour-blind
+separation and contrast), assigned in order and never repeated: a ninth unit is in the
+table, not on the chart. Days are counted in HA's time zone; without it, in UTC, and the
+tab says so.
+
+### Almanac
+
+`GET /api/rooms/{room}/almanac`: the snapshot in force (`almanac.latest`, the newest per unit
+and section whose `valid_from` has come) with the date it took effect, when its pass ran,
+its mode and days analysed. Per section, each unit's effective target exactly as the publish
+resolves it (`almanac.payload`) beside the learned brightness behind it and the date that
+row took effect, and the section's lux target (learned, else the seed above 0) and knobs as
+the publish reads them (the config's, as it is now). History the store keeps for units the
+room no longer has is counted, not shown.
+
+### The schedule editor
+
+The global `schedule_profiles`, at `#schedule` (one profile at a time, `#schedule/<id>`),
+reached from the Config tab beside the adaptive rooms, from the room editor's profile picker
+and from the Now tab. It works on a draft of the whole list, as the room editor does on its
+block: create (a copy of the profile on screen, or the standard schedule), rename, reorder
+(the list's order is the order the room editor offers them in), and delete a profile no room
+selects, never `default` (the schema requires it). Per profile: its collision policy and
+minimum section length; per section, its trigger (a clock time; sunrise or sunset with an
+offset; the earliest or latest of two or more of those) and an optional priority (blank:
+the trigger's default, shown). The six sections are always there, in canonical order: the
+cross-check requires it, and the order they start in on a given day is the scheduler's to
+work out. Profile ids are slugs fixed at creation from the name; renaming keeps the id,
+since rooms select a profile by id.
+
+**A profile is shared.** Every room that selects it follows it, so the editor names the
+rooms that use the profile on screen and warns that saving changes each of them.
+
+- `GET /api/schedule_profiles`: the list, its `version`, the adaptive rooms and the profile
+  each selects, and each profile's day today at HA's location (when it can be read).
+- `POST /api/schedule_profiles/check`: a draft list in; what saving it would refuse (the
+  same validation the save runs) and each profile's day today out. It writes nothing; the
+  editor sends it as the draft changes, so a collision shows as it is made.
+- `PUT /api/schedule_profiles`: the whole list, against the `version` it was shown
+  (`base`; 409 `edit_stale`), validate-then-write, recorded in the event log with what
+  changed. Config only: nothing reaches HA, and the runtime reads a profile at its next tick
+  once it runs (P6).
+
+The `version` covers the profiles and which profile each adaptive room selects. The editor
+shows the rooms a profile is shared with, and offers to delete a profile no room uses: a
+room switched to a profile in another tab while the editor is open must make its save a
+409 that reloads it, not a deletion refused only by the cross-check (a 422 saying a reference
+broke) or a warning that names the wrong rooms.
+
+### Section display names (deferred)
+
+P5.2b doesn't give sections display names. The scene select's options are the canonical
+section ids (P5.1), and every generated template reads its state as the section id, so a
+custom name needs the templates to map it back to its id: a generator change, and P5.2b
+makes none. The views label sections by their canonical names, and the editor neither shows
+nor sets a section's `name` (one already in a profile is kept as written).
 
 ---
 
@@ -1361,6 +1494,7 @@ the soft switch, like any other input to the switching plane.
   first "turn off" a bulb that is already off. Whether to reflect a bulb's power back into
   its soft switch (and how, without that change re-triggering the bridge) is open; settle
   it before cutover.
-- **Section display names** (P5.2b) — the scene select's options are the canonical section
-  ids (P5.1), and every template reads its state as the section id. Custom display names
-  (the predecessor's) need the templates to map a name back to its id.
+- **Section display names** (deferred from P5.2b) — the scene select's options are the
+  canonical section ids (P5.1), and every template reads its state as the section id.
+  Custom display names (the predecessor's) need the templates to map a name back to its
+  id, a generator change P5.2b doesn't make (see "Section display names").
