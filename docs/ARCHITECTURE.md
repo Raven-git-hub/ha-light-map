@@ -632,13 +632,16 @@ thing to get right during the parallel build.
 `ha-adaptive-light` uses on the same HA, down to its helpers' names, so an `al_` deploy
 before cutover would adopt its helpers and rewrite or remove its automations. The adaptive
 module is therefore wired in by the composition root only when `ADAPTIVE_ENABLED`
-(`app/main.py`) is on, and it is **off until P6b**: `core.generate.namespaces()` is `["lm"]`,
+(`app/main.py`) is on — which reads `LM_ADAPTIVE_ENABLED=1` from the environment, off by
+default — and until cutover it is off: `core.generate.namespaces()` is `["lm"]`,
 no bridge-brightness provider is registered, the generated `lm_` lane is byte-identical to
 P5.0's, nothing generates, previews or writes `al_`, and no adaptive runtime is made (P5.2a):
 nothing fires a scene, raises a hold, registers a section or guard with the observer, or
-publishes an almanac. It is a constant rather than an
-environment variable so that turning it on is a reviewed change made with the cutover,
-never a setting flipped early. Tests turn it on in their own scope. Deploying the plane never drives a bulb: each
+publishes an almanac. Pre-cutover it was a bare `False` constant, flipped only by a reviewed
+code change so a deployment setting couldn't switch it on early; post-cutover it reads
+`LM_ADAPTIVE_ENABLED` from the environment (off unless `1`), so the flip survives a rebuild
+from a clean checkout while staying off by default. Tests leave it unset and turn the module
+on in their own scope. Deploying the plane never drives a bulb: each
 soft switch is set to its bulb's current on/off before its bridge goes live, and a bridge
 fires only on its soft switch changing between `off` and `on`. Binding a hard switch in
 the config is the step that makes a bridge authoritative, so leave `hard_switches` empty

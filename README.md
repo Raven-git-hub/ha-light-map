@@ -34,9 +34,10 @@ scheduler, the nightly learner pooling each learning unit's bulbs, the almanac i
 to Home Assistant, the runtime loop), and P5.2b the read-only **Now**, **Analysis** and
 **Almanac** tabs and the schedule-profile editor. P6a makes the scheduler sound across
 clock changes and lets the Map's deploy apply the `al_` lane after `lm_`. All of the
-adaptive module stays switched off until the cutover (P6b), because its `al_` names are the
-live `ha-adaptive-light`'s own. Deploying never drives a bulb: each soft switch starts at
-its bulb's current state.
+adaptive module stays switched off by default (it is on only when the deployment sets
+`LM_ADAPTIVE_ENABLED=1`, at the cutover, P6b), because its `al_` names are the live
+`ha-adaptive-light`'s own. Deploying never drives a bulb: each soft switch starts at its
+bulb's current state.
 Until cutover (P6b) Light Map runs beside `ha-adaptive-light`; binding a hard switch makes
 its bulbs live, and the Map warns before saving one. See [docs/ROADMAP.md](docs/ROADMAP.md).
 

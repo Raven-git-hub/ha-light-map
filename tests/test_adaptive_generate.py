@@ -14,6 +14,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from app import main
 from app.core import config, deploy, generate, inventory, switching
@@ -76,12 +77,24 @@ def with_switched_only(doc):
 
 
 class CutoverSwitchTest(unittest.TestCase):
-    """The switch that keeps `al_` off the live HA until P6."""
+    """The switch that keeps `al_` off the live HA by default: on only when the deployment
+    sets `LM_ADAPTIVE_ENABLED=1` (at the P6b cutover, once the old `al_` system is gone)."""
 
     def test_the_live_composition_root_leaves_it_off(self):
+        # With the variable unset (as here, and as a fresh checkout or a local run), the
+        # module is not wired in and the core runs exactly as in P5.0.
         self.assertIs(main.ADAPTIVE_ENABLED, False)
         self.assertEqual(generate.namespaces(), ["lm"])
         self.assertEqual(switching.bridge_brightness_providers(), {})
+
+    def test_the_environment_turns_it_on(self):
+        # Only `LM_ADAPTIVE_ENABLED=1` turns it on; unset or any other value leaves it off,
+        # so a stray or truthy-looking value can't switch the adaptive module on by surprise.
+        with mock.patch.dict(os.environ, {"LM_ADAPTIVE_ENABLED": "1"}):
+            self.assertTrue(main._adaptive_enabled_from_env())
+        for off in ("", "0", "true", "yes", "TRUE"):
+            with mock.patch.dict(os.environ, {"LM_ADAPTIVE_ENABLED": off}):
+                self.assertFalse(main._adaptive_enabled_from_env())
 
     def test_off_the_generated_set_is_p5_0s_byte_for_byte(self):
         # tests/golden/lm_only.yaml was captured from main before P5.1: every namespace's

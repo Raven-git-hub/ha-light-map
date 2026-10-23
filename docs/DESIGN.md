@@ -778,7 +778,7 @@ rewrite its scene and watchdog automations, and remove its `al_maintenance_` one
 Light Map must not write `al_` to the live HA before P6.
 
 So the adaptive module is wired in behind one switch, `ADAPTIVE_ENABLED` in the composition
-root (`app/main.py`), **off until P6**:
+root (`app/main.py`), **off by default** (`LM_ADAPTIVE_ENABLED` unset or not `1`):
 
 - **Off** (how it runs until cutover): the composition root registers neither the
   adaptive namespace nor its bridge-brightness provider. `core.generate.namespaces()` is
@@ -793,14 +793,18 @@ root (`app/main.py`), **off until P6**:
   automations as Light Map's, adaptive bulbs' bridges carry the fragment, and the lifespan
   starts the runtime.
 
-It is a constant, not an environment variable, so turning it on is a reviewed code change
-made with the cutover, never a deployment setting someone could set early (in a compose
-file or an `.env` copied from a guide). Tests turn it on in a scope of their own
+`ADAPTIVE_ENABLED` reads `LM_ADAPTIVE_ENABLED` from the environment and is off unless it is
+`1` — the safe default a fresh checkout, a new deployment and a local run all get. Until
+cutover it was a bare `False` constant, flipped only by a reviewed code change so a
+deployment setting (a compose file, an `.env` copied from a guide) couldn't switch it on
+early and collide with the live `ha-adaptive-light`. P6b retired that system first, so the
+flip now has to survive a rebuild from a clean checkout: the deployment sets
+`LM_ADAPTIVE_ENABLED=1`, and the lifespan logs at startup which it is. Tests leave the
+variable unset and turn the module on in a scope of their own
 (`app.main.wire_modules(adaptive=True)` with the registries patched), never in the live
-composition root. Turning it on is P6b's, done by hand against the real HA after the old
-system's `al_` artefacts are removed. P6a, the last code before it, changes nothing the
-switch-off app generates, previews, applies or writes (`tests/golden/switch_off.json`, as
-well as `lm_only.yaml`, holds it to P5.2b's output byte for byte).
+composition root. P6a, the last code before the cutover, changed nothing the switch-off app
+generates, previews, applies or writes (`tests/golden/switch_off.json`, as well as
+`lm_only.yaml`, holds it to P5.2b's output byte for byte).
 
 ### The two-plane rework
 
