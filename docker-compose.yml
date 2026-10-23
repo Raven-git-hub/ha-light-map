@@ -7,6 +7,7 @@ services:
     ports:
       - "8099:8099"
     # HA connection: LM_HA_BASE_URL plus LM_HA_TOKEN (or LM_HA_TOKEN_FILE).
+    # Adaptive engine: off unless LM_ADAPTIVE_ENABLED=1 is set here or in .env (see .env.example).
     env_file:
       - .env
     # A named volume, so the non-root user (uid 10001) owns /data. To bind-mount a host

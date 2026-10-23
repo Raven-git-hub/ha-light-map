@@ -145,11 +145,24 @@ log = logging.getLogger(__name__)
 # the lifespan starts the adaptive runtime (crossovers, the nightly analysis, the almanac's
 # publish; P5.2a). Off, no runtime is made at all, and the deploy is the `lm_` lane alone.
 #
-# A constant, not an environment variable: turning it on is a reviewed change made with the
-# cutover, never a deployment setting that could be set early. Tests turn it on in a scope
-# of their own (`tests.fakes.adaptive_wired`). Do not turn it on here before P6b, the
-# cutover itself, which removes the old system's `al_` artefacts first.
-ADAPTIVE_ENABLED = False
+# Set from the environment, off by default. `LM_ADAPTIVE_ENABLED=1` in the container's
+# environment (the deployment's .env / compose file) wires the module in; unset or anything
+# else leaves it off. Off is the safe default a fresh checkout, a new deployment, and a
+# developer running the app locally all get: the `lm_` switching lane alone, never an `al_`
+# artefact written to a live HA. The lifespan logs which it is at startup.
+#
+# Pre-cutover this was a bare `False` constant, flipped only by a reviewed code change so that
+# a deployment setting couldn't switch it on early and collide with the live `ha-adaptive-light`
+# (whose `al_` names these are). P6b, the cutover, retired that system first; the flip now has
+# to survive a rebuild from a clean checkout, so it reads the environment — still off by
+# default. Tests leave the variable unset (so off) and wire the module on in a scope of their
+# own (`tests.fakes.adaptive_wired`).
+def _adaptive_enabled_from_env() -> bool:
+    """Whether `LM_ADAPTIVE_ENABLED` turns the adaptive module on (see `ADAPTIVE_ENABLED`)."""
+    return os.environ.get("LM_ADAPTIVE_ENABLED", "") == "1"
+
+
+ADAPTIVE_ENABLED = _adaptive_enabled_from_env()
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -2328,7 +2341,7 @@ async def areas_deploy(request: Request, body: Confirm) -> dict[str, Any]:
 
 def wire_modules(*, adaptive: bool = ADAPTIVE_ENABLED) -> None:
     """Attach the modules to the core's seams. Called once, below, for the live app, with
-    the cutover switch (off until P6: nothing is registered, and the core runs exactly as
+    the cutover switch (off by default: nothing is registered, and the core runs exactly as
     in P5.0). `adaptive=True` registers Adaptive Light's `al` namespace (its generator and
     what it addresses in HA) and its bridge brightness; the registries are the process's,
     so a test does it with them patched (`tests.fakes.adaptive_wired`). The module's
@@ -2459,6 +2472,12 @@ def create_app(
             log.warning("%s: ignoring what isn't a host name: %s", ALLOWED_HOSTS_ENV, skipped)
         if "*" in hosts:
             log.warning("%s=* turns the Host check off for every site", ALLOWED_HOSTS_ENV)
+        log.info(
+            "adaptive module: %s",
+            "on (LM_ADAPTIVE_ENABLED=1)"
+            if adaptive_wired_in()
+            else "off — set LM_ADAPTIVE_ENABLED=1 to enable",
+        )
         # The base URL and the data directory may come from the config; a config that
         # doesn't load still leaves LM_HA_BASE_URL, and the config's own directory.
         try:

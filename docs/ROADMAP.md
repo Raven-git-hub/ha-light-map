@@ -63,10 +63,12 @@ writes exactly what P5.2b did. P6b, the cutover itself, done by hand, comes next
     Light Map's own `al_` automations as its own, and the Map's deploy applying the module
     lanes after `lm_` under one fingerprint. All of it pure computation or behind the
     cutover switch, which stays off: the live app's output is P5.2b's byte for byte.
-  - **P6b — Cutover**, by hand against the real HA: remove the old `al_*` system; turn the
-    cutover switch on; deploy (`lm_`, then `al_`); re-express the house; start the almanac
-    (fresh or re-ingested); decommission `ha-adaptive-light`. Staged, with the old repo kept
-    deployable as rollback until Light Map has run clean for a few days.
+  - **P6b — Cutover** — ✅ done for the Living Room (2026-10-22; the old system's only room).
+    By hand against the real HA: removed the old `al_*` system; set `LM_ADAPTIVE_ENABLED=1`
+    on the deployment; deployed (`lm_`, then `al_`); re-expressed the house; started the
+    almanac fresh. The four-button Zigbee remote was bound the next day. The old
+    `ha-adaptive-light` is kept deployable as rollback until Light Map has run clean for a
+    few days, then decommissioned.
 
 ## Coexistence during the parallel build
 
@@ -80,7 +82,8 @@ one and marks every live bulb and group.
 
 **The cutover switch** (P5.1): the adaptive lane's `al_` names are the live
 `ha-adaptive-light`'s own, so the composition root wires the adaptive module in only when
-`ADAPTIVE_ENABLED` (`app/main.py`) is on, and it stays off until P6b. Off, nothing
+`ADAPTIVE_ENABLED` (`app/main.py`) is on, which reads `LM_ADAPTIVE_ENABLED=1` from the
+environment and is off by default. Off, nothing
 generates, previews or writes `al_`, no adaptive runtime runs (nothing fires a scene or
 publishes an almanac), the switching plane's output is byte-identical to P5.0's, and the
 adaptive views read no live `al_` entity (P5.2b). See `docs/DESIGN.md`, "The adaptive generator".

@@ -109,8 +109,10 @@ locks); config checks never depend on HA.
   attribute contract, in `docs/DESIGN.md`, "The adaptive generator"). A lane owns the
   helper domains its package names (`input_boolean`; `input_select` too for `al`).
 - Environment: `LM_HA_BASE_URL`, `LM_HA_TOKEN`, `LM_HA_TOKEN_FILE`, `LM_CONFIG_PATH`
-  (where the committed config lives; default `/data/config.json`), and `LM_ALLOWED_HOSTS`
-  (the Host names the API answers besides `localhost` and `127.0.0.1`).
+  (where the committed config lives; default `/data/config.json`), `LM_ALLOWED_HOSTS`
+  (the Host names the API answers besides `localhost` and `127.0.0.1`), and
+  `LM_ADAPTIVE_ENABLED` (`1` wires the adaptive module in; off by default — see "The
+  cutover switch").
 - HTTP: everything under `/api/` in `app/main.py` (see "HTTP surface" in
   `docs/ARCHITECTURE.md`); the UI's views in `static/`, one pair per view (the adaptive
   tabs share `adaptive.js`), third-party code only vendored under `static/vendor/`. An
@@ -161,13 +163,13 @@ bridge goes live, and nothing in a deploy calls a light service.
 **The cutover switch.** The adaptive lane's `al_` names are the ones the live system uses on
 the same HA (even its helpers' names), so writing `al_` before P6 would adopt and rewrite or
 remove the old system's artefacts. The adaptive module is wired in by `app/main.py` only
-when `ADAPTIVE_ENABLED` is on, and it is **off until P6b** (the cutover, done by hand):
-`core.generate.namespaces()` is `["lm"]`, no bridge-brightness provider is registered, no
-adaptive runtime is made (nothing fires a scene, raises a hold, publishes an almanac, or
-registers a section or guard with the observer), and the generated `lm_` lane is
-byte-identical to P5.0's (held to `tests/golden/lm_only.yaml`). Never turn it on in the live
-composition root before cutover; tests turn it on in their own scope
-(`tests.fakes.adaptive_wired`). On, the Map's deploy applies `lm_` first, then each module
+when `ADAPTIVE_ENABLED` is on, which reads `LM_ADAPTIVE_ENABLED=1` from the environment and
+is **off by default** (the deployment sets it on at the cutover, done by hand; the lifespan
+logs which it is at startup): `core.generate.namespaces()` is `["lm"]`, no bridge-brightness
+provider is registered, no adaptive runtime is made (nothing fires a scene, raises a hold,
+publishes an almanac, or registers a section or guard with the observer), and the generated
+`lm_` lane is byte-identical to P5.0's (held to `tests/golden/lm_only.yaml`). Tests leave the
+variable unset (so off) and turn it on in their own scope (`tests.fakes.adaptive_wired`). On, the Map's deploy applies `lm_` first, then each module
 lane, each planned again, checked against the preview and verified, under one fingerprint
 that covers every lane, and the crossover report counts the automations a wired lane
 generates as Light Map's own (P6a). Off, there is no module lane: the deploy, its
