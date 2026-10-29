@@ -24,6 +24,9 @@ What it copies from HA, closely, because the generated templates depend on it:
   had one comes on full), as HA's lights do.
 - A state change runs, at once, every automation whose state trigger matches it (the
   bridge a soft switch flips), with `tests.fakes.state_trigger_matches`.
+- `continue_on_error` on an action: a failed service call under it is swallowed and the
+  sequence goes on, as HA does, so a light in `unresponsive` (a bulb that raises on a
+  command, modelling "device did not respond") doesn't abort a run that tolerates it.
 
 Not copied: time (a delay is recorded, not waited), run modes and concurrency (a test that
 needs another run in progress sets that automation's `current` attribute), restarts, and
@@ -109,6 +112,7 @@ class HA:
         states: Mapping[str, Any] | None = None,
         automations: Sequence[Mapping[str, Any]] = (),
         options: Mapping[str, Sequence[str]] | None = None,
+        unresponsive: Sequence[str] | None = None,
     ) -> None:
         if not AVAILABLE:
             raise RuntimeError("jinja2 is not installed")
@@ -117,6 +121,10 @@ class HA:
             self.set(entity_id, *(value if isinstance(value, tuple) else (value,)))
         self.automations = [copy.deepcopy(dict(a)) for a in automations]
         self.options = {k: list(v) for k, v in (options or {}).items()}
+        # Lights that won't acknowledge a command: a `light.turn_on`/`off` to one raises
+        # (the Zigbee "device did not respond"), as a flaky bulb does, so a test can prove
+        # a non-responding bulb doesn't abort a continue_on_error sequence.
+        self.unresponsive: set[str] = set(unresponsive or ())
         self.calls: list[tuple[str, str, dict[str, Any], str]] = []
         # Each light's brightness when it last went off, which a plain turn_on restores.
         self.memory: dict[str, int] = {}
@@ -227,7 +235,15 @@ class HA:
             self.delays.append(action["delay"])
             return True
         if "action" in action:
-            self._call(action, variables, by)
+            try:
+                self._call(action, variables, by)
+            except ServiceError:
+                # HA's continue_on_error: a failed service call (a device that doesn't
+                # respond, a schema refusal) is swallowed and the next action runs, instead
+                # of aborting the sequence. Light Map marks its scene and maintenance pushes
+                # with it so a flaky bulb can't strand the guard before its release.
+                if not action.get("continue_on_error"):
+                    raise
             return True
         raise AssertionError(f"action {action!r} isn't modelled")
 
@@ -246,6 +262,9 @@ class HA:
 
     def _apply(self, service: str, entity_id: str, data: Mapping[str, Any]) -> None:
         domain, _, verb = service.partition(".")
+        if domain == "light" and entity_id in self.unresponsive:
+            # The bulb never heard the command: HA raises and the state is unchanged.
+            raise ServiceError(f"{entity_id} did not respond")
         if domain == "input_boolean":
             self._change(entity_id, {"turn_on": "on", "turn_off": "off"}[verb])
         elif service == "input_select.select_option":

@@ -280,6 +280,9 @@ class ArtefactTest(unittest.TestCase):
                 service = action["action"]
                 self.assertNotEqual(service, "light.turn_off", automation["id"])
                 if service == "light.turn_on":
+                    # Every push is continue_on_error, so a bulb that doesn't respond can't
+                    # abort the run before it releases the guard (the field bug it fixes).
+                    self.assertIs(action.get("continue_on_error"), True, automation["id"])
                     # Brightness only, and guarded on the soft switch and the bulb being on.
                     light = action["target"]["entity_id"]
                     bulb_id = light.removeprefix("light.")
@@ -919,6 +922,47 @@ class BehaviourTest(unittest.TestCase):
         self.ha.set("input_boolean.al_active_living_room", "off")
         self.assertTrue(self.ha.run(self.automations[f"al_maint_{ROOM}"]))
         self.assertEqual(self.ha.state("input_boolean.al_active_living_room"), "off")
+
+    def _dead_bulb_crossover(self, resilient):
+        """A fresh harness with light.chandelier_1 refusing every command; run the day
+        crossover with the generated scene (resilient) or with continue_on_error stripped
+        (the old behaviour). Returns (ran_to_the_end, guard_state)."""
+        self.setUp()
+        self.ha.unresponsive.add("light.chandelier_1")
+        self.publish({"day": {"units": {"chandelier": 90, "reading": 90}}})
+        scene = copy.deepcopy(self.automations[f"al_scene_{ROOM}_day"])
+        if not resilient:
+            for action, _ in walk(scene["actions"]):
+                action.pop("continue_on_error", None)
+        try:
+            ran = self.ha.run(scene, check_conditions=False)
+        except ha_script.ServiceError:
+            ran = False
+        return ran, self.ha.state("input_boolean.al_active_living_room")
+
+    def test_a_bulb_that_does_not_respond_still_releases_the_guard(self):
+        # The field bug: light.turn_on to a flaky bulb returned "device did not respond" and
+        # aborted the whole crossover before the guard-release step, so the guard sat raised
+        # until the watchdog cleared it ten minutes later (suppressing maintenance and
+        # heartbeats meanwhile). Every push is continue_on_error, so the run carries on.
+        ran, guard = self._dead_bulb_crossover(resilient=True)
+        self.assertTrue(ran)
+        self.assertEqual(guard, "off")  # released, not stranded
+        # The push to the dead bulb was attempted and tolerated; the rest of the unit still
+        # reached the target through its soft switches and bridges.
+        self.assertIn(("light.turn_on", "light.chandelier_1"), self.ha.services())
+        for bulb_id in ("chandelier_2", "chandelier_3"):
+            self.assertEqual(self.light(bulb_id), ("on", 90), bulb_id)
+        # The bulb never heard the command, so its own state didn't change.
+        self.assertEqual(self.light("chandelier_1"), ("on", 128))
+
+    def test_without_continue_on_error_the_same_bulb_would_strand_the_guard(self):
+        # The cross-check that the test above isn't vacuous: strip continue_on_error and the
+        # same dead bulb aborts the run before the release, leaving the guard raised — the
+        # stranding the directive removes.
+        ran, guard = self._dead_bulb_crossover(resilient=False)
+        self.assertFalse(ran)
+        self.assertEqual(guard, "on")
 
     def test_the_guard_watchdog(self):
         guard = self.automations["al_watchdog_guard_living_room"]

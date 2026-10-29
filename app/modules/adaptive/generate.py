@@ -453,6 +453,12 @@ def _unit_action(unit: Mapping[str, Any], transition: int) -> dict[str, Any]:
     # bulb being on, since a brightness command on an off bulb would power it on. Pushed
     # before the soft switches are turned on, so a member this crossover powers on comes up
     # through its bridge only, at the fragment's (the same) brightness.
+    #
+    # Each push is continue_on_error: a single bulb that doesn't answer (a flaky Zigbee
+    # device returning "device did not respond") must not abort the whole crossover before
+    # it reaches the guard release at the end. It did once, and the guard sat raised until
+    # the watchdog cleared it ten minutes later, suppressing maintenance and heartbeats in
+    # between. A missed push is corrected at the next crossover (or by maintenance).
     pushes = [
         {
             "if": [
@@ -466,6 +472,7 @@ def _unit_action(unit: Mapping[str, Any], transition: int) -> dict[str, Any]:
             "then": [
                 {
                     "action": "light.turn_on",
+                    "continue_on_error": True,
                     "target": {"entity_id": bulb["entity_id"]},
                     "data": {
                         "brightness": f"{{{{ units[{_literal(unit['id'])}] | int }}}}",
@@ -592,7 +599,9 @@ def _nudge(bulb: Mapping[str, Any], default_step_pct: float) -> dict[str, Any]:
     """One bulb's step toward the target. Only a bulb that is on (its soft switch and the
     bulb itself) with a brightness to step from: maintenance never powers a bulb on, and
     floors at 1, so it can dim a light but never turn one off. The step's fraction is read
-    from the row here, where it is used, and held to (0, 1]."""
+    from the row here, where it is used, and held to (0, 1]. The turn_on is
+    continue_on_error, as the crossover's pushes are: a bulb that doesn't answer must not
+    abort the run before it releases the guard (see `_unit_action`)."""
     light = bulb["entity_id"]
     current = _light_brightness(light)
     step = (
@@ -614,6 +623,7 @@ def _nudge(bulb: Mapping[str, Any], default_step_pct: float) -> dict[str, Any]:
         "then": [
             {
                 "action": "light.turn_on",
+                "continue_on_error": True,
                 "target": {"entity_id": light},
                 "data": {"brightness": step, "transition": MAINT_TRANSITION_SECONDS},
             }
